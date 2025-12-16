@@ -55,7 +55,7 @@ def load_inventory_data():
     df = session.sql(query).to_pandas()
     
     # Debug: Print column names to see what Snowflake returns
-    st.write("Debug - Raw columns from Snowflake:", df.columns.tolist())
+    # st.write("Debug - Raw columns from Snowflake:", df.columns.tolist())
     
     # Create a clean dataframe with renamed columns
     # Map Snowflake columns to app columns  
