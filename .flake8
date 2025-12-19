@@ -1,9 +1,0 @@
-[flake8]
-# Ignore line too long errors
-ignore = E501
-
-# Optional: You can also set a custom max line length instead of ignoring
-# max-line-length = 120
-
-# Optional: Exclude certain directories from linting
-# exclude = .git,__pycache__,docs/source/conf.py,old,build,dist
