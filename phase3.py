@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ============================================================================
 # PAGE CONFIG
@@ -168,6 +168,7 @@ st.markdown("""
 # SAMPLE DATA - Based on Marketing Dashboard
 # ============================================================================
 
+
 @st.cache_data
 def load_marketing_data():
     """
@@ -297,7 +298,7 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
 
     # Granularity controls and Scale Adjustment
     gran_col, scale_col = st.columns([1, 1])
-    
+
     with gran_col:
         st.markdown('<div class="granularity-label">Input Granularity</div>', unsafe_allow_html=True)
         granularity = st.radio(
@@ -307,7 +308,7 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
             label_visibility="collapsed",
             key="granularity_radio"
         )
-    
+
     with scale_col:
         st.markdown('<div class="granularity-label">📊 Scale Adjustment</div>', unsafe_allow_html=True)
         scale_percent = st.slider(
@@ -335,7 +336,7 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
         date_headers = [d.strftime("%b %-d") if hasattr(d, "strftime") else d.strftime("%b %d") for d in dates]
     elif granularity == "Weekly":
         dates = pd.date_range(start=selected_date, periods=4, freq="W")
-        date_headers = [f"Week {i+1}" for i in range(len(dates))]
+        date_headers = [f"Week {i + 1}" for i in range(len(dates))]
     else:  # Monthly
         dates = pd.date_range(start=selected_date, periods=3, freq="MS")
         date_headers = [d.strftime("%b %Y") for d in dates]
@@ -347,7 +348,7 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
             (demo_df["Location"] == selected_location)
         ]["Product"].unique()
     )
-    
+
     # Further filter by selected products if not "All Products"
     if "All Products" not in selected_products:
         region_products = [p for p in region_products if p in selected_products]
@@ -358,7 +359,7 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
 
     # Create data grid - Product-based with expandable consignee details
     np.random.seed(42)
-    
+
     # Header row
     header_cols = st.columns([2] + [1] * len(date_headers))
     with header_cols[0]:
@@ -374,7 +375,7 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
     for product in region_products:
         # First, get consignee data for all dates to calculate product totals
         consignees = ["Branded", "Unbranded", "Contracts"]
-        
+
         # Product-level Target row (sum of all consignees)
         row_cols = st.columns([2] + [1] * len(date_headers))
         with row_cols[0]:
@@ -395,11 +396,11 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
                     ]
                     if len(cons_data) > 0:
                         total_target += int(cons_data["Target"].sum())
-                
+
                 # Fallback if no data
                 if total_target == 0:
                     total_target = int(np.random.randint(3000, 8000))
-                
+
                 # Apply scale adjustment
                 scaled_target = int(total_target * (1 + scale_percent / 100))
                 product_targets.append(scaled_target)
@@ -433,11 +434,11 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
                     ]
                     if len(cons_data) > 0:
                         total_actuals += int(cons_data["Actuals"].sum())
-                
+
                 # Fallback if no data
                 if total_actuals == 0:
                     total_actuals = int(np.random.randint(2500, 7500))
-                
+
                 product_actuals.append(total_actuals)
 
                 st.number_input(
@@ -452,7 +453,7 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
         # Expandable consignee breakdown
         with st.expander(f"View {product} by Consignee", expanded=False):
             consignees = ["Branded", "Unbranded", "Contracts"]
-            
+
             for consignee in consignees:
                 # Consignee Target row
                 cons_target_cols = st.columns([2] + [1] * len(date_headers))
@@ -471,12 +472,12 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
                             & (demo_df["Consignee"] == consignee)
                             & (demo_df["Date"].dt.date == date_val.date())
                         ]
-                        
+
                         if len(cons_data) > 0:
                             value = int(cons_data["Target"].sum())
                         else:
                             value = int(np.random.randint(1000, 3000))
-                        
+
                         # Apply scale adjustment
                         scaled_value = int(value * (1 + scale_percent / 100))
 
@@ -505,7 +506,7 @@ def screen_data_entry(selected_region, selected_location, selected_date, selecte
                             & (demo_df["Consignee"] == consignee)
                             & (demo_df["Date"].dt.date == date_val.date())
                         ]
-                        
+
                         if len(cons_data) > 0:
                             value = int(cons_data["Actuals"].sum())
                         else:
@@ -573,7 +574,7 @@ def screen_dashboard(selected_region, selected_location, selected_products, sele
         (filtered_df["Date"].dt.date >= selected_date) &
         (filtered_df["Date"].dt.date <= end_date)
     ]
-    
+
     # Filter by selected products if not "All Products"
     if "All Products" not in selected_products:
         filtered_df = filtered_df[filtered_df["Product"].isin(selected_products)]
@@ -619,11 +620,11 @@ def screen_dashboard(selected_region, selected_location, selected_products, sele
     # --- Product Tabs ---
     # Get unique products for tabs
     available_tab_products = filtered_df["Product"].unique().tolist()
-    
+
     # Create tabs for "All Products" + each individual product
     tab_names = ["All Products"] + available_tab_products
     product_tabs = st.tabs(tab_names)
-    
+
     # Iterate through each tab
     for idx, tab in enumerate(product_tabs):
         with tab:
@@ -633,7 +634,7 @@ def screen_dashboard(selected_region, selected_location, selected_products, sele
             else:
                 current_product = available_tab_products[idx - 1]
                 tab_filtered_df = filtered_df[filtered_df["Product"] == current_product]
-            
+
             # --- Daily Summary for this product ---
             st.subheader("📊 Daily Summary")
 
@@ -642,22 +643,22 @@ def screen_dashboard(selected_region, selected_location, selected_products, sele
 
             for date in recent_dates:
                 day_data = tab_filtered_df[tab_filtered_df["Date"].dt.date == date]
-                
+
                 # Calculate totals for variance
                 day_target_total = day_data["Target"].sum()
                 day_actuals_total = day_data["Actuals"].sum()
                 day_variance = day_actuals_total - day_target_total
                 day_variance_pct = (day_variance / day_target_total * 100) if day_target_total > 0 else 0
-                
+
                 # Calculate by consignee
                 branded_data = day_data[day_data["Consignee"] == "Branded"]
                 unbranded_data = day_data[day_data["Consignee"] == "Unbranded"]
                 contracts_data = day_data[day_data["Consignee"] == "Contracts"]
-                
+
                 target_branded = branded_data["Target"].sum()
                 target_unbranded = unbranded_data["Target"].sum()
                 target_contracts = contracts_data["Target"].sum()
-                
+
                 actuals_branded = branded_data["Actuals"].sum()
                 actuals_unbranded = unbranded_data["Actuals"].sum()
                 actuals_contracts = contracts_data["Actuals"].sum()
@@ -767,7 +768,7 @@ def main():
     with st.sidebar:
         st.markdown('<div class="sidebar-label">🔍 Filters</div>', unsafe_allow_html=True)
         st.divider()
-        
+
         # Region Filter
         st.markdown('<div class="sidebar-label">Region</div>', unsafe_allow_html=True)
         selected_region = st.selectbox(
@@ -777,7 +778,7 @@ def main():
             key="global_region",
             label_visibility="collapsed",
         )
-        
+
         # Location Filter - based on selected region
         st.markdown('<div class="sidebar-label">Location</div>', unsafe_allow_html=True)
         available_locations = demo_df[demo_df["Region"] == selected_region]["Location"].unique().tolist()
@@ -787,13 +788,13 @@ def main():
             key="global_location",
             label_visibility="collapsed",
         )
-        
+
         # Get available products for the selected region/location
         available_products = demo_df[
             (demo_df["Region"] == selected_region) &
             (demo_df["Location"] == selected_location)
         ]["Product"].unique().tolist()
-        
+
         # Product Filter
         st.markdown('<div class="sidebar-label">Products</div>', unsafe_allow_html=True)
         selected_products = st.multiselect(
@@ -806,7 +807,7 @@ def main():
         # If nothing selected, show all
         if not selected_products:
             selected_products = ["All Products"]
-        
+
         # Date Filter - Single date for Data Entry
         st.markdown('<div class="sidebar-label">Date Range</div>', unsafe_allow_html=True)
         c1, c2 = st.columns(2)
@@ -828,16 +829,16 @@ def main():
                 key="global_end_date",
                 label_visibility="collapsed",
             )
-    
+
     # Get scale_percent from session state if it exists (set in data entry screen)
     scale_percent = st.session_state.get("scale_percent", 0)
-    
+
     # MAIN AREA - Tabs for Data Entry and Dashboard
     tab1, tab2 = st.tabs(["📋 Data Entry", "📊 Dashboard"])
-    
+
     with tab1:
         screen_data_entry(selected_region, selected_location, selected_date, selected_products, scale_percent)
-    
+
     with tab2:
         screen_dashboard(selected_region, selected_location, selected_products, selected_date, end_date, scale_percent)
 

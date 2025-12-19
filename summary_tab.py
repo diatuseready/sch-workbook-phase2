@@ -7,11 +7,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from config import (
-    REQUIRED_MAX_DEFAULTS, 
+    REQUIRED_MAX_DEFAULTS,
     INTRANSIT_DEFAULTS,
     GLOBAL_REQUIRED_MAX_FALLBACK,
     GLOBAL_INTRANSIT_FALLBACK
 )
+
 
 def calculate_required_max(row, group_cols, df_filtered):
     """Calculate required max based on historical data or defaults."""
@@ -22,7 +23,7 @@ def calculate_required_max(row, group_cols, df_filtered):
     else:
         key = f"{row['Location']}|{row['Product']}"
         prod_key = row['Product']
-    
+
     if key in REQUIRED_MAX_DEFAULTS:
         return REQUIRED_MAX_DEFAULTS[key]
     elif prod_key in REQUIRED_MAX_DEFAULTS:
@@ -33,11 +34,12 @@ def calculate_required_max(row, group_cols, df_filtered):
             (df_filtered[group_cols[0]] == row[group_cols[0]]) &
             (df_filtered["Product"] == row["Product"])
         ]["Tank Capacity"].max()
-        
+
         if pd.notna(tank_cap_data) and tank_cap_data > 0:
             return tank_cap_data * 0.85
         else:
             return GLOBAL_REQUIRED_MAX_FALLBACK
+
 
 def calculate_intransit(row, group_cols, df_filtered):
     """Calculate intransit based on pipeline data or defaults."""
@@ -48,7 +50,7 @@ def calculate_intransit(row, group_cols, df_filtered):
     else:
         key = f"{row['Location']}|{row['Product']}"
         prod_key = row['Product']
-    
+
     if key in INTRANSIT_DEFAULTS:
         return INTRANSIT_DEFAULTS[key]
     elif prod_key in INTRANSIT_DEFAULTS:
@@ -59,20 +61,21 @@ def calculate_intransit(row, group_cols, df_filtered):
             (df_filtered[group_cols[0]] == row[group_cols[0]]) &
             (df_filtered["Product"] == row["Product"])
         ]["Pipeline In"].mean()
-        
+
         if pd.notna(pipeline_data) and pipeline_data > 0:
             return pipeline_data
         else:
             return GLOBAL_INTRANSIT_FALLBACK
 
+
 def display_regional_summary(df_filtered, active_region):
     """Display the regional summary section."""
     st.subheader("📊 Regional Summary")
-    
+
     if df_filtered.empty:
         st.info("No data available for the selected region and filters.")
         return
-    
+
     # Determine sales column
     sales_cols = [c for c in ["Rack/Liftings", "Batch Out (DELIVERIES_BBL)"] if c in df_filtered.columns]
     sales_col = sales_cols[0] if sales_cols else None
@@ -112,7 +115,7 @@ def display_regional_summary(df_filtered, active_region):
     if daily.empty:
         st.info("No data available for the selected filters.")
         return
-        
+
     latest_date = daily["Date"].max()
     prior_mask = daily["Date"] < latest_date
     prior_day = daily.loc[prior_mask, "Date"].max() if prior_mask.any() else pd.NaT
@@ -170,23 +173,23 @@ def display_regional_summary(df_filtered, active_region):
 
     # Calculate Required Max and Intransit
     summary_df["Required Maximums"] = summary_df.apply(
-        lambda row: calculate_required_max(row, group_cols, df_filtered), 
+        lambda row: calculate_required_max(row, group_cols, df_filtered),
         axis=1
     ).astype(float)
-    
+
     summary_df["Intransit Bbls"] = summary_df.apply(
-        lambda row: calculate_intransit(row, group_cols, df_filtered), 
+        lambda row: calculate_intransit(row, group_cols, df_filtered),
         axis=1
     ).astype(float)
 
     # Calculate inventory metrics
     summary_df["Gross Inventory"] = (
-        summary_df["Close Inv"].fillna(0) + 
+        summary_df["Close Inv"].fillna(0) +
         summary_df["Intransit Bbls"].fillna(0)
     ).astype(float)
-    
+
     summary_df["Avail. (NET) Inventory"] = (
-        summary_df["Gross Inventory"] - 
+        summary_df["Gross Inventory"] -
         summary_df["Required Maximums"]
     ).astype(float)
 
@@ -233,41 +236,42 @@ def display_regional_summary(df_filtered, active_region):
         height=320
     )
 
+
 def display_forecast_table(df_filtered, active_region):
     """Display the forecast table section."""
     st.markdown("### 📈 Forecast Table")
-    
+
     if df_filtered.empty:
         st.info("No data available for the selected filters.")
         return
-    
+
     # Determine group columns based on region
     if active_region == "Group Supply Report (Midcon)":
         group_cols = ["System", "Product"]
     else:
         group_cols = ["Location", "Product"]
-    
+
     if not all(col in df_filtered.columns for col in group_cols):
         st.info("No forecast data available for the selected filters.")
         return
-    
+
     # Generate forecast data based on actual data
     forecast_data = []
-    
+
     # Get unique combinations
     unique_combos = df_filtered.groupby(group_cols).size().reset_index()[group_cols]
     unique_combos = unique_combos.head(6)  # Limit to first 6 for display
-    
+
     for _, row in unique_combos.iterrows():
         # Calculate forecasts based on historical data
         loc_prod_data = df_filtered[
             (df_filtered[group_cols[0]] == row[group_cols[0]]) &
             (df_filtered["Product"] == row["Product"])
         ]
-        
+
         current_inv = loc_prod_data["Close Inv"].iloc[-1] if not loc_prod_data.empty else 0
         avg_daily_change = loc_prod_data["Close Inv"].diff().mean() if len(loc_prod_data) > 1 else 100
-        
+
         forecast_row = {
             group_cols[0]: row[group_cols[0]],
             "Product": row["Product"],
@@ -280,7 +284,7 @@ def display_forecast_table(df_filtered, active_region):
             "Build and Draw": round(avg_daily_change * 30, 0)
         }
         forecast_data.append(forecast_row)
-    
+
     if forecast_data:
         forecast_df = pd.DataFrame(forecast_data)
         forecast_cols = [

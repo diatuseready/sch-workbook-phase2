@@ -4,7 +4,8 @@ Contains styling, CSS, and UI helper functions
 """
 
 import streamlit as st
-from config import *
+from config import BG_LIGHT, TEXT_DARK, PRIMARY_BLUE, CARD_BG, ACCENT_GREEN, MOCK_SOURCES, STATUS_COLORS
+
 
 def setup_page():
     """Configure the Streamlit page settings."""
@@ -13,6 +14,7 @@ def setup_page():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+
 
 def apply_custom_css():
     """Apply custom CSS styling to the app."""
@@ -68,20 +70,22 @@ def apply_custom_css():
     """
     st.markdown(css_style, unsafe_allow_html=True)
 
+
 def display_header():
     """Display the main header of the application."""
     st.markdown('<div class="main-header">HF Sinclair Scheduler Dashboard</div>', unsafe_allow_html=True)
 
+
 def display_data_freshness_cards(active_region):
     """Display data freshness cards for the active region."""
     st.subheader("📈 Data Freshness & Source Status")
-    
+
     # Debug: Show what region we're looking for
-    st.info(f"Debug: Looking for region: '{active_region}'")
-    st.info(f"Debug: Available regions in MOCK_SOURCES: {list(MOCK_SOURCES.keys())}")
-    
+    # st.info(f"Debug: Looking for region: '{active_region}'")
+    # st.info(f"Debug: Available regions in MOCK_SOURCES: {list(MOCK_SOURCES.keys())}")
+
     region_sources = MOCK_SOURCES.get(active_region, [])
-    
+
     if region_sources:
         cols = st.columns(len(region_sources))
         for i, src in enumerate(region_sources):
