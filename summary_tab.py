@@ -232,7 +232,7 @@ def display_regional_summary(df_filtered, active_region):
     final_cols = [c for c in desired_order if c in display_df.columns]
     st.dataframe(
         display_df[final_cols],
-        use_container_width=True,
+        width="stretch",
         height=320
     )
 
@@ -291,6 +291,6 @@ def display_forecast_table(df_filtered, active_region):
             group_cols[0], "Product", "Current Inventory", "EOM Projections",
             "LIFO Target", "OPS Target", "EOM vs OPS", "LIFO vs OPS", "Build and Draw"
         ]
-        st.dataframe(forecast_df[forecast_cols], use_container_width=True, height=320)
+        st.dataframe(forecast_df[forecast_cols], width="stretch", height=320)
     else:
         st.info("No forecast data available for the selected filters.")

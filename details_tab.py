@@ -35,7 +35,7 @@ def display_midcon_details(df_filtered, active_region):
     st.data_editor(
         df_display[display_cols],
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         key=f"{active_region}_edit"
     )
 
@@ -86,7 +86,7 @@ def display_location_details(df_filtered, active_region):
                 st.data_editor(
                     df_loc[display_cols],
                     num_rows="dynamic",
-                    use_container_width=True,
+                    width="stretch",
                     key=f"{active_region}_{loc}_edit"
                 )
 

@@ -1,162 +1,93 @@
-"""data_loader.py
-
-Data Loader module for HF Sinclair Scheduler Dashboard.
-
-This module was originally built to load inventory data from Snowflake.
-It now supports switching between:
-
-- Snowflake (default)
-- Local CSV (e.g. `testing_data.csv`)
-
-Switching data sources
-----------------------
-Set one of the following environment variables before running Streamlit:
-
-- `HFS_DATA_SOURCE`:
-    - "snowflake" (default)
-    - "csv"
-
-- `HFS_INVENTORY_CSV_PATH` (optional): path to the CSV file
-    - default: "testing_data.csv"
-
-Example:
-    HFS_DATA_SOURCE=csv HFS_INVENTORY_CSV_PATH=testing_data.csv streamlit run app.py
-
-The dataframe returned by `load_inventory_data()` is normalized to the same
-schema the rest of the app expects.
-"""
-
 from __future__ import annotations
-
-import os
-from typing import Final
 
 import pandas as pd
 import streamlit as st
 
 from config import RAW_INVENTORY_TABLE
 
-DEFAULT_DATA_SOURCE: Final[str] = "snowflake"
-DEFAULT_CSV_PATH: Final[str] = "testing_data.csv"
+DATA_SOURCE = "sqlite"  # "snowflake"
+SQLITE_DB_PATH = "inventory.db"
+SQLITE_TABLE = "DAILY_INVENTORY_FACT"
+SNOWFLAKE_WAREHOUSE = "HFS_ADHOC_WH"
+
+NUMERIC_COLUMN_MAP = {
+    "Batch In (RECEIPTS_BBL)": "RECEIPTS_BBL",
+    "Batch Out (DELIVERIES_BBL)": "DELIVERIES_BBL",
+    "Rack/Liftings": "RACK_LIFTINGS_BBL",
+    "Close Inv": "CLOSING_INVENTORY_BBL",
+    "Open Inv": "OPENING_INVENTORY_BBL",
+    "Production": "PRODUCTION_BBL",
+    "Pipeline In": "PIPELINE_IN_BBL",
+    "Pipeline Out": "PIPELINE_OUT_BBL",
+    "Adjustments": "ADJUSTMENTS_BBL",
+    "Gain/Loss": "GAIN_LOSS_BBL",
+    "Transfers": "TRANSFERS_BBL",
+    "Tank Capacity": "TANK_CAPACITY_BBL",
+    "Safe Fill Limit": "SAFE_FILL_LIMIT_BBL",
+    "Available Space": "AVAILABLE_SPACE_BBL",
+}
 
 
-def _get_data_source() -> str:
-    source = (os.getenv("HFS_DATA_SOURCE", "csv") or DEFAULT_DATA_SOURCE).strip().lower()
-    if source not in {"snowflake", "csv"}:
-        raise ValueError(
-            "Invalid HFS_DATA_SOURCE. Expected 'snowflake' or 'csv'. "
-            f"Got: {source!r}"
-        )
-    return source
-
-
-def _get_csv_path() -> str:
-    return (os.getenv("HFS_INVENTORY_CSV_PATH") or DEFAULT_CSV_PATH).strip()
+def _col(raw_df: pd.DataFrame, name: str, default=None) -> pd.Series:
+    if name in raw_df.columns:
+        return raw_df[name]
+    return pd.Series([default] * len(raw_df), index=raw_df.index)
 
 
 @st.cache_resource(show_spinner=False)
 def get_snowflake_session():
-    """Get the active Snowflake session.
-
-    Note: Snowflake imports are intentionally *lazy* so that local CSV runs
-    do not require the Snowflake runtime.
-    """
-
     from snowflake.snowpark.context import get_active_session  # type: ignore
 
     return get_active_session()
 
 
 def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize Snowflake/CSV inventory extracts into the app's expected schema."""
+    df = pd.DataFrame(index=raw_df.index)
 
-    def _col(name: str, default=None) -> pd.Series:
-        if name in raw_df.columns:
-            return raw_df[name]
-        # Ensure we return a series aligned to the dataframe index
-        return pd.Series([default] * len(raw_df), index=raw_df.index)
+    df["Date"] = pd.to_datetime(_col(raw_df, "DATA_DATE"), errors="coerce")
+    df["Region"] = _col(raw_df, "REGION_CODE", "Unknown").fillna("Unknown")
+    df["Location"] = _col(raw_df, "LOCATION_CODE")
+    df["Product"] = _col(raw_df, "PRODUCT_DESCRIPTION")
 
-    df_clean = pd.DataFrame(index=raw_df.index)
+    system = _col(raw_df, "SOURCE_OPERATOR")
+    if system.isna().all():
+        system = _col(raw_df, "SOURCE_SYSTEM")
+    df["System"] = system
 
-    # Convert date
-    df_clean["Date"] = pd.to_datetime(_col("DATA_DATE"), errors="coerce")
+    for out_col, raw_col in NUMERIC_COLUMN_MAP.items():
+        df[out_col] = pd.to_numeric(_col(raw_df, raw_col, 0), errors="coerce").fillna(0)
 
-    # Region (Snowflake uses REGION_CODE; csv sample uses REGION_CODE too)
-    df_clean["Region"] = _col("REGION_CODE", "Unknown").fillna("Unknown")
+    df["INVENTORY_KEY"] = _col(raw_df, "INVENTORY_KEY")
+    df["SOURCE_FILE_ID"] = _col(raw_df, "SOURCE_FILE_ID")
+    df["CREATED_AT"] = pd.to_datetime(_col(raw_df, "CREATED_AT"), errors="coerce")
 
-    # Map other columns
-    df_clean["Location"] = _col("LOCATION_CODE")
-    df_clean["Product"] = _col("PRODUCT_DESCRIPTION")
+    df["Notes"] = ""
 
-    # CSV has both SOURCE_OPERATOR and SOURCE_SYSTEM/SOURCE_OPERATOR; prefer SOURCE_OPERATOR
-    df_clean["System"] = _col("SOURCE_OPERATOR")
+    midcon_mask = df["Region"] == "Group Supply Report (Midcon)"
+    needs_system = midcon_mask & df["System"].isna()
+    df.loc[needs_system, "System"] = df.loc[needs_system, "Location"]
 
-    # Numeric columns
-    df_clean["Batch In (RECEIPTS_BBL)"] = pd.to_numeric(_col("RECEIPTS_BBL"), errors="coerce").fillna(0)
-    df_clean["Batch Out (DELIVERIES_BBL)"] = pd.to_numeric(_col("DELIVERIES_BBL"), errors="coerce").fillna(0)
-    df_clean["Rack/Liftings"] = pd.to_numeric(_col("RACK_LIFTINGS_BBL"), errors="coerce").fillna(0)
-
-    df_clean["Close Inv"] = pd.to_numeric(_col("CLOSING_INVENTORY_BBL"), errors="coerce").fillna(0)
-    df_clean["Open Inv"] = pd.to_numeric(_col("OPENING_INVENTORY_BBL"), errors="coerce").fillna(0)
-
-    df_clean["Production"] = pd.to_numeric(_col("PRODUCTION_BBL"), errors="coerce").fillna(0)
-    df_clean["Pipeline In"] = pd.to_numeric(_col("PIPELINE_IN_BBL"), errors="coerce").fillna(0)
-    df_clean["Pipeline Out"] = pd.to_numeric(_col("PIPELINE_OUT_BBL"), errors="coerce").fillna(0)
-
-    # Some sources may store these as strings (Snowflake query used TRY_TO_DOUBLE)
-    df_clean["Adjustments"] = pd.to_numeric(_col("ADJUSTMENTS_BBL"), errors="coerce").fillna(0)
-    df_clean["Gain/Loss"] = pd.to_numeric(_col("GAIN_LOSS_BBL"), errors="coerce").fillna(0)
-    df_clean["Transfers"] = pd.to_numeric(_col("TRANSFERS_BBL"), errors="coerce").fillna(0)
-
-    df_clean["Tank Capacity"] = pd.to_numeric(_col("TANK_CAPACITY_BBL"), errors="coerce").fillna(0)
-    df_clean["Safe Fill Limit"] = pd.to_numeric(_col("SAFE_FILL_LIMIT_BBL"), errors="coerce").fillna(0)
-    df_clean["Available Space"] = pd.to_numeric(_col("AVAILABLE_SPACE_BBL"), errors="coerce").fillna(0)
-
-    # Identifiers/audit
-    df_clean["INVENTORY_KEY"] = _col("INVENTORY_KEY")
-    df_clean["SOURCE_FILE_ID"] = _col("SOURCE_FILE_ID")
-    df_clean["CREATED_AT"] = pd.to_datetime(_col("CREATED_AT"), errors="coerce")
-
-    # App-specific
-    df_clean["Notes"] = ""
-
-    # For Midcon, set System = Location if System is null
-    midcon_mask = df_clean["Region"] == "Group Supply Report (Midcon)"
-    needs_system = midcon_mask & df_clean["System"].isna()
-    df_clean.loc[needs_system, "System"] = df_clean.loc[needs_system, "Location"]
-
-    return df_clean
+    return df
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_inventory_data_cached(source: str, csv_path: str) -> pd.DataFrame:
-    """Internal cached loader (cache key includes source + csv_path)."""
+def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: str) -> pd.DataFrame:
+    if source == "sqlite":
+        import sqlite3
 
-    if source == "csv":
-        if not os.path.exists(csv_path):
-            raise FileNotFoundError(
-                f"CSV file not found: {csv_path!r}. "
-                "Set HFS_INVENTORY_CSV_PATH or place the file in the project root."
-            )
-
-        raw_df = pd.read_csv(csv_path)
-        # Keep ordering similar to Snowflake query: latest dates first
-        if "DATA_DATE" in raw_df.columns:
-            raw_df["DATA_DATE"] = pd.to_datetime(raw_df["DATA_DATE"], errors="coerce")
-            raw_df = raw_df.sort_values(
-                by=["DATA_DATE", "LOCATION_CODE"],
-                ascending=[False, True],
-                kind="mergesort",
-            )
-
+        conn = sqlite3.connect(sqlite_db_path)
+        raw_df = pd.read_sql_query(
+            f"SELECT * FROM {sqlite_table} WHERE DATA_DATE IS NOT NULL ORDER BY DATA_DATE DESC, LOCATION_CODE",
+            conn,
+        )
+        conn.close()
         return _normalize_inventory_df(raw_df)
 
-    # Snowflake
-    session = get_snowflake_session()
+    if source != "snowflake":
+        raise ValueError("DATA_SOURCE must be 'snowflake' or 'sqlite'")
 
-    # Set warehouse
-    warehouse_sql = "USE WAREHOUSE HFS_ADHOC_WH"
-    session.sql(warehouse_sql).collect()
+    session = get_snowflake_session()
+    session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
     query = f"""
     SELECT
@@ -173,7 +104,6 @@ def _load_inventory_data_cached(source: str, csv_path: str) -> pd.DataFrame:
         CAST(COALESCE(PRODUCTION_BBL, 0) AS FLOAT) as PRODUCTION_BBL,
         CAST(COALESCE(PIPELINE_IN_BBL, 0) AS FLOAT) as PIPELINE_IN_BBL,
         CAST(COALESCE(PIPELINE_OUT_BBL, 0) AS FLOAT) as PIPELINE_OUT_BBL,
-        -- Handle VARCHAR columns for ADJUSTMENTS_BBL, GAIN_LOSS_BBL, TRANSFERS_BBL
         CAST(COALESCE(TRY_TO_DOUBLE(ADJUSTMENTS_BBL), 0) AS FLOAT) as ADJUSTMENTS_BBL,
         CAST(COALESCE(TRY_TO_DOUBLE(GAIN_LOSS_BBL), 0) AS FLOAT) as GAIN_LOSS_BBL,
         CAST(COALESCE(TRY_TO_DOUBLE(TRANSFERS_BBL), 0) AS FLOAT) as TRANSFERS_BBL,
@@ -193,30 +123,18 @@ def _load_inventory_data_cached(source: str, csv_path: str) -> pd.DataFrame:
 
 
 def load_inventory_data() -> pd.DataFrame:
-    """Load inventory data from the configured source (Snowflake or CSV)."""
-
-    source = _get_data_source()
-    csv_path = _get_csv_path()
-    return _load_inventory_data_cached(source, csv_path)
+    return _load_inventory_data_cached(DATA_SOURCE, SQLITE_DB_PATH, SQLITE_TABLE)
 
 
 def initialize_data():
-    """Initialize data loading and store in session state."""
-
     if "data_loaded" not in st.session_state:
-        source = _get_data_source()
-        label = "Snowflake" if source == "snowflake" else "CSV"
+        label = "Snowflake" if DATA_SOURCE == "snowflake" else "SQLite"
 
         with st.spinner(f"Loading inventory data from {label}..."):
             all_data = load_inventory_data()
-
-            # Get unique regions dynamically from the data
             regions = sorted(all_data["Region"].dropna().unique().tolist())
 
-            # Store regions in session state
             st.session_state.regions = regions
-
-            # Split data by region
             st.session_state.data = {}
             for region in regions:
                 st.session_state.data[region] = all_data[all_data["Region"] == region].copy()
@@ -228,27 +146,7 @@ def initialize_data():
 
 
 def ensure_numeric_columns(df_filtered: pd.DataFrame) -> pd.DataFrame:
-    """Ensure numeric columns are properly typed."""
-
-    numeric_cols = [
-        "Close Inv",
-        "Open Inv",
-        "Batch In (RECEIPTS_BBL)",
-        "Batch Out (DELIVERIES_BBL)",
-        "Rack/Liftings",
-        "Production",
-        "Pipeline In",
-        "Pipeline Out",
-        "Adjustments",
-        "Gain/Loss",
-        "Transfers",
-        "Tank Capacity",
-        "Safe Fill Limit",
-        "Available Space",
-    ]
-
-    for c in numeric_cols:
-        if c in df_filtered.columns:
-            df_filtered[c] = pd.to_numeric(df_filtered[c], errors="coerce").fillna(0)
-
+    for col in NUMERIC_COLUMN_MAP.keys():
+        if col in df_filtered.columns:
+            df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce").fillna(0)
     return df_filtered
