@@ -80,10 +80,6 @@ def display_data_freshness_cards(active_region):
     """Display data freshness cards for the active region."""
     st.subheader("📈 Data Freshness & Source Status")
 
-    # Debug: Show what region we're looking for
-    # st.info(f"Debug: Looking for region: '{active_region}'")
-    # st.info(f"Debug: Available regions in MOCK_SOURCES: {list(MOCK_SOURCES.keys())}")
-
     region_sources = MOCK_SOURCES.get(active_region, [])
 
     if region_sources:

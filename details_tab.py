@@ -55,6 +55,69 @@ NET_COLS = [
     "Transfers",
 ]
 
+SOURCE_BG = {
+    "system": "#d9f2d9",
+    "forecast": "#d9ecff",
+}
+
+LOCKED_BASE_COLS = [
+    "Date",
+    "{id_col}",
+    "source",
+    "Product",
+    "Close Inv",
+    "Opening Inv",
+]
+
+
+def _style_source_cells(df: pd.DataFrame, cols_to_color: list[str]) -> "pd.io.formats.style.Styler":
+    cols = list(df.columns)
+    cols_set = set(cols_to_color)
+
+    def _row_style(row: pd.Series) -> list[str]:
+        bg = SOURCE_BG.get(str(row.get("source", "")).strip().lower(), "")
+        style = f"background-color: {bg};" if bg else ""
+        return [style if (c in cols_set and style) else "" for c in cols]
+
+    return df.style.apply(_row_style, axis=1).hide(axis="index")
+
+
+def _locked_cols(id_col: str, cols: list[str]) -> list[str]:
+    wanted = [c.format(id_col=id_col) for c in LOCKED_BASE_COLS]
+    return [c for c in wanted if c in cols]
+
+
+def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
+    locked = set(_locked_cols(id_col, cols))
+
+    cfg: dict[str, object] = {
+        "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD"),
+        id_col: st.column_config.TextColumn(id_col, disabled=True),
+        "source": st.column_config.SelectboxColumn(
+            "Source",
+            options=["system", "forecast", "manual"],
+            required=True,
+            disabled=True,
+        ),
+        "Product": st.column_config.TextColumn("Product", disabled=True),
+        "updated": st.column_config.CheckboxColumn("updated", default=False),
+        "Notes": st.column_config.TextColumn("Notes"),
+    }
+
+    for c in cols:
+        if c in cfg or c == "Notes":
+            continue
+        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format="%.2f")
+
+    for c in locked:
+        if c in {"Date", id_col, "source", "Product"}:
+            continue
+        if c in cols and c not in cfg:
+            cfg[c] = st.column_config.TextColumn(c, disabled=True)
+
+    return {k: v for k, v in cfg.items() if k in cols}
+
 
 def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     if df.empty:
@@ -235,25 +298,23 @@ def _extend_with_30d_forecast(
 
 def build_details_view(df: pd.DataFrame, id_col: str):
     df = df.sort_values("Date").rename(columns=DETAILS_RENAME)
+
+    df["Date"] = pd.to_datetime(df["Date"]).dt.date
+
     cols = ["Date", id_col] + DETAILS_COLS
     cols = [c for c in cols if c in df.columns]
+
+    for c in cols:
+        if c in {"Date", id_col, "source", "Product", "Notes", "updated"}:
+            continue
+        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+            df[c] = df[c].round(2)
+
     return df, cols
 
 
 def display_midcon_details(df_filtered: pd.DataFrame, active_region: str, forecast_end: pd.Timestamp):
     st.subheader("🧾 Group Daily Details")
-
-    source_cfg = st.column_config.SelectboxColumn(
-        "source",
-        help="system = pipeline row, forecast = generated, manual = user-added",
-        options=["system", "forecast", "manual"],
-        required=True,
-    )
-    updated_cfg = st.column_config.CheckboxColumn(
-        "updated",
-        help="Checked when row has been modified by user",
-        default=False,
-    )
 
     if df_filtered.empty:
         st.info("No data available for the selected filters.")
@@ -262,17 +323,16 @@ def display_midcon_details(df_filtered: pd.DataFrame, active_region: str, foreca
     df_all = _extend_with_30d_forecast(df_filtered, id_col="System", forecast_end=forecast_end)
     df_display, cols = build_details_view(df_all, id_col="System")
 
-    st.caption("Rows are editable. Use the 'source' column to distinguish system vs forecast vs manual.")
+    locked_cols = _locked_cols("System", cols)
+    column_config = _column_config(df_display, cols, "System")
 
     st.data_editor(
-        df_display[cols],
+        _style_source_cells(df_display[cols], locked_cols),
         num_rows="dynamic",
         width="stretch",
+        hide_index=True,
         key=f"{active_region}_edit",
-        column_config={
-            "source": source_cfg,
-            "updated": updated_cfg,
-        },
+        column_config=column_config,
     )
 
     st.markdown('<div class="save-btn-bottom">', unsafe_allow_html=True)
@@ -283,18 +343,6 @@ def display_midcon_details(df_filtered: pd.DataFrame, active_region: str, foreca
 
 def display_location_details(df_filtered: pd.DataFrame, active_region: str, forecast_end: pd.Timestamp):
     st.subheader("🏭 Locations")
-
-    source_cfg = st.column_config.SelectboxColumn(
-        "source",
-        help="system = pipeline row, forecast = generated, manual = user-added",
-        options=["system", "forecast", "manual"],
-        required=True,
-    )
-    updated_cfg = st.column_config.CheckboxColumn(
-        "updated",
-        help="Checked when row has been modified by user",
-        default=False,
-    )
 
     if df_filtered.empty:
         st.info("No data available for the selected filters.")
@@ -317,17 +365,16 @@ def display_location_details(df_filtered: pd.DataFrame, active_region: str, fore
                 df_all = _extend_with_30d_forecast(df_loc, id_col="Location", forecast_end=forecast_end)
                 df_display, cols = build_details_view(df_all, id_col="Location")
 
-                st.caption("Rows are editable. Use the 'source' column to distinguish system vs forecast vs manual.")
+                locked_cols = _locked_cols("Location", cols)
+                column_config = _column_config(df_display, cols, "Location")
 
                 st.data_editor(
-                    df_display[cols],
+                    _style_source_cells(df_display[cols], locked_cols),
                     num_rows="dynamic",
                     width="stretch",
+                    hide_index=True,
                     key=f"{active_region}_{region_locs[i]}_edit",
-                    column_config={
-                        "source": source_cfg,
-                        "updated": updated_cfg,
-                    },
+                    column_config=column_config,
                 )
 
             st.markdown('<div class="save-btn-bottom">', unsafe_allow_html=True)
