@@ -70,6 +70,13 @@ LOCKED_BASE_COLS = [
 ]
 
 
+# We set an explicit height so the grid shows ~15 rows before scrolling.
+DETAILS_EDITOR_VISIBLE_ROWS = 15
+DETAILS_EDITOR_ROW_PX = 35  # approx row height incl. padding
+DETAILS_EDITOR_HEADER_PX = 35
+DETAILS_EDITOR_HEIGHT_PX = DETAILS_EDITOR_HEADER_PX + (DETAILS_EDITOR_VISIBLE_ROWS * DETAILS_EDITOR_ROW_PX)
+
+
 def _style_source_cells(df: pd.DataFrame, cols_to_color: list[str]) -> "pd.io.formats.style.Styler":
     cols = list(df.columns)
     cols_set = set(cols_to_color)
@@ -326,11 +333,20 @@ def display_midcon_details(df_filtered: pd.DataFrame, active_region: str, foreca
     locked_cols = _locked_cols("System", cols)
     column_config = _column_config(df_display, cols, "System")
 
+    # Hide internal lineage columns from the UI.
+    column_order = [c for c in cols if c != "source"]
+    column_config = {k: v for k, v in column_config.items() if k in column_order}
+
+    # Ensure we have a RangeIndex so `hide_index=True` works with `num_rows='dynamic'`.
+    editor_df = df_display[cols].reset_index(drop=True)
+
     st.data_editor(
-        _style_source_cells(df_display[cols], locked_cols),
+        _style_source_cells(editor_df, locked_cols),
         num_rows="dynamic",
         width="stretch",
+        height=DETAILS_EDITOR_HEIGHT_PX,
         hide_index=True,
+        column_order=column_order,
         key=f"{active_region}_edit",
         column_config=column_config,
     )
@@ -368,11 +384,20 @@ def display_location_details(df_filtered: pd.DataFrame, active_region: str, fore
                 locked_cols = _locked_cols("Location", cols)
                 column_config = _column_config(df_display, cols, "Location")
 
+                # Hide internal lineage columns from the UI.
+                column_order = [c for c in cols if c != "source"]
+                column_config = {k: v for k, v in column_config.items() if k in column_order}
+
+                # Ensure we have a RangeIndex so `hide_index=True` works with `num_rows='dynamic'`.
+                editor_df = df_display[cols].reset_index(drop=True)
+
                 st.data_editor(
-                    _style_source_cells(df_display[cols], locked_cols),
+                    _style_source_cells(editor_df, locked_cols),
                     num_rows="dynamic",
                     width="stretch",
+                    height=DETAILS_EDITOR_HEIGHT_PX,
                     hide_index=True,
+                    column_order=column_order,
                     key=f"{active_region}_{region_locs[i]}_edit",
                     column_config=column_config,
                 )
