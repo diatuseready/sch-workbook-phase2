@@ -37,35 +37,8 @@ REQUIRED_MIN_DEFAULTS = {
 GLOBAL_REQUIRED_MIN_FALLBACK = 0
 
 # Table definitions
-RAW_INVENTORY_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.DAILY_INVENTORY_FACT"
+# NOTE: The app now reads from APP_INVENTORY (both locally in SQLite and in Snowflake).
+# Ensure this table/view exists in Snowflake with the expected columns used by `data_loader.py`.
+RAW_INVENTORY_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_INVENTORY"
 
-# Mock Source Freshness Data
-MOCK_SOURCES = {
-    "PSR Stock One Drive": [
-        {"source": "Anacortes Rack", "last_update": "2025-10-29 06:40 AM", "status": "Up to Date"},
-        {"source": "PSR Refinery", "last_update": "2025-10-29 07:05 AM", "status": "Up to Date"},
-        {"source": "Shell Portland Terminal", "last_update": "2025-10-28 10:50 PM", "status": "Delayed"},
-        {"source": "Seaport Tacoma Terminal", "last_update": "2025-10-27 08:00 PM", "status": "Error"}
-    ],
-    "Navajo Product System": [
-        {"source": "Navajo Refinery", "last_update": "2025-10-29 06:00 AM", "status": "Up to Date"},
-        {"source": "Magellan El Paso Terminal", "last_update": "2025-10-28 09:30 PM", "status": "Delayed"},
-        {"source": "Marathon Albuquerque Terminal", "last_update": "2025-10-27 08:50 PM", "status": "Error"}
-    ],
-    "Front Range": [
-        {"source": "Aurora Terminal", "last_update": "2025-10-29 07:20 AM", "status": "Up to Date"},
-        {"source": "Casper Terminal", "last_update": "2025-10-28 09:45 PM", "status": "Delayed"}
-    ],
-    "WX-Sinclair Supply": [
-        {"source": "Woods Cross Refinery", "last_update": "2025-10-29 06:35 AM", "status": "Up to Date"},
-        {"source": "Las Vegas Terminal", "last_update": "2025-10-28 10:50 PM", "status": "Delayed"},
-        {"source": "Spokane Terminal", "last_update": "2025-10-29 07:10 AM", "status": "Up to Date"}
-    ],
-    "Group Supply Report (Midcon)": [
-        {"source": "Kansas City-Argentine", "last_update": "2025-10-29 07:15 AM", "status": "Up to Date"},
-        {"source": "Magellan", "last_update": "2025-10-28 11:10 PM", "status": "Delayed"},
-        {"source": "Nustar (East)", "last_update": "2025-10-29 06:45 AM", "status": "Up to Date"}
-    ]
-}
-
-STATUS_COLORS = {"Up to Date": ACCENT_GREEN, "Delayed": WARNING_ORANGE, "Error": ERROR_RED}
+# NOTE: Data freshness is now sourced from APP_SOURCE_STATUS.

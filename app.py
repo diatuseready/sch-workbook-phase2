@@ -57,7 +57,8 @@ def main():
 
     # Display data freshness cards
     if active_region:
-        display_data_freshness_cards(active_region)
+        source_status = st.session_state.get("source_status", pd.DataFrame())
+        display_data_freshness_cards(active_region, source_status)
 
     # Create main tabs
     summary_tab, details_tab = st.tabs(["📊 Regional Summary", "🧾 Details"])

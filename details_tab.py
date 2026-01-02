@@ -409,7 +409,7 @@ def display_location_details(df_filtered: pd.DataFrame, active_region: str, fore
 
 
 def display_details_tab(df_filtered: pd.DataFrame, active_region: str, end_ts: pd.Timestamp):
-    if active_region == "Group Supply Report (Midcon)":
+    if active_region == "Midcon":
         display_midcon_details(df_filtered, active_region, forecast_end=end_ts)
     else:
         display_location_details(df_filtered, active_region, forecast_end=end_ts)

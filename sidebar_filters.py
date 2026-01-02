@@ -64,7 +64,7 @@ def create_sidebar_filters(regions, df_region):
     locations = sorted(df_region["Location"].dropna().unique().tolist()) if "Location" in df_region.columns and not df_region.empty else []
 
     # Change filter label based on region
-    if active_region == "Group Supply Report (Midcon)":
+    if active_region == "Midcon":
         filter_label = "🏭 System"
     else:
         filter_label = "📍 Location"

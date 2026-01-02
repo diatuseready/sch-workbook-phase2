@@ -7,8 +7,11 @@ from config import RAW_INVENTORY_TABLE
 
 DATA_SOURCE = "sqlite"  # "snowflake"
 SQLITE_DB_PATH = "inventory.db"
-SQLITE_TABLE = "DAILY_INVENTORY_FACT"
+# Local dev SQLite table name
+SQLITE_TABLE = "APP_INVENTORY"
+SQLITE_SOURCE_STATUS_TABLE = "APP_SOURCE_STATUS"
 SNOWFLAKE_WAREHOUSE = "HFS_ADHOC_WH"
+SNOWFLAKE_SOURCE_STATUS_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_SOURCE_STATUS"
 
 NUMERIC_COLUMN_MAP = {
     "Batch In (RECEIPTS_BBL)": "RECEIPTS_BBL",
@@ -67,7 +70,8 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["source"] = _col(raw_df, "source", "system").fillna("system")
     df["updated"] = pd.to_numeric(_col(raw_df, "updated", 0), errors="coerce").fillna(0).astype(int)
 
-    midcon_mask = df["Region"] == "Group Supply Report (Midcon)"
+    # Midcon rows often use SOURCE_SYSTEM/OPERATOR differently; if System is missing, fall back to Location.
+    midcon_mask = df["Region"] == "Midcon"
     needs_system = midcon_mask & df["System"].isna()
     df.loc[needs_system, "System"] = df.loc[needs_system, "Location"]
 
@@ -130,6 +134,107 @@ def load_inventory_data() -> pd.DataFrame:
     return _load_inventory_data_cached(DATA_SOURCE, SQLITE_DB_PATH, SQLITE_TABLE)
 
 
+def _normalize_source_status_df(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize source status records for UI display."""
+    df = raw_df.copy()
+
+    # Standardize column names to match CSV/table.
+    # (SQLite table uses these exact names; Snowflake equivalent should match.)
+    for c in ["RECEIVED_TIMESTAMP", "PROCESSED_AT"]:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+
+    # Prefer PROCESSED_AT when present, otherwise RECEIVED_TIMESTAMP
+    if "PROCESSED_AT" in df.columns and "RECEIVED_TIMESTAMP" in df.columns:
+        df["LAST_UPDATED_AT"] = df["PROCESSED_AT"].fillna(df["RECEIVED_TIMESTAMP"])
+    elif "PROCESSED_AT" in df.columns:
+        df["LAST_UPDATED_AT"] = df["PROCESSED_AT"]
+    elif "RECEIVED_TIMESTAMP" in df.columns:
+        df["LAST_UPDATED_AT"] = df["RECEIVED_TIMESTAMP"]
+    else:
+        df["LAST_UPDATED_AT"] = pd.NaT
+
+    # Human friendly name for cards
+    if "LOCATION" in df.columns:
+        df["DISPLAY_NAME"] = df["LOCATION"].fillna("")
+    else:
+        df["DISPLAY_NAME"] = ""
+
+    if "SOURCE_OPERATOR" in df.columns:
+        op = df["SOURCE_OPERATOR"].fillna("")
+    else:
+        op = ""
+    if "SOURCE_SYSTEM" in df.columns:
+        sys = df["SOURCE_SYSTEM"].fillna("")
+    else:
+        sys = ""
+    # Pick best available label
+    df["SOURCE_LABEL"] = op
+    if isinstance(sys, pd.Series):
+        df.loc[df["SOURCE_LABEL"].astype(str).str.strip().eq(""), "SOURCE_LABEL"] = sys
+
+    # Ensure REGION exists
+    if "REGION" not in df.columns:
+        df["REGION"] = "Unknown"
+    df["REGION"] = df["REGION"].fillna("Unknown")
+
+    # Standardize processing status
+    if "PROCESSING_STATUS" in df.columns:
+        df["PROCESSING_STATUS"] = df["PROCESSING_STATUS"].fillna("")
+    else:
+        df["PROCESSING_STATUS"] = ""
+
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_source_status_cached(source: str, sqlite_db_path: str) -> pd.DataFrame:
+    if source == "sqlite":
+        import sqlite3
+
+        conn = sqlite3.connect(sqlite_db_path)
+        raw_df = pd.read_sql_query(
+            f"SELECT * FROM {SQLITE_SOURCE_STATUS_TABLE}",
+            conn,
+        )
+        conn.close()
+        return _normalize_source_status_df(raw_df)
+
+    if source != "snowflake":
+        raise ValueError("DATA_SOURCE must be 'snowflake' or 'sqlite'")
+
+    session = get_snowflake_session()
+    session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+
+    query = f"""
+    SELECT
+        CLASS,
+        LOCATION,
+        REGION,
+        SOURCE_OPERATOR,
+        SOURCE_SYSTEM,
+        SOURCE_TYPE,
+        FILE_ID,
+        INTEGRATION_JOB_ID,
+        FILE_NAME,
+        SOURCE_PATH,
+        PROCESSING_STATUS,
+        ERROR_MESSAGE,
+        WARNING_COLUMNS,
+        RECORD_COUNT,
+        RECEIVED_TIMESTAMP,
+        PROCESSED_AT
+    FROM {SNOWFLAKE_SOURCE_STATUS_TABLE}
+    """
+
+    raw_df = session.sql(query).to_pandas()
+    return _normalize_source_status_df(raw_df)
+
+
+def load_source_status() -> pd.DataFrame:
+    return _load_source_status_cached(DATA_SOURCE, SQLITE_DB_PATH)
+
+
 def initialize_data():
     if "data_loaded" not in st.session_state:
         label = "Snowflake" if DATA_SOURCE == "snowflake" else "SQLite"
@@ -137,6 +242,13 @@ def initialize_data():
         with st.spinner(f"Loading inventory data from {label}..."):
             all_data = load_inventory_data()
             regions = sorted(all_data["Region"].dropna().unique().tolist())
+
+            # Load and cache source freshness/status
+            try:
+                st.session_state.source_status = load_source_status()
+            except Exception:
+                # Don't block the app if status table isn't available
+                st.session_state.source_status = pd.DataFrame()
 
             st.session_state.regions = regions
             st.session_state.data = {}

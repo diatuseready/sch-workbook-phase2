@@ -109,7 +109,7 @@ def display_regional_summary(df_filtered, active_region):
     sales_col = sales_cols[0] if sales_cols else None
 
     # Group by Location/System and Product
-    if active_region == "Group Supply Report (Midcon)":
+    if active_region == "Midcon":
         group_cols = ["System", "Product"]
     else:
         group_cols = ["Location", "Product"]
@@ -215,7 +215,7 @@ def display_regional_summary(df_filtered, active_region):
     ).replace([np.inf, -np.inf], np.nan)
 
     # Display formatting
-    if active_region == "Group Supply Report (Midcon)":
+    if active_region == "Midcon":
         display_df = summary_df.copy()
         display_df["Location"] = display_df["System"]
     else:
@@ -259,7 +259,7 @@ def display_forecast_table(df_filtered, active_region):
         return
 
     # Determine group columns based on region
-    if active_region == "Group Supply Report (Midcon)":
+    if active_region == "Midcon":
         group_cols = ["System", "Product"]
     else:
         group_cols = ["Location", "Product"]
