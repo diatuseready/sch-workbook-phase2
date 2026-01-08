@@ -40,6 +40,8 @@ def create_sidebar_filters(regions, df_region):
     today = date.today()
     scope_location = selected_locs[0] if len(selected_locs) == 1 else None
     start_off, end_off = get_default_date_window(region=active_region or "Unknown", location=scope_location)
+    
+    # st.sidebar.info(f"start_off and end_off {start_off} to {end_off}")
     default_start = today + timedelta(days=int(start_off))
     default_end = today + timedelta(days=int(end_off))
 
@@ -53,11 +55,28 @@ def create_sidebar_filters(regions, df_region):
         df_max_d = default_end
 
     min_value = min(df_min_d, default_start)
-    max_value = max(df_max_d, default_end)
+    max_value = max(df_max_d, default_end) 
+
+    # st.sidebar.info(f"min_value {min_value} max_value {max_value}")
+
+    #  FIX: Default to showing database date range if it exists
+    # If database has older dates than default range, start from database min
+    actual_start = df_min_d if df_min_d < default_start else default_start
+    actual_end = max_value  # Always extend to max available or forecast end
+    
+
+    
+    # date_range = st.sidebar.date_input(
+    #     "Date Range",
+    #     value=(default_start, default_end),
+    #     min_value=min_value,
+    #     max_value=max_value,
+    #     key=f"date_{active_region}_{scope_location or 'all'}"
+    # )
 
     date_range = st.sidebar.date_input(
         "Date Range",
-        value=(default_start, default_end),
+        value=(actual_start, actual_end),
         min_value=min_value,
         max_value=max_value,
         key=f"date_{active_region}_{scope_location or 'all'}"
