@@ -374,8 +374,21 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         if c in cfg or c == "Notes":
             continue
         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format="%.2f")
- 
+            # cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format="%.2f")
+            # Use TextColumn for formatted display with commas
+            cfg[c] = st.column_config.TextColumn(c, disabled=(c in locked))
+
+    # for c in cols:
+    #     if c in cfg or c == "Notes":
+    #         continue
+    #     if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+    #         # Use NumberColumn with comma formatting for numeric columns
+    #         cfg[c] = st.column_config.NumberColumn(
+    #             c, 
+    #             disabled=(c in locked), 
+    #             format="%.2f"  # Use "%.0f" for no decimals or customize as needed
+    #         )
+
     for c in locked:
         if c in {"Date", id_col, "source", "Product"}:
             continue
@@ -816,9 +829,14 @@ def display_midcon_details(df_filtered: pd.DataFrame, active_region: str, foreca
  
     if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
         st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="System")
- 
-    styled = _style_source_cells(st.session_state[df_key], locked_cols)
- 
+
+    from utils import _format_forecast_display
+    # Format display values (add commas, hide forecast columns)
+    formatted_df = _format_forecast_display(st.session_state[df_key])
+    styled = _style_source_cells(formatted_df , locked_cols)
+    
+    # styled = _style_source_cells(st.session_state[df_key] , locked_cols)
+
     edited = st.data_editor(
         styled,
         use_container_width=True,
@@ -905,9 +923,13 @@ def display_location_details(df_filtered: pd.DataFrame, active_region: str, fore
  
                 if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
                     st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="Location")
- 
-                styled = _style_source_cells(st.session_state[df_key], locked_cols)
- 
+
+                from utils import _format_forecast_display
+                # styled = _style_source_cells(st.session_state[df_key], locked_cols)
+                # Format display values (add commas, hide forecast columns)
+                formatted_df = _format_forecast_display(st.session_state[df_key])
+                styled = _style_source_cells(formatted_df, locked_cols)
+
                 edited = st.data_editor(
                     styled,
                     num_rows="dynamic",
