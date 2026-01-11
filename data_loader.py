@@ -727,3 +727,53 @@ def load_region_location_pairs() -> pd.DataFrame:
           AND LOCATION_CODE IS NOT NULL
     """
     return session.sql(query).to_pandas()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_products_for_admin_scope(*, region: str, location: str | None) -> list[str]:
+    """Small helper for admin UI: distinct products for Region (+ optional Location)."""
+
+    region_norm = _normalize_region_label(region) if region else None
+
+    if DATA_SOURCE == "sqlite":
+        import sqlite3
+
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        try:
+            where = ["REGION_CODE IS NOT NULL", "PRODUCT_DESCRIPTION IS NOT NULL"]
+            params: list[object] = []
+            if region_norm:
+                where.append("REGION_CODE = ?")
+                params.append(region_norm)
+            if location is not None and str(location).strip() != "":
+                where.append("LOCATION_CODE = ?")
+                params.append(str(location))
+
+            sql = f"""
+                SELECT DISTINCT PRODUCT_DESCRIPTION AS Product
+                FROM {SQLITE_TABLE}
+                WHERE {' AND '.join(where)}
+                ORDER BY Product
+            """
+            df = pd.read_sql_query(sql, conn, params=params)
+        finally:
+            conn.close()
+        return sorted(df["Product"].dropna().astype(str).unique().tolist()) if not df.empty else []
+
+    # Snowflake
+    session = get_snowflake_session()
+    session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+    region_escaped = str(region_norm).replace("'", "''") if region_norm else ""
+    region_filter = "" if not region_norm else f" AND REGION_CODE = '{region_escaped}'"
+    loc_escaped = str(location).replace("'", "''") if location not in (None, "") else ""
+    loc_filter = "" if location in (None, "") else f" AND LOCATION_CODE = '{loc_escaped}'"
+    query = f"""
+        SELECT DISTINCT PRODUCT_DESCRIPTION AS Product
+        FROM {RAW_INVENTORY_TABLE}
+        WHERE PRODUCT_DESCRIPTION IS NOT NULL {region_filter} {loc_filter}
+        ORDER BY Product
+    """
+    df = session.sql(query).to_pandas()
+    # Snowflake column case may be upper.
+    col = "PRODUCT" if "PRODUCT" in df.columns else "Product"
+    return sorted(df[col].dropna().astype(str).unique().tolist()) if not df.empty and col in df.columns else []

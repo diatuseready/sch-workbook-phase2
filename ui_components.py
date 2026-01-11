@@ -149,21 +149,66 @@ def _format_ts(ts) -> str:
         return str(ts)
 
 
-def display_data_freshness_cards(active_region: str, source_status: "pd.DataFrame"):
-    """Display data freshness cards for the active region using APP_SOURCE_STATUS."""
+def display_data_freshness_cards(
+    *,
+    active_region: str | None,
+    selected_loc: str | None,
+    loc_col: str,
+    source_status: "pd.DataFrame",
+):
+    """Display data freshness cards for the selected location/system.
+
+    Previously, this section filtered only by Region, which could show cards for
+    many locations at once. The desired UX is to show freshness cards for the
+    currently selected Location/System.
+    """
     st.subheader("📈 Data Freshness")
 
     if source_status is None or source_status.empty:
         st.info("No source status data available.")
         return
 
-    # Filter to selected region (matches inventory Region values)
+    # Require a location/system selection (Submit enforces this for inventory,
+    # but Data Freshness should also behave sensibly before Submit).
+    if selected_loc in (None, ""):
+        st.info("Select a Location/System to view data freshness.")
+        return
+
     df = source_status.copy()
-    if "REGION" in df.columns:
+
+    # Optional: keep region context (helps avoid cross-region collisions when
+    # locations share codes). We still show *only* the selected location.
+    if active_region and "REGION" in df.columns:
         df = df[df["REGION"].fillna("Unknown") == active_region]
 
+    selected_loc_s = str(selected_loc)
+
+    # Filter to the selected Location/System.
+    if str(loc_col) == "Location":
+        if "LOCATION" in df.columns:
+            df = df[df["LOCATION"].astype(str) == selected_loc_s]
+    else:
+        # "System" selection (Midcon): normalize similarly to inventory logic.
+        # System = COALESCE(NULLIF(SOURCE_OPERATOR,''), NULLIF(SOURCE_SYSTEM,''), LOCATION)
+        op = df["SOURCE_OPERATOR"] if "SOURCE_OPERATOR" in df.columns else ""
+        sys = df["SOURCE_SYSTEM"] if "SOURCE_SYSTEM" in df.columns else ""
+        loc = df["LOCATION"] if "LOCATION" in df.columns else ""
+
+        system_series = op
+        if isinstance(system_series, pd.Series):
+            system_series = system_series.fillna("")
+
+        if "SOURCE_SYSTEM" in df.columns:
+            sys_s = sys.fillna("") if isinstance(sys, pd.Series) else ""
+            system_series = system_series.where(system_series.astype(str).str.strip().ne(""), sys_s)
+        if "LOCATION" in df.columns:
+            loc_s = loc.fillna("") if isinstance(loc, pd.Series) else ""
+            system_series = system_series.where(system_series.astype(str).str.strip().ne(""), loc_s)
+
+        df = df[system_series.astype(str) == selected_loc_s]
+
     if df.empty:
-        st.info(f"No source status rows found for region: '{active_region}'")
+        st.info(f"No source status rows found for {loc_col}: '{selected_loc_s}'")
         return
 
     # Pick most recent row per CLASS (reduces duplicates)

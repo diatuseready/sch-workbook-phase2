@@ -568,17 +568,26 @@ def build_details_view(df: pd.DataFrame, id_col: str):
     return df, cols
 
 
-def _threshold_values(*, region: str, location: str | None) -> tuple[float | None, float | None]:
-    ovr = get_threshold_overrides(region=region, location=location)
+def _threshold_values(
+    *,
+    region: str,
+    location: str | None,
+    product: str | None = None,
+) -> tuple[float | None, float | None, str | None]:
+    ovr = get_threshold_overrides(region=region, location=location, product=product)
     bottom = ovr.get("BOTTOM")
     safefill = ovr.get("SAFEFILL")
+    note = ovr.get("NOTE")
     b = float(bottom) if bottom is not None and not pd.isna(bottom) else None
     s = float(safefill) if safefill is not None and not pd.isna(safefill) else None
-    return b, s
+    n = None
+    if note is not None and not (isinstance(note, float) and pd.isna(note)):
+        n = str(note).strip() or None
+    return b, s, n
 
 
-def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float | None):
-    c0, c1, c2 = st.columns([5, 2, 2])
+def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float | None, note: str | None = None):
+    c0, c1, c2, c3 = st.columns([5, 2, 2, 3])
 
     with c0:
         st.markdown(f"### 📍 {region_label}")
@@ -602,6 +611,18 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
             <div class="mini-card">
               <p class="label">Bottom</p>
               <p class="value">{v}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with c3:
+        v = "—" if note in (None, "") else str(note)
+        st.markdown(
+            f"""
+            <div class="mini-card">
+              <p class="label">Note</p>
+              <p class="value" style="font-size:0.95rem; font-weight:700;">{v}</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -665,8 +686,14 @@ def display_midcon_details(
         if len(systems) == 1:
             scope_sys = systems[0]
 
-    bottom, safefill = _threshold_values(region=active_region, location=str(scope_sys) if scope_sys is not None else None)
-    _show_thresholds(region_label=active_region, bottom=bottom, safefill=safefill)
+    # In Midcon view there isn't a single Product in scope (grid spans products),
+    # so we show location-level thresholds.
+    bottom, safefill, note = _threshold_values(
+        region=active_region,
+        location=str(scope_sys) if scope_sys is not None else None,
+        product=None,
+    )
+    _show_thresholds(region_label=active_region, bottom=bottom, safefill=safefill, note=note)
 
     visible = get_visible_columns(region=active_region, location=str(scope_sys) if scope_sys is not None else None)
     must_have = ["Date", "System", "Product", "Opening Inv", "Close Inv"]
@@ -768,8 +795,14 @@ def display_location_details(
             df_all = _extend_with_30d_forecast(df_prod, id_col="Location", forecast_end=end_ts)
             df_display, cols = build_details_view(df_all, id_col="Location")
 
-            bottom, safefill = _threshold_values(region=active_region, location=str(selected_loc))
-            _show_thresholds(region_label=str(selected_loc), bottom=bottom, safefill=safefill)
+            # For non-Midcon details, each tab is a single Product, so we can apply
+            # product-scoped thresholds.
+            bottom, safefill, note = _threshold_values(
+                region=active_region,
+                location=str(selected_loc),
+                product=str(prod_name),
+            )
+            _show_thresholds(region_label=str(selected_loc), bottom=bottom, safefill=safefill, note=note)
 
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
             must_have = ["Date", "Location", "Product", "Opening Inv", "Close Inv"]

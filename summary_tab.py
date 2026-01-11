@@ -49,13 +49,17 @@ def _is_midcon(active_region: str) -> bool:
 def calculate_required_max(row, group_cols, df_filtered):
     region = str(row.get(COL_REGION) or "Unknown")
     loc_or_sys = row.get(group_cols[0])
-    overrides = get_threshold_overrides(region=_normalize_region(region), location=str(loc_or_sys) if pd.notna(loc_or_sys) else None)
+    prod = str(row.get(COL_PRODUCT) or "")
+    overrides = get_threshold_overrides(
+        region=_normalize_region(region),
+        location=str(loc_or_sys) if pd.notna(loc_or_sys) else None,
+        product=prod or None,
+    )
 
     safefill = overrides.get("SAFEFILL")
     if safefill is not None and not pd.isna(safefill):
         return float(safefill)
 
-    prod = str(row.get(COL_PRODUCT) or "")
     key = f"{loc_or_sys}|{prod}"
     if key in REQUIRED_MAX_DEFAULTS:
         return float(REQUIRED_MAX_DEFAULTS[key])
@@ -97,13 +101,17 @@ def calculate_intransit(row, group_cols, df_filtered):
 def calculate_required_min(row, group_cols, df_filtered):
     region = str(row.get(COL_REGION) or "Unknown")
     loc_or_sys = row.get(group_cols[0])
-    overrides = get_threshold_overrides(region=_normalize_region(region), location=str(loc_or_sys) if pd.notna(loc_or_sys) else None)
+    prod = str(row.get(COL_PRODUCT) or "")
+    overrides = get_threshold_overrides(
+        region=_normalize_region(region),
+        location=str(loc_or_sys) if pd.notna(loc_or_sys) else None,
+        product=prod or None,
+    )
 
     bottom = overrides.get("BOTTOM")
     if bottom is not None and not pd.isna(bottom):
         return float(bottom)
 
-    prod = str(row.get(COL_PRODUCT) or "")
     key = f"{loc_or_sys}|{prod}"
     if key in REQUIRED_MIN_DEFAULTS:
         return float(REQUIRED_MIN_DEFAULTS[key])

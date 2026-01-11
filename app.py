@@ -100,10 +100,14 @@ def main():
     df_filtered = st.session_state.get("df_filtered", pd.DataFrame())
     active_filters = st.session_state.get("active_filters", filters)
 
-    # Display data freshness cards
-    if active_region:
-        source_status = st.session_state.get("source_status", pd.DataFrame())
-        display_data_freshness_cards(active_region, source_status)
+    # Display data freshness cards (scoped to selected Location/System)
+    source_status = st.session_state.get("source_status", pd.DataFrame())
+    display_data_freshness_cards(
+        active_region=active_region,
+        selected_loc=active_filters.get("selected_loc"),
+        loc_col=str(active_filters.get("loc_col") or "Location"),
+        source_status=source_status,
+    )
 
     # Create main tabs
     summary_tab, details_tab = st.tabs(["📊 Regional Summary", "🧾 Details"])
