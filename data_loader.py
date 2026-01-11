@@ -533,10 +533,31 @@ def load_regions() -> list[str]:
     # Snowflake
     session = get_snowflake_session()
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+    # NOTE: Snowflake uppercases unquoted identifiers/aliases, so `AS Region` often
+    # comes back as a column named `REGION`. We both (a) quote the alias to
+    # preserve case and (b) read the result case-insensitively for robustness.
     df = session.sql(
-        f"SELECT DISTINCT REGION_CODE AS Region FROM {RAW_INVENTORY_TABLE} WHERE REGION_CODE IS NOT NULL ORDER BY REGION_CODE"
+        f'SELECT DISTINCT REGION_CODE AS "Region" FROM {RAW_INVENTORY_TABLE} '
+        f"WHERE REGION_CODE IS NOT NULL ORDER BY REGION_CODE"
     ).to_pandas()
-    return sorted(df["Region"].dropna().astype(str).unique().tolist())
+
+    region_col = None
+    if "Region" in df.columns:
+        region_col = "Region"
+    elif "REGION" in df.columns:
+        region_col = "REGION"
+    else:
+        # Last resort: case-insensitive match (handles connector-specific quirks)
+        for c in df.columns:
+            if str(c).strip('"').upper() == "REGION":
+                region_col = c
+                break
+
+    if region_col is None:
+        # Avoid crashing the app during initialization; return empty list.
+        return []
+
+    return sorted(df[region_col].dropna().astype(str).unique().tolist())
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -930,13 +951,21 @@ def load_region_location_pairs() -> pd.DataFrame:
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
     query = f"""
         SELECT DISTINCT
-            REGION_CODE AS Region,
-            LOCATION_CODE AS Location
+            REGION_CODE AS "Region",
+            LOCATION_CODE AS "Location"
         FROM {RAW_INVENTORY_TABLE}
         WHERE REGION_CODE IS NOT NULL
           AND LOCATION_CODE IS NOT NULL
     """
-    return session.sql(query).to_pandas()
+    df = session.sql(query).to_pandas()
+
+    # Same Snowflake alias-casing issue: be defensive and normalize columns.
+    if "Region" not in df.columns and "REGION" in df.columns:
+        df = df.rename(columns={"REGION": "Region"})
+    if "Location" not in df.columns and "LOCATION" in df.columns:
+        df = df.rename(columns={"LOCATION": "Location"})
+
+    return df
 
 
 @st.cache_data(ttl=300, show_spinner=False)
