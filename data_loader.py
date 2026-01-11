@@ -14,6 +14,8 @@ import pandas as pd
 import streamlit as st
 
 from datetime import date, timedelta
+from datetime import datetime
+from uuid import uuid4
 
 from config import (
     DATA_SOURCE,
@@ -90,11 +92,23 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["SOURCE_FILE_ID"] = _col(raw_df, "SOURCE_FILE_ID")
     df["CREATED_AT"] = pd.to_datetime(_col(raw_df, "CREATED_AT"), errors="coerce")
 
-    df["Notes"] = ""
+    # Notes: best-effort mapping for manual override reason.
+    # (SQLite schema includes MANUAL_OVERRIDE_REASON; Snowflake may as well.)
+    df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
 
-    # Row lineage tracking (for SQLite we persist these columns; for Snowflake they may not exist)
-    df["source"] = _col(raw_df, "source", "system").fillna("system")
-    df["updated"] = pd.to_numeric(_col(raw_df, "updated", 0), errors="coerce").fillna(0).astype(int)
+    # Row lineage tracking:
+    # - If explicit columns exist (e.g. in Snowflake), use them.
+    # - Otherwise infer from DATA_SOURCE (we set DATA_SOURCE='manual' for manual inserts).
+    if "source" in raw_df.columns:
+        df["source"] = _col(raw_df, "source", "system").fillna("system")
+    else:
+        ds = _col(raw_df, "DATA_SOURCE", "").fillna("").astype(str).str.strip().str.lower()
+        df["source"] = ds.map(lambda v: "manual" if v == "manual" else "system")
+
+    if "updated" in raw_df.columns:
+        df["updated"] = pd.to_numeric(_col(raw_df, "updated", 0), errors="coerce").fillna(0).astype(int)
+    else:
+        df["updated"] = (df["source"].astype(str).str.strip().str.lower().eq("manual")).astype(int)
 
     # Midcon rows often use SOURCE_SYSTEM/OPERATOR differently; if System is missing, fall back to Location.
     midcon_mask = df["Region"] == "Midcon"
@@ -102,6 +116,220 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df.loc[needs_system, "System"] = df.loc[needs_system, "Location"]
 
     return df
+
+
+def insert_manual_product_today(
+    *,
+    region: str,
+    location: str,
+    product: str,
+    opening_inventory_bbl: float,
+    closing_inventory_bbl: float,
+    note: str,
+) -> None:
+    """Insert a new *manual* inventory row for today's date.
+
+    - For SQLite we insert into :data:`SQLITE_TABLE`.
+    - For Snowflake we insert into :data:`RAW_INVENTORY_TABLE`.
+    - All flow columns (batch/rack/pipeline/etc) are set to 0.
+    """
+
+    region_s = str(region).strip() or "Unknown"
+    location_s = str(location).strip()
+    product_s = str(product).strip()
+    if not location_s:
+        raise ValueError("Location is required")
+    if not product_s:
+        raise ValueError("Product name is required")
+
+    today = date.today().strftime("%Y-%m-%d")
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    inv_key = str(uuid4())
+    prod_code = product_s.upper().replace(" ", "_")[:50]
+
+    if DATA_SOURCE == "sqlite":
+        import sqlite3
+
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        try:
+            # Guard against duplicates for today + location + product.
+            exists = conn.execute(
+                f"""
+                SELECT 1
+                FROM {SQLITE_TABLE}
+                WHERE DATA_DATE = ? AND REGION_CODE = ? AND LOCATION_CODE = ? AND PRODUCT_DESCRIPTION = ?
+                LIMIT 1
+                """,
+                (today, region_s, location_s, product_s),
+            ).fetchone()
+            if exists:
+                raise ValueError("A row for this Region/Location/Product already exists for today")
+
+            conn.execute(
+                f"""
+                INSERT INTO {SQLITE_TABLE} (
+                    INVENTORY_KEY,
+                    DATA_DATE,
+                    REGION_CODE,
+                    LOCATION_CODE,
+                    PRODUCT_CODE,
+                    PRODUCT_DESCRIPTION,
+                    DATA_SOURCE,
+                    OPENING_INVENTORY_BBL,
+                    CLOSING_INVENTORY_BBL,
+                    BATCH,
+                    RECEIPTS_BBL,
+                    DELIVERIES_BBL,
+                    PRODUCTION_BBL,
+                    RACK_LIFTINGS_BBL,
+                    PIPELINE_IN_BBL,
+                    PIPELINE_OUT_BBL,
+                    ADJUSTMENTS_BBL,
+                    GAIN_LOSS_BBL,
+                    TRANSFERS_BBL,
+                    REBRANDS_BBL,
+                    TANK_CAPACITY_BBL,
+                    SAFE_FILL_LIMIT_BBL,
+                    BOTTOM_HEEL_BBL,
+                    AVAILABLE_SPACE_BBL,
+                    LIFTABLE_VOLUME_BBL,
+                    DATA_QUALITY_SCORE,
+                    VALIDATION_STATUS,
+                    MANUAL_OVERRIDE_FLAG,
+                    MANUAL_OVERRIDE_USER,
+                    MANUAL_OVERRIDE_REASON,
+                    CREATED_AT,
+                    UPDATED_AT
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?
+                )
+                """,
+                (
+                    inv_key,
+                    today,
+                    region_s,
+                    location_s,
+                    prod_code,
+                    product_s,
+                    "manual",
+                    float(opening_inventory_bbl or 0.0),
+                    float(closing_inventory_bbl or 0.0),
+                    0.0,  # BATCH
+                    0.0,  # RECEIPTS
+                    0.0,  # DELIVERIES
+                    0.0,  # PRODUCTION
+                    0.0,  # RACK
+                    0.0,  # PIPELINE_IN
+                    0.0,  # PIPELINE_OUT
+                    0.0,  # ADJUSTMENTS
+                    0.0,  # GAIN_LOSS
+                    0.0,  # TRANSFERS
+                    0.0,  # REBRANDS
+                    0.0,  # TANK_CAPACITY
+                    0.0,  # SAFE_FILL
+                    0.0,  # BOTTOM_HEEL
+                    0.0,  # AVAILABLE_SPACE
+                    0.0,  # LIFTABLE_VOLUME
+                    0.0,  # DATA_QUALITY_SCORE
+                    0.0,  # VALIDATION_STATUS
+                    1.0,  # MANUAL_OVERRIDE_FLAG
+                    "super_admin",
+                    str(note),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    else:
+        session = get_snowflake_session()
+        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+
+        def _sql_str(v) -> str:
+            return "NULL" if v is None else "'" + str(v).replace("'", "''") + "'"
+
+        def _sql_num(v) -> str:
+            if v is None:
+                return "0"
+            return str(float(v))
+
+        # Duplicate check
+        dup_q = (
+            f"SELECT 1 FROM {RAW_INVENTORY_TABLE} "
+            f"WHERE DATA_DATE = '{today}' "
+            f"AND REGION_CODE = {_sql_str(region_s)} "
+            f"AND LOCATION_CODE = {_sql_str(location_s)} "
+            f"AND PRODUCT_DESCRIPTION = {_sql_str(product_s)} "
+            f"LIMIT 1"
+        )
+        if session.sql(dup_q).collect():
+            raise ValueError("A row for this Region/Location/Product already exists for today")
+
+        insert_sql = f"""
+            INSERT INTO {RAW_INVENTORY_TABLE} (
+                INVENTORY_KEY,
+                DATA_DATE,
+                REGION_CODE,
+                LOCATION_CODE,
+                PRODUCT_CODE,
+                PRODUCT_DESCRIPTION,
+                DATA_SOURCE,
+                OPENING_INVENTORY_BBL,
+                CLOSING_INVENTORY_BBL,
+                BATCH,
+                RECEIPTS_BBL,
+                DELIVERIES_BBL,
+                PRODUCTION_BBL,
+                RACK_LIFTINGS_BBL,
+                PIPELINE_IN_BBL,
+                PIPELINE_OUT_BBL,
+                ADJUSTMENTS_BBL,
+                GAIN_LOSS_BBL,
+                TRANSFERS_BBL,
+                REBRANDS_BBL,
+                TANK_CAPACITY_BBL,
+                SAFE_FILL_LIMIT_BBL,
+                BOTTOM_HEEL_BBL,
+                AVAILABLE_SPACE_BBL,
+                MANUAL_OVERRIDE_FLAG,
+                MANUAL_OVERRIDE_USER,
+                MANUAL_OVERRIDE_REASON,
+                CREATED_AT,
+                UPDATED_AT
+            ) VALUES (
+                {_sql_str(inv_key)},
+                {_sql_str(today)},
+                {_sql_str(region_s)},
+                {_sql_str(location_s)},
+                {_sql_str(prod_code)},
+                {_sql_str(product_s)},
+                {_sql_str('manual')},
+                {_sql_num(opening_inventory_bbl)},
+                {_sql_num(closing_inventory_bbl)},
+                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                1,
+                {_sql_str('super_admin')},
+                {_sql_str(note)},
+                CURRENT_TIMESTAMP(),
+                CURRENT_TIMESTAMP()
+            )
+        """
+        session.sql(insert_sql).collect()
+
+    # Invalidate relevant caches so the new row becomes visible immediately.
+    _load_inventory_data_cached.clear()
+    _load_inventory_data_filtered_cached.clear()
+    load_region_filter_metadata.clear()
+    load_products_for_admin_scope.clear()
+    load_region_location_pairs.clear()
+    load_regions.clear()
 
 
 @st.cache_data(ttl=300, show_spinner=False)

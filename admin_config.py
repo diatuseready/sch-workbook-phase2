@@ -436,6 +436,68 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
 
     st.subheader("🛠️ Super Admin Configuration")
 
+    # ------------------------------------------------------------------
+    # Manual product addition (writes to RAW_INVENTORY_TABLE / APP_INVENTORY)
+    # ------------------------------------------------------------------
+
+    @st.dialog("Add New Product")
+    def _add_new_product_dialog(*, default_region: str, region_options: list[str]):
+        from datetime import date
+
+        from data_loader import insert_manual_product_today, load_region_location_pairs
+
+        st.caption(f"Creates a new row for today ({date.today().strftime('%Y-%m-%d')}) with all flows set to 0.")
+
+        region_in = st.selectbox(
+            "Region",
+            options=region_options or ["Unknown"],
+            index=(region_options.index(default_region) if default_region in (region_options or []) else 0),
+        )
+
+        # Location dropdown (depends on region)
+        locs: list[str] = []
+        try:
+            pairs = load_region_location_pairs()
+            if pairs is not None and not pairs.empty and "Region" in pairs.columns and "Location" in pairs.columns:
+                locs = sorted(pairs[pairs["Region"] == region_in]["Location"].dropna().astype(str).unique().tolist())
+        except Exception:
+            locs = []
+
+        location_in = st.selectbox("Location", options=(locs or ["(No locations found)"]))
+
+        product_in = st.text_input("Product name")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            opening_in = st.number_input("Opening Inventory (today)", value=0.0, step=1.0, format="%.2f")
+        with c2:
+            closing_in = st.number_input("Closing Inventory (today)", value=0.0, step=1.0, format="%.2f")
+
+        note = "This Product was added manually today"
+        st.text_input("Note", value=note, disabled=True)
+
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("💾 Save", type="primary"):
+                try:
+                    if not locs:
+                        raise ValueError("No locations available for selected region")
+                    insert_manual_product_today(
+                        region=region_in,
+                        location=location_in,
+                        product=product_in,
+                        opening_inventory_bbl=float(opening_in),
+                        closing_inventory_bbl=float(closing_in),
+                        note=note,
+                    )
+                    st.success("Added")
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+        with b2:
+            if st.button("Cancel"):
+                st.rerun()
+
     region = st.selectbox(
         "Region",
         options=regions or ["Unknown"],
@@ -527,7 +589,15 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 step=1,
             )
 
-    if st.button("💾 Save configuration"):
+    # Action buttons: Add New Product (left) + Save configuration (right)
+    a1, a2 = st.columns([1, 1])
+    with a1:
+        save_clicked = st.button("💾 Save Configuration")
+    with a2:
+        if st.button("Add New Product"):
+            _add_new_product_dialog(default_region=region, region_options=regions)
+
+    if save_clicked:
         updates = {
             # Only persist these fields at Region/Location scope.
             "VISIBLE_COLUMNS_JSON": (
