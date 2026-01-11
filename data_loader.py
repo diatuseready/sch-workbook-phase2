@@ -451,8 +451,6 @@ def create_sidebar_filters(regions: list[str], df_region: pd.DataFrame) -> dict:
         df_min = meta.get("min_date", pd.NaT)
         df_max = meta.get("max_date", pd.NaT)
 
-    # If user previously selected a location that isn't in this region anymore,
-    # reset it so Streamlit doesn't get stuck with an invalid widget state.
     prev_loc = st.session_state.get("selected_loc")
     if prev_loc is not None and prev_loc not in locations:
         st.session_state.selected_loc = None
@@ -461,19 +459,10 @@ def create_sidebar_filters(regions: list[str], df_region: pd.DataFrame) -> dict:
         st.warning("No locations available")
         selected_loc = None
     else:
-        # Streamlit selectbox requires an integer index.
-        # If we already have a valid selection, point the widget at it.
+
         current = st.session_state.get("selected_loc")
         index = locations.index(current) if current in locations else 0
         selected_loc = st.selectbox(filter_label, options=locations, index=index, key="selected_loc")
-
-    # Date range selector
-    # NOTE ON CIRCULAR IMPORTS:
-    # We import `get_default_date_window` *inside* this function to avoid a
-    # module-level circular import:
-    #   admin_config -> imports data_loader
-    #   data_loader  -> importing admin_config at import-time would recurse
-    # This is not an infinite loop at runtime; it's simply a safe import pattern.
     today = date.today()
     scope_location = None if selected_loc is None else str(selected_loc)
     from admin_config import get_default_date_window
@@ -584,10 +573,6 @@ def _load_inventory_data_filtered_cached(
             where.append("REGION_CODE = ?")
             params.append(region_norm)
 
-        # We filter by LOCATION_CODE in SQL for both Location and System.
-        # For Midcon/System, System is normalized from SOURCE_OPERATOR/SOURCE_SYSTEM,
-        # which isn't reliably filterable in SQLite without complex logic.
-        # If the user selects a System, we apply it after normalization.
         if selected_loc and loc_col == "Location":
             where.append("LOCATION_CODE = ?")
             params.append(str(selected_loc))
@@ -684,9 +669,6 @@ def load_filtered_inventory_data(filters: dict) -> pd.DataFrame:
 
 def require_selected_location(filters: dict) -> None:
     """Enforce that a location/system must be selected before loading data."""
-    # NOTE:
-    # `st.stop()` does not cause recursion; it just halts the current Streamlit
-    # script run. Streamlit will re-run normally on the next user interaction.
     if filters.get("selected_loc") in (None, ""):
         st.warning("Please select a Location/System before submitting filters.")
         st.stop()

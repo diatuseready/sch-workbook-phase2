@@ -23,15 +23,6 @@ from admin_config import display_super_admin_panel
 
 def main():
     """Main application function."""
-
-    # NOTE ON "LOOPS" / RECURSION:
-    # Streamlit re-executes this script top-to-bottom on every widget interaction.
-    # That can look like a loop, but it's the normal Streamlit execution model.
-    # We avoid any infinite rerun loop by:
-    #   - only calling `st.rerun()` in explicit button callbacks (see Admin button)
-    #   - gating expensive loads behind a submit button and a session_state flag
-
-    # Page setup
     setup_page()
     apply_custom_css()
     display_header()
@@ -42,15 +33,12 @@ def main():
     if "admin_view" not in st.session_state:
         st.session_state.admin_view = False
 
-    # Ensure we have regions loaded
     if "regions" not in st.session_state:
         st.warning("Loading data...")
         st.stop()
 
     regions = st.session_state.regions
 
-    # We no longer preload per-region dataframes. We only keep a filtered
-    # dataframe after the user hits Submit.
     active_region = st.session_state.get("active_region", regions[0] if regions else None)
     df_region = pd.DataFrame()
 
@@ -63,10 +51,6 @@ def main():
         )
         return
 
-    # Sidebar filters with explicit Submit.
-    # NOTE: Region is intentionally outside the form so that changing Region
-    # immediately updates dependent widgets (Location/System) without requiring
-    # a Submit.
     st.sidebar.header("🔍 Filters")
     active_region = st.sidebar.selectbox("Select Region", regions, key="active_region") if regions else None
 
@@ -79,8 +63,6 @@ def main():
     # Load data ONLY when submitted, or on first load if we don't have data yet.
     if submitted or ("df_filtered" not in st.session_state and active_region is not None):
         with st.spinner("Fetching filtered inventory data..."):
-            # This `st.stop()` is not a recursion trigger; it simply aborts the
-            # current run if user hasn't selected a location yet.
             require_selected_location(filters)
             df_loaded = load_filtered_inventory_data(filters)
             # Safety-net in-memory filtering (should typically be no-op)
@@ -93,8 +75,6 @@ def main():
     st.sidebar.markdown("---")
     if st.sidebar.button("🛠️ Super Admin Config", key="admin_open"):
         st.session_state.admin_view = True
-        # Safe: this rerun happens only after user clicks the button.
-        # There is no automatic re-trigger so it won't loop.
         st.rerun()
 
     df_filtered = st.session_state.get("df_filtered", pd.DataFrame())

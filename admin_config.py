@@ -81,11 +81,6 @@ def ensure_admin_config_table_sqlite():
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cur = conn.cursor()
 
-    # NOTE: Prior versions keyed the table by (REGION, LOCATION). We now key by
-    # (REGION, LOCATION, PRODUCT) to allow product-scoped rules.
-    # SQLite can't ALTER PRIMARY KEY in-place, so we do a small migration when
-    # we detect the old schema.
-
     cur.execute(f"PRAGMA table_info({SQLITE_ADMIN_CONFIG_TABLE})")
     existing_info = cur.fetchall()
     existing_cols = {r[1] for r in existing_info}
@@ -121,8 +116,6 @@ def ensure_admin_config_table_sqlite():
             """
         )
 
-        # Copy rows forward, defaulting PRODUCT to wildcard.
-        # Older tables may not have UPDATED_AT.
         cur.execute(f"PRAGMA table_info({old})")
         old_cols = {r[1] for r in cur.fetchall()}
         has_updated = "UPDATED_AT" in old_cols

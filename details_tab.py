@@ -322,17 +322,6 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
             # Use TextColumn for formatted display with commas
             cfg[c] = st.column_config.TextColumn(c, disabled=(c in locked))
 
-    # for c in cols:
-    #     if c in cfg or c == "Notes":
-    #         continue
-    #     if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-    #         # Use NumberColumn with comma formatting for numeric columns
-    #         cfg[c] = st.column_config.NumberColumn(
-    #             c,
-    #             disabled=(c in locked),
-    #             format="%.2f"  # Use "%.0f" for no decimals or customize as needed
-    #         )
-
     for c in locked:
         if c in {"Date", id_col, "source", "Product"}:
             continue
@@ -431,15 +420,6 @@ def estimate_forecast_flows(
     means = _weekday_weighted_means(group, flow_cols=flow_cols)
     wd = int(d.weekday())
     return {c: float(means.get((wd, c), 0.0)) for c in flow_cols}
-
-
-# def _roll_inventory(prev_close: float, flows: dict[str, float], flow_cols: list[str]) -> tuple[float, float]:
-#     opening = float(prev_close)
-#     inflow = sum(float(flows.get(c, 0.0) or 0.0) for c in INFLOW_COLS if c in flow_cols)
-#     outflow = sum(float(flows.get(c, 0.0) or 0.0) for c in OUTFLOW_COLS if c in flow_cols)
-#     net = sum(float(flows.get(c, 0.0) or 0.0) for c in NET_COLS if c in flow_cols)
-#     closing = opening + inflow - outflow + net
-#     return opening, closing
 
 
 def _roll_inventory(prev_close: float, flows: dict[str, float], flow_cols: list[str], system: str = None, product: str = None) -> tuple[float, float]:
@@ -662,20 +642,6 @@ def display_midcon_details(
         st.info("No data available for the selected filters.")
         return
 
-    # # DEBUG: Show what we're getting
-    # st.info(f"Input rows: {len(df_filtered)}, Date range: {df_filtered['Date'].min()} to {df_filtered['Date'].max()}")
-    # st.info(f"Forecast end date: {forecast_end}")
-    # st.info(f"Unique sources: {df_filtered['source'].unique() if 'source' in df_filtered.columns else 'No source column'}")
-
-    # df_all = _extend_with_30d_forecast(df_filtered, id_col="System", forecast_end=forecast_end)
-
-    # # DEBUG: Show what forecast generated
-    # st.info(f"After forecast rows: {len(df_all)}, Date range: {df_all['Date'].min()} to {df_all['Date'].max()}")
-    # if 'source' in df_all.columns:
-    #     st.info(f"Source breakdown: {df_all['source'].value_counts().to_dict()}")
-
-    # Forecast should be bounded by the user-selected date range.
-    # Admin-config date offsets are only used to set the *default* range in the sidebar.
     df_all = _extend_with_30d_forecast(df_filtered, id_col="System", forecast_end=end_ts)
 
     df_display, cols = build_details_view(df_all, id_col="System")
@@ -865,12 +831,6 @@ def display_details_tab(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
 ):
-    # NOTE:
-    # `df_filtered` is expected to already be filtered by the DB query using
-    # start_ts/end_ts (see data_loader.load_filtered_inventory_data).
-    # We pass the timestamps here so Details can (a) bound forecast generation
-    # and (b) key editor state by the active filter window so changing dates in
-    # the sidebar refreshes the table.
     if active_region == "Midcon":
         display_midcon_details(df_filtered, active_region, start_ts=start_ts, end_ts=end_ts)
     else:

@@ -168,16 +168,12 @@ def display_data_freshness_cards(
         st.info("No source status data available.")
         return
 
-    # Require a location/system selection (Submit enforces this for inventory,
-    # but Data Freshness should also behave sensibly before Submit).
     if selected_loc in (None, ""):
         st.info("Select a Location/System to view data freshness.")
         return
 
     df = source_status.copy()
 
-    # Optional: keep region context (helps avoid cross-region collisions when
-    # locations share codes). We still show *only* the selected location.
     if active_region and "REGION" in df.columns:
         df = df[df["REGION"].fillna("Unknown") == active_region]
 
@@ -188,8 +184,6 @@ def display_data_freshness_cards(
         if "LOCATION" in df.columns:
             df = df[df["LOCATION"].astype(str) == selected_loc_s]
     else:
-        # "System" selection (Midcon): normalize similarly to inventory logic.
-        # System = COALESCE(NULLIF(SOURCE_OPERATOR,''), NULLIF(SOURCE_SYSTEM,''), LOCATION)
         op = df["SOURCE_OPERATOR"] if "SOURCE_OPERATOR" in df.columns else ""
         sys = df["SOURCE_SYSTEM"] if "SOURCE_SYSTEM" in df.columns else ""
         loc = df["LOCATION"] if "LOCATION" in df.columns else ""
