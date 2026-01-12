@@ -18,27 +18,47 @@ from datetime import datetime
 from uuid import uuid4
 
 from config import (
+    # Data source configuration
     DATA_SOURCE,
-    SQLITE_DB_PATH,
-    SQLITE_TABLE,
-    SQLITE_SOURCE_STATUS_TABLE,
-    SNOWFLAKE_WAREHOUSE,
-    SNOWFLAKE_SOURCE_STATUS_TABLE,
     RAW_INVENTORY_TABLE,
-    COL_ADJUSTMENTS,
-    COL_AVAILABLE_SPACE,
+    SNOWFLAKE_SOURCE_STATUS_TABLE,
+    SNOWFLAKE_WAREHOUSE,
+    SQLITE_DB_PATH,
+    SQLITE_SOURCE_STATUS_TABLE,
+    SQLITE_TABLE,
+
+    # Base columns
+    COL_OPEN_INV_RAW,
+    COL_CLOSE_INV_RAW,
+
+    # Flow columns
     COL_BATCH_IN_RAW,
     COL_BATCH_OUT_RAW,
-    COL_CLOSE_INV_RAW,
-    COL_GAIN_LOSS,
-    COL_OPEN_INV_RAW,
+    COL_RACK_LIFTINGS_RAW,
     COL_PIPELINE_IN,
     COL_PIPELINE_OUT,
     COL_PRODUCTION,
-    COL_RACK_LIFTINGS_RAW,
-    COL_SAFE_FILL_LIMIT,
-    COL_TANK_CAPACITY,
+    COL_ADJUSTMENTS,
+    COL_GAIN_LOSS,
     COL_TRANSFERS,
+
+    # Capacity/threshold columns
+    COL_TANK_CAPACITY,
+    COL_SAFE_FILL_LIMIT,
+    COL_AVAILABLE_SPACE,
+
+    # Fact columns (optional UI display)
+    COL_OPEN_INV_FACT_RAW,
+    COL_CLOSE_INV_FACT_RAW,
+    COL_BATCH_IN_FACT_RAW,
+    COL_BATCH_OUT_FACT_RAW,
+    COL_RACK_LIFTINGS_FACT_RAW,
+    COL_PIPELINE_IN_FACT,
+    COL_PIPELINE_OUT_FACT,
+    COL_PRODUCTION_FACT,
+    COL_ADJUSTMENTS_FACT,
+    COL_GAIN_LOSS_FACT,
+    COL_TRANSFERS_FACT,
 )
 
 NUMERIC_COLUMN_MAP = {
@@ -56,6 +76,19 @@ NUMERIC_COLUMN_MAP = {
     COL_TANK_CAPACITY: "TANK_CAPACITY_BBL",
     COL_SAFE_FILL_LIMIT: "SAFE_FILL_LIMIT_BBL",
     COL_AVAILABLE_SPACE: "AVAILABLE_SPACE_BBL",
+
+    # Fact columns (optional UI display)
+    COL_OPEN_INV_FACT_RAW: "FACT_OPENING_INVENTORY_BBL",
+    COL_CLOSE_INV_FACT_RAW: "FACT_CLOSING_INVENTORY_BBL",
+    COL_BATCH_IN_FACT_RAW: "FACT_RECEIPTS_BBL",
+    COL_BATCH_OUT_FACT_RAW: "FACT_DELIVERIES_BBL",
+    COL_RACK_LIFTINGS_FACT_RAW: "FACT_RACK_LIFTINGS_BBL",
+    COL_PIPELINE_IN_FACT: "FACT_PIPELINE_IN_BBL",
+    COL_PIPELINE_OUT_FACT: "FACT_PIPELINE_OUT_BBL",
+    COL_PRODUCTION_FACT: "FACT_PRODUCTION_BBL",
+    COL_ADJUSTMENTS_FACT: "FACT_ADJUSTMENTS_BBL",
+    COL_GAIN_LOSS_FACT: "FACT_GAIN_LOSS_BBL",
+    COL_TRANSFERS_FACT: "FACT_TRANSFERS_BBL",
 }
 
 
@@ -720,18 +753,26 @@ def create_sidebar_filters(regions: list[str], df_region: pd.DataFrame) -> dict:
         region=_normalize_region_label(active_region or "Unknown") or "Unknown",
         location=scope_location,
     )
+    # Admin-configured offsets are expressed as "days from today".
+    # Example: start_off = -12 means 12 days in the past.
     default_start = today + timedelta(days=int(start_off))
     default_end = today + timedelta(days=int(end_off))
 
     df_min_d = pd.to_datetime(df_min, errors="coerce").date() if pd.notna(df_min) else default_start
     df_max_d = pd.to_datetime(df_max, errors="coerce").date() if pd.notna(df_max) else default_end
 
+    # Allow selection across both the available data bounds and the configured default window.
+    # NOTE: `min_value`/`max_value` control what the user *can* select, but the `value`
+    # controls what is *shown by default*.
     min_value = min(df_min_d, default_start)
     max_value = max(df_max_d, default_end)
 
-    # Default: show DB min if older than configured start; always extend to max available.
-    actual_start = df_min_d if df_min_d < default_start else default_start
-    actual_end = max_value
+    # Default should always be based on the configured offset window (e.g., -12/+30)
+    # rather than jumping to the earliest date in the dataset.
+    #
+    # Users can still widen the window earlier/later using the calendar widget.
+    actual_start = default_start
+    actual_end = default_end
 
     date_range = st.date_input(
         "Date Range",

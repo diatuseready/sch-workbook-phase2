@@ -6,16 +6,27 @@ FORECAST_VISIBLE_COLS: tuple[str, ...] = ("Rack/Lifting", "Opening Inv", "Close 
 # Columns we display in the details editor that may need formatting/hiding.
 DISPLAY_NUMERIC_COLS: tuple[str, ...] = (
     "Opening Inv",
+    "Opening Inv Fact",
     "Close Inv",
+    "Close Inv Fact",
     "Batch In",
+    "Batch In Fact",
     "Batch Out",
+    "Batch Out Fact",
     "Rack/Lifting",
+    "Rack/Lifting Fact",
     "Pipeline In",
+    "Pipeline In Fact",
     "Pipeline Out",
+    "Pipeline Out Fact",
     "Adjustments",
+    "Adjustments Fact",
     "Gain/Loss",
+    "Gain/Loss Fact",
     "Transfers",
+    "Transfers Fact",
     "Production",
+    "Production Fact",
 )
 
 

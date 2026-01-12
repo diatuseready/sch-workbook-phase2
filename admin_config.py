@@ -578,13 +578,13 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
         d1, d2 = st.columns(2)
         with d1:
             start_days = st.number_input(
-                "Start offset (days from today)",
+                "Start offset (days from today; negative = past)",
                 value=_to_int_or(cfg.get("DEFAULT_START_DAYS"), -10),
                 step=1,
             )
         with d2:
             end_days = st.number_input(
-                "End offset (days from today)",
+                "End offset (days from today; positive = future)",
                 value=_to_int_or(cfg.get("DEFAULT_END_DAYS"), 30),
                 step=1,
             )

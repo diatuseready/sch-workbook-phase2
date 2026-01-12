@@ -53,6 +53,34 @@ COL_OPEN_INV_RAW = "Open Inv"
 COL_CLOSE_INV_RAW = "Close Inv"
 COL_OPENING_INV = "Opening Inv"  # renamed for UI/editor
 
+# -----------------------------------------------------------------------------
+# "Fact" columns (source-of-truth values coming from the upstream inventory fact)
+#
+# These are optionally displayed in the Details grid via a UI toggle.
+# They map to the FACT_* columns in APP_INVENTORY.
+# -----------------------------------------------------------------------------
+
+COL_OPEN_INV_FACT_RAW = "Open Inv Fact"
+COL_OPENING_INV_FACT = "Opening Inv Fact"  # renamed for UI/editor
+
+COL_CLOSE_INV_FACT_RAW = "Close Inv Fact"  # display name is the same
+
+COL_BATCH_IN_FACT_RAW = "Batch In Fact (FACT_RECEIPTS_BBL)"
+COL_BATCH_IN_FACT = "Batch In Fact"
+
+COL_BATCH_OUT_FACT_RAW = "Batch Out Fact (FACT_DELIVERIES_BBL)"
+COL_BATCH_OUT_FACT = "Batch Out Fact"
+
+COL_RACK_LIFTINGS_FACT_RAW = "Rack/Liftings Fact"
+COL_RACK_LIFTING_FACT = "Rack/Lifting Fact"
+
+COL_PIPELINE_IN_FACT = "Pipeline In Fact"
+COL_PIPELINE_OUT_FACT = "Pipeline Out Fact"
+COL_PRODUCTION_FACT = "Production Fact"
+COL_ADJUSTMENTS_FACT = "Adjustments Fact"
+COL_GAIN_LOSS_FACT = "Gain/Loss Fact"
+COL_TRANSFERS_FACT = "Transfers Fact"
+
 # Flows
 COL_BATCH_IN_RAW = "Batch In (RECEIPTS_BBL)"
 COL_BATCH_OUT_RAW = "Batch Out (DELIVERIES_BBL)"
@@ -92,7 +120,11 @@ SUMMARY_AGG_COLS = (
 
 DETAILS_RENAME_MAP = {
     COL_OPEN_INV_RAW: COL_OPENING_INV,
+    COL_OPEN_INV_FACT_RAW: COL_OPENING_INV_FACT,
     COL_BATCH_IN_RAW: COL_BATCH_IN,
+    COL_BATCH_IN_FACT_RAW: COL_BATCH_IN_FACT,
     COL_BATCH_OUT_RAW: COL_BATCH_OUT,
+    COL_BATCH_OUT_FACT_RAW: COL_BATCH_OUT_FACT,
     COL_RACK_LIFTINGS_RAW: COL_RACK_LIFTING,
+    COL_RACK_LIFTINGS_FACT_RAW: COL_RACK_LIFTING_FACT,
 }

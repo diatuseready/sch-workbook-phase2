@@ -7,20 +7,36 @@ from admin_config import get_visible_columns, get_threshold_overrides
 from utils import _format_forecast_display
 from config import (
     COL_ADJUSTMENTS,
+    COL_ADJUSTMENTS_FACT,
     COL_BATCH_IN,
     COL_BATCH_IN_RAW,
+    COL_BATCH_IN_FACT_RAW,
+    COL_BATCH_IN_FACT,
     COL_BATCH_OUT,
     COL_BATCH_OUT_RAW,
+    COL_BATCH_OUT_FACT_RAW,
+    COL_BATCH_OUT_FACT,
     COL_CLOSE_INV_RAW,
+    COL_CLOSE_INV_FACT_RAW,
+    COL_OPEN_INV_RAW,
+    COL_OPEN_INV_FACT_RAW,
     COL_OPENING_INV,
+    COL_OPENING_INV_FACT,
     COL_PIPELINE_IN,
+    COL_PIPELINE_IN_FACT,
     COL_PIPELINE_OUT,
+    COL_PIPELINE_OUT_FACT,
     COL_PRODUCT,
+    COL_PRODUCTION_FACT,
     COL_RACK_LIFTING,
     COL_RACK_LIFTINGS_RAW,
+    COL_RACK_LIFTINGS_FACT_RAW,
+    COL_RACK_LIFTING_FACT,
     COL_SOURCE,
     COL_TRANSFERS,
+    COL_TRANSFERS_FACT,
     COL_GAIN_LOSS,
+    COL_GAIN_LOSS_FACT,
     COL_NOTES,
     DETAILS_RENAME_MAP,
 )
@@ -75,8 +91,11 @@ NET_COLS = [
 
 SOURCE_BG = {
     "system": "#d9f2d9",
-    "forecast": "#d9ecff",
+    # "forecast": "#d9ecff",
 }
+
+# Visual cue for read-only fact columns
+FACT_BG = "#eeeeee"
 
 LOCKED_BASE_COLS = [
     "Date",
@@ -86,6 +105,64 @@ LOCKED_BASE_COLS = [
     "Close Inv",
     "Opening Inv",
 ]
+
+
+# Base display column -> corresponding fact display column.
+# Fact columns are sourced from APP_INVENTORY FACT_* fields.
+FACT_COL_MAP: dict[str, str] = {
+    COL_OPENING_INV: COL_OPENING_INV_FACT,
+    COL_CLOSE_INV_RAW: COL_CLOSE_INV_FACT_RAW,
+    COL_BATCH_IN: COL_BATCH_IN_FACT,
+    COL_BATCH_OUT: COL_BATCH_OUT_FACT,
+    COL_RACK_LIFTING: COL_RACK_LIFTING_FACT,
+    COL_PIPELINE_IN: COL_PIPELINE_IN_FACT,
+    COL_PIPELINE_OUT: COL_PIPELINE_OUT_FACT,
+    COL_ADJUSTMENTS: COL_ADJUSTMENTS_FACT,
+    COL_GAIN_LOSS: COL_GAIN_LOSS_FACT,
+    COL_TRANSFERS: COL_TRANSFERS_FACT,
+    "Production": COL_PRODUCTION_FACT,
+}
+
+
+# Same mapping as above, but using the *raw* column names from the normalized
+# dataframe (before DETAILS_RENAME has been applied).
+#
+# This is needed because `_extend_with_30d_forecast()` aggregates using raw
+# columns, then `build_details_view()` applies renames for UI display.
+FACT_COL_MAP_RAW: dict[str, str] = {
+    COL_OPEN_INV_RAW: COL_OPEN_INV_FACT_RAW,
+    COL_CLOSE_INV_RAW: COL_CLOSE_INV_FACT_RAW,
+    COL_BATCH_IN_RAW: COL_BATCH_IN_FACT_RAW,
+    COL_BATCH_OUT_RAW: COL_BATCH_OUT_FACT_RAW,
+    COL_RACK_LIFTINGS_RAW: COL_RACK_LIFTINGS_FACT_RAW,
+    COL_PIPELINE_IN: COL_PIPELINE_IN_FACT,
+    COL_PIPELINE_OUT: COL_PIPELINE_OUT_FACT,
+    COL_ADJUSTMENTS: COL_ADJUSTMENTS_FACT,
+    COL_GAIN_LOSS: COL_GAIN_LOSS_FACT,
+    COL_TRANSFERS: COL_TRANSFERS_FACT,
+    "Production": COL_PRODUCTION_FACT,
+}
+
+
+def _insert_fact_columns(column_order: list[str], *, df_cols: list[str], show_fact: bool) -> list[str]:
+    """Insert "<col> Fact" columns immediately after their base column."""
+    if not show_fact:
+        return column_order
+
+    out: list[str] = []
+    seen = set()
+    df_set = set(df_cols)
+
+    for c in column_order:
+        if c not in seen:
+            out.append(c)
+            seen.add(c)
+        fact = FACT_COL_MAP.get(c)
+        if fact and fact in df_set and fact not in seen:
+            out.append(fact)
+            seen.add(fact)
+
+    return out
 
 
 # We set an explicit height so the grid shows ~15 rows before scrolling.
@@ -118,11 +195,22 @@ DISPLAY_NET_COLS = [
 def _style_source_cells(df: pd.DataFrame, cols_to_color: list[str]) -> "pd.io.formats.style.Styler":
     cols = list(df.columns)
     cols_set = set(cols_to_color)
+    fact_cols = {c for c in cols if str(c).endswith(" Fact")}
 
     def _row_style(row: pd.Series) -> list[str]:
         bg = SOURCE_BG.get(str(row.get("source", "")).strip().lower(), "")
-        style = f"background-color: {bg};" if bg else ""
-        return [style if (c in cols_set and style) else "" for c in cols]
+        base_style = f"background-color: {bg};" if bg else ""
+
+        styles: list[str] = []
+        for c in cols:
+            # Fact columns: always grey (read-only indicator), regardless of source.
+            if c in fact_cols:
+                styles.append(f"background-color: {FACT_BG};")
+                continue
+
+            # Regular source-based coloring.
+            styles.append(base_style if (c in cols_set and base_style) else "")
+        return styles
 
     return df.style.apply(_row_style, axis=1).hide(axis="index")
 
@@ -299,6 +387,8 @@ def _locked_cols(id_col: str, cols: list[str]) -> list[str]:
 
 def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
     locked = set(_locked_cols(id_col, cols))
+    # Fact columns should always be read-only.
+    locked.update({c for c in cols if str(c).endswith(" Fact")})
 
     cfg: dict[str, object] = {
         "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD"),
@@ -348,6 +438,26 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
 
     for c in _available_flow_cols(df):
         agg_map[c] = "sum"
+
+    # Preserve fact columns when present so they can be displayed alongside
+    # calculated/edited columns in the UI.
+    #
+    # These are source-of-truth values from the upstream FACT_* fields, so
+    # we treat them as non-editable and aggregate them deterministically.
+    #
+    # NOTE: In this function, `df` is still in its *raw* (pre-rename) form,
+    # so we primarily rely on FACT_COL_MAP_RAW.
+    for base_col, fact_col in {**FACT_COL_MAP_RAW, **FACT_COL_MAP}.items():
+        if fact_col not in df.columns:
+            continue
+
+        base_s = str(base_col)
+        if base_s in {"Opening Inv", "Open Inv"}:
+            agg_map[fact_col] = "first"
+        elif base_s == "Close Inv":
+            agg_map[fact_col] = "last"
+        else:
+            agg_map[fact_col] = "sum"
 
     if "source" in df.columns:
         agg_map["source"] = "first"
@@ -661,6 +771,13 @@ def display_midcon_details(
     )
     _show_thresholds(region_label=active_region, bottom=bottom, safefill=safefill, note=note)
 
+    show_fact = st.toggle(
+        "Show Fact Columns",
+        value=bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False)),
+        key=f"details_show_fact|{active_region}|{scope_sys or ''}|midcon",
+        help="Show upstream FACT_* values next to the editable columns.",
+    )
+
     visible = get_visible_columns(region=active_region, location=str(scope_sys) if scope_sys is not None else None)
     must_have = ["Date", "System", "Product", "Opening Inv", "Close Inv"]
     column_order = []
@@ -668,20 +785,32 @@ def display_midcon_details(
         if c in cols and c not in column_order and c != "source":
             column_order.append(c)
 
+    column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
+
+    # Include fact columns for coloring if the base column is colored.
     locked_cols = _locked_cols("System", cols)
-    column_config = _column_config(df_display, cols, "System")
+    if show_fact:
+        for base in list(locked_cols):
+            fact = FACT_COL_MAP.get(base)
+            if fact and fact in df_display.columns and fact not in locked_cols:
+                locked_cols.append(fact)
+
+    column_config = _column_config(df_display, column_order, "System")
     column_config = {k: v for k, v in column_config.items() if k in column_order}
 
     # IMPORTANT: the editor keeps its own dataframe in session_state.
     # If we don't include the current filters in the keys, changing the sidebar
     # date range (or selected System) won't refresh the table.
-    base_key = f"{active_region}|{scope_sys or ''}|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}_edit"
+    base_key = (
+        f"{active_region}|{scope_sys or ''}|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
+        f"|fact={int(bool(show_fact))}_edit"
+    )
     df_key = f"{base_key}__df"
     ver_key = f"{base_key}__ver"
     # Product filter removed; don't invalidate editor state based on products.
     widget_key = f"{base_key}__v{int(st.session_state.get(ver_key, 0))}"
 
-    editor_df = _build_editor_df(df_display, id_col="System", ui_cols=cols)
+    editor_df = _build_editor_df(df_display, id_col="System", ui_cols=column_order)
 
     if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
         st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="System")
@@ -752,6 +881,13 @@ def display_location_details(
 
     st.caption(f"Location: {selected_loc}")
 
+    show_fact = st.toggle(
+        "Show Fact Columns",
+        value=bool(st.session_state.get(f"details_show_fact|{active_region}|{selected_loc}|location", False)),
+        key=f"details_show_fact|{active_region}|{selected_loc}|location",
+        help="Show upstream FACT_* values next to the editable columns.",
+    )
+
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
         with tab:
@@ -777,20 +913,29 @@ def display_location_details(
                 if c in cols and c not in column_order and c != "source":
                     column_order.append(c)
 
+            column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
+
             locked_cols = _locked_cols("Location", cols)
-            column_config = _column_config(df_display, cols, "Location")
+            if show_fact:
+                for base in list(locked_cols):
+                    fact = FACT_COL_MAP.get(base)
+                    if fact and fact in df_display.columns and fact not in locked_cols:
+                        locked_cols.append(fact)
+
+            column_config = _column_config(df_display, column_order, "Location")
             column_config = {k: v for k, v in column_config.items() if k in column_order}
 
             # Include filters in the key so changing sidebar date range refreshes the editor.
             base_key = (
                 f"{active_region}_{selected_loc}_{prod_name}"
-                f"|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}_edit"
+                f"|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
+                f"|fact={int(bool(show_fact))}_edit"
             )
             df_key = f"{base_key}__df"
             ver_key = f"{base_key}__ver"
             widget_key = f"{base_key}__v{int(st.session_state.get(ver_key, 0))}"
 
-            editor_df = _build_editor_df(df_display, id_col="Location", ui_cols=cols)
+            editor_df = _build_editor_df(df_display, id_col="Location", ui_cols=column_order)
             if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
                 st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="Location")
 
