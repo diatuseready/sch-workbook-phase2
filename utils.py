@@ -35,9 +35,6 @@ def _format_forecast_display(df: pd.DataFrame) -> pd.DataFrame:
     """Return a display-friendly dataframe for the details editor.
 
     - Formats numeric columns with thousand separators and 2 decimals.
-    - For rows where ``source == 'forecast'``, hides values for flow columns
-      (everything except :data:`FORECAST_VISIBLE_COLS`) by displaying ``0.00``.
-
     Note: This function intentionally returns *strings* for the formatted columns.
     """
 
@@ -45,24 +42,12 @@ def _format_forecast_display(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     df_display = df.copy()
-    is_forecast = (
-        df_display.get("source", "")
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .eq("forecast")
-    )
-
     for col in DISPLAY_NUMERIC_COLS:
         if col not in df_display.columns:
             continue
 
         # Coerce to numeric for formatting; non-numeric values become NaN.
         s_num = pd.to_numeric(df_display[col], errors="coerce")
-
-        # Hide forecast flows (keep Opening/Close + Rack/Lifting visible).
-        if col not in FORECAST_VISIBLE_COLS:
-            s_num = s_num.mask(is_forecast, 0.0)
 
         # Format as strings for TextColumn rendering.
         df_display[col] = s_num.fillna(0.0).map(lambda v: f"{float(v):,.2f}")
@@ -71,22 +56,28 @@ def _format_forecast_display(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def dynamic_input_data_editor(data, key, **_kwargs):
-    changed_key = f'{key}_khkhkkhkkhkhkihsdhsaskskhhfgiolwmxkahs'
-    initial_data_key = f'{key}_khkhkkhkkhkhkihsdhsaskskhhfgiolwmxkahs__initial_data'
+    """Small wrapper around :func:`st.data_editor`.
+
+    Historically this function attempted to "restore" the editor's initial
+    dataframe on every edit. That behavior causes user edits to be lost when the
+    page reruns (Streamlit reruns the script on every interaction).
+
+    We now simply pass through to ``st.data_editor`` and (optionally) mark a
+    ``__changed`` flag in ``st.session_state``.
+    """
+
+    changed_key = f"{key}__changed"
+
+    user_on_change = _kwargs.get("on_change")
+    user_args = _kwargs.get("args", ())
+    user_kwargs = _kwargs.get("kwargs", {})
 
     def on_data_editor_changed():
-        if 'on_change' in _kwargs:
-            args = _kwargs['args'] if 'args' in _kwargs else ()
-            kwargs = _kwargs['kwargs'] if 'kwargs' in _kwargs else {}
-            _kwargs['on_change'](*args, **kwargs)
+        # Preserve any caller-provided callback.
+        if callable(user_on_change):
+            user_on_change(*user_args, **user_kwargs)
         st.session_state[changed_key] = True
 
-    if changed_key in st.session_state and st.session_state[changed_key]:
-        data = st.session_state[initial_data_key]
-        st.session_state[changed_key] = False
-    else:
-        st.session_state[initial_data_key] = data
-
     __kwargs = _kwargs.copy()
-    __kwargs.update({'data': data, 'key': key, 'on_change': on_data_editor_changed})
+    __kwargs.update({"data": data, "key": key, "on_change": on_data_editor_changed})
     return st.data_editor(**__kwargs)

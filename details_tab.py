@@ -4,7 +4,7 @@ import numpy as np
 from datetime import timedelta
 
 from admin_config import get_visible_columns, get_threshold_overrides
-from utils import _format_forecast_display, dynamic_input_data_editor
+from utils import dynamic_input_data_editor
 from config import (
     COL_ADJUSTMENTS,
     COL_ADJUSTMENTS_FACT,
@@ -106,9 +106,6 @@ LOCKED_BASE_COLS = [
     "Opening Inv",
 ]
 
-
-# Base display column -> corresponding fact display column.
-# Fact columns are sourced from APP_INVENTORY FACT_* fields.
 FACT_COL_MAP: dict[str, str] = {
     COL_OPENING_INV: COL_OPENING_INV_FACT,
     COL_CLOSE_INV_RAW: COL_CLOSE_INV_FACT_RAW,
@@ -123,12 +120,6 @@ FACT_COL_MAP: dict[str, str] = {
     "Production": COL_PRODUCTION_FACT,
 }
 
-
-# Same mapping as above, but using the *raw* column names from the normalized
-# dataframe (before DETAILS_RENAME has been applied).
-#
-# This is needed because `_extend_with_30d_forecast()` aggregates using raw
-# columns, then `build_details_view()` applies renames for UI display.
 FACT_COL_MAP_RAW: dict[str, str] = {
     COL_OPEN_INV_RAW: COL_OPEN_INV_FACT_RAW,
     COL_CLOSE_INV_RAW: COL_CLOSE_INV_FACT_RAW,
@@ -165,7 +156,6 @@ def _insert_fact_columns(column_order: list[str], *, df_cols: list[str], show_fa
     return out
 
 
-# We set an explicit height so the grid shows ~15 rows before scrolling.
 DETAILS_EDITOR_VISIBLE_ROWS = 15
 DETAILS_EDITOR_ROW_PX = 35  # approx row height incl. padding
 DETAILS_EDITOR_HEADER_PX = 35
@@ -251,15 +241,6 @@ def _sum_row(row: pd.Series, cols: list[str]) -> float:
 
 
 def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFrame:
-    """Recompute Opening/Close inventory based on editable flow columns.
-
-    Rules:
-    - PRESERVE system source rows - keep their database Opening/Close Inv values
-    - Compute sequentially per (id_col, Product) ordered by Date.
-    - For forecast/manual rows:
-      - Opening Inv := previous row's Close Inv
-      - Close Inv := calculated based on flows (Magellan uses special formula)
-    """
     if df is None or df.empty:
         return df
 
@@ -338,9 +319,6 @@ def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFram
 
         return g
 
-    # Avoid `GroupBy.apply` to prevent pandas FutureWarning and keep behavior
-    # stable across pandas versions.
-
     parts: list[pd.DataFrame] = []
     for _, g in out.groupby(group_cols, dropna=False, sort=False):
         parts.append(_apply(g))
@@ -408,15 +386,16 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         if c in cfg or c == "Notes":
             continue
         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-            # cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format="%.2f")
-            # Use TextColumn for formatted display with commas
-            cfg[c] = st.column_config.TextColumn(c, disabled=(c in locked))
+            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format="%.2f")
 
     for c in locked:
         if c in {"Date", id_col, "source", "Product"}:
             continue
         if c in cols and c not in cfg:
-            cfg[c] = st.column_config.TextColumn(c, disabled=True)
+            if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+                cfg[c] = st.column_config.NumberColumn(c, disabled=True, format="%.2f")
+            else:
+                cfg[c] = st.column_config.TextColumn(c, disabled=True)
 
     return {k: v for k, v in cfg.items() if k in cols}
 
@@ -439,14 +418,6 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     for c in _available_flow_cols(df):
         agg_map[c] = "sum"
 
-    # Preserve fact columns when present so they can be displayed alongside
-    # calculated/edited columns in the UI.
-    #
-    # These are source-of-truth values from the upstream FACT_* fields, so
-    # we treat them as non-editable and aggregate them deterministically.
-    #
-    # NOTE: In this function, `df` is still in its *raw* (pre-rename) form,
-    # so we primarily rely on FACT_COL_MAP_RAW.
     for base_col, fact_col in {**FACT_COL_MAP_RAW, **FACT_COL_MAP}.items():
         if fact_col not in df.columns:
             continue
@@ -590,6 +561,9 @@ def _extend_with_30d_forecast(
 
     daily = _ensure_lineage_cols(daily).sort_values("Date")
     flow_cols = _available_flow_cols(daily)
+    # We only forecast Rack/Liftings. All other flows default to 0 for forecast
+    # rows, but remain editable in the UI.
+    forecast_flow_cols = [c for c in [COL_RACK_LIFTINGS_RAW] if c in flow_cols]
 
     if forecast_end is not None:
         forecast_end = pd.Timestamp(forecast_end)
@@ -602,7 +576,10 @@ def _extend_with_30d_forecast(
 
         prev_close = _last_close_inv(group)
         for d in _forecast_dates(last_date, forecast_end, default_days):
-            flows = estimate_forecast_flows(group, flow_cols=flow_cols, d=d)
+            # Only estimate Rack/Liftings; keep everything else 0.
+            flows = {c: 0.0 for c in flow_cols}
+            if forecast_flow_cols:
+                flows.update(estimate_forecast_flows(group, flow_cols=forecast_flow_cols, d=d))
 
             # opening, closing = _roll_inventory(prev_close, flows, flow_cols)
 
@@ -720,15 +697,17 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
 
 
 def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str]) -> pd.DataFrame:
-    """Return the dataframe we should keep in editor state.
-
-    We intentionally keep *extra* flow columns (like Production/Adjustments)
-    even if they aren't shown in `DETAILS_COLS`, so inventory math remains
-    consistent.
-    """
+    # Keep any flow columns that might exist, even if not currently visible.
     extra = [
         "Production",
         "Adjustments",
+        "Batch In",
+        "Batch Out",
+        "Pipeline In",
+        "Pipeline Out",
+        "Gain/Loss",
+        "Transfers",
+        "Rack/Lifting",
     ]
     # Always keep columns required for grouping + lineage.
     base = ["Date", id_col, "source", "Product", "updated", "Notes", "Opening Inv", "Close Inv"]
@@ -807,19 +786,16 @@ def display_midcon_details(
     )
     df_key = f"{base_key}__df"
     ver_key = f"{base_key}__ver"
-    # Product filter removed; don't invalidate editor state based on products.
-    widget_key = f"{base_key}__v{int(st.session_state.get(ver_key, 0))}"
+    widget_key = f"{base_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
 
     editor_df = _build_editor_df(df_display, id_col="System", ui_cols=column_order)
 
     if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
         st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="System")
 
-    # Format display values (add commas, hide forecast columns)
-    formatted_df = _format_forecast_display(st.session_state[df_key])
-    styled = _style_source_cells(formatted_df, locked_cols)
+    st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
 
-    # styled = _style_source_cells(st.session_state[df_key] , locked_cols)
+    styled = _style_source_cells(st.session_state[df_key], locked_cols)
 
     edited = dynamic_input_data_editor(
         styled,
@@ -831,9 +807,8 @@ def display_midcon_details(
         column_config=column_config,
     )
 
-    recomputed = _recalculate_open_close_inv(edited, id_col="System")
+    recomputed = _recalculate_open_close_inv(edited, id_col="System").reset_index(drop=True)
     st.session_state[df_key] = recomputed
-
     if _needs_inventory_rerun(edited, recomputed):
         st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
         st.rerun()
@@ -933,7 +908,7 @@ def display_location_details(
             )
             df_key = f"{base_key}__df"
             ver_key = f"{base_key}__ver"
-            widget_key = f"{base_key}__v{int(st.session_state.get(ver_key, 0))}"
+            widget_key = f"{base_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
 
             editor_df = _build_editor_df(df_display, id_col="Location", ui_cols=column_order)
             if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
@@ -943,8 +918,7 @@ def display_location_details(
             # works if the input df uses a RangeIndex. Ensure that here.
             st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
 
-            formatted_df = _format_forecast_display(st.session_state[df_key])
-            styled = _style_source_cells(formatted_df, locked_cols)
+            styled = _style_source_cells(st.session_state[df_key], locked_cols)
 
             edited = dynamic_input_data_editor(
                 styled,
@@ -957,7 +931,7 @@ def display_location_details(
                 column_config=column_config,
             )
 
-            recomputed = _recalculate_open_close_inv(edited, id_col="Location")
+            recomputed = _recalculate_open_close_inv(edited, id_col="Location").reset_index(drop=True)
             st.session_state[df_key] = recomputed
             if _needs_inventory_rerun(edited, recomputed):
                 st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1

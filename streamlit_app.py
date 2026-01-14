@@ -89,16 +89,22 @@ def main():
         source_status=source_status,
     )
 
-    # Create main tabs
-    summary_tab, details_tab = st.tabs(["📊 Regional Summary", "🧾 Details"])
+    main_tabs = ["📊 Regional Summary", "🧾 Details"]
+    if "main_tab" not in st.session_state:
+        st.session_state.main_tab = main_tabs[0]
 
-    # Summary Tab
-    with summary_tab:
+    st.radio(
+        "",
+        options=main_tabs,
+        key="main_tab",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if st.session_state.main_tab == "📊 Regional Summary":
         display_regional_summary(df_filtered, active_region)
         display_forecast_table(df_filtered, active_region)
-
-    # Details Tab
-    with details_tab:
+    else:
         display_details_tab(
             df_filtered,
             active_region,
