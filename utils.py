@@ -1,4 +1,5 @@
 import pandas as pd
+import streamlit as st
 
 
 FORECAST_VISIBLE_COLS: tuple[str, ...] = ("Rack/Lifting", "Opening Inv", "Close Inv")
@@ -67,3 +68,25 @@ def _format_forecast_display(df: pd.DataFrame) -> pd.DataFrame:
         df_display[col] = s_num.fillna(0.0).map(lambda v: f"{float(v):,.2f}")
 
     return df_display
+
+
+def dynamic_input_data_editor(data, key, **_kwargs):
+    changed_key = f'{key}_khkhkkhkkhkhkihsdhsaskskhhfgiolwmxkahs'
+    initial_data_key = f'{key}_khkhkkhkkhkhkihsdhsaskskhhfgiolwmxkahs__initial_data'
+
+    def on_data_editor_changed():
+        if 'on_change' in _kwargs:
+            args = _kwargs['args'] if 'args' in _kwargs else ()
+            kwargs = _kwargs['kwargs'] if 'kwargs' in _kwargs else {}
+            _kwargs['on_change'](*args, **kwargs)
+        st.session_state[changed_key] = True
+
+    if changed_key in st.session_state and st.session_state[changed_key]:
+        data = st.session_state[initial_data_key]
+        st.session_state[changed_key] = False
+    else:
+        st.session_state[initial_data_key] = data
+
+    __kwargs = _kwargs.copy()
+    __kwargs.update({'data': data, 'key': key, 'on_change': on_data_editor_changed})
+    return st.data_editor(**__kwargs)

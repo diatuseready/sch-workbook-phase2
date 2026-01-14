@@ -4,7 +4,7 @@ import numpy as np
 from datetime import timedelta
 
 from admin_config import get_visible_columns, get_threshold_overrides
-from utils import _format_forecast_display
+from utils import _format_forecast_display, dynamic_input_data_editor
 from config import (
     COL_ADJUSTMENTS,
     COL_ADJUSTMENTS_FACT,
@@ -821,7 +821,7 @@ def display_midcon_details(
 
     # styled = _style_source_cells(st.session_state[df_key] , locked_cols)
 
-    edited = st.data_editor(
+    edited = dynamic_input_data_editor(
         styled,
         width="stretch",
         height=400,
@@ -946,7 +946,7 @@ def display_location_details(
             formatted_df = _format_forecast_display(st.session_state[df_key])
             styled = _style_source_cells(formatted_df, locked_cols)
 
-            edited = st.data_editor(
+            edited = dynamic_input_data_editor(
                 styled,
                 num_rows="dynamic",
                 width="stretch",
