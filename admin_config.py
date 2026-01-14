@@ -12,6 +12,8 @@ from config import (
     DATA_SOURCE,
     SQLITE_DB_PATH,
     SNOWFLAKE_WAREHOUSE,
+    RACK_LIFTING_FORECAST_METHOD_DEFAULT,
+    RACK_LIFTING_FORECAST_METHODS,
 )
 from data_loader import get_snowflake_session, load_region_location_pairs
 
@@ -74,6 +76,8 @@ def _new_row(*, region: str, location: str | None, product: str | None) -> dict:
         "NOTE": None,
         "DEFAULT_START_DAYS": -10,
         "DEFAULT_END_DAYS": 30,
+        # Details forecast behavior
+        "RACK_LIFTING_FORECAST_METHOD": RACK_LIFTING_FORECAST_METHOD_DEFAULT,
     }
 
 
@@ -112,6 +116,7 @@ def ensure_admin_config_table_sqlite():
                 NOTE TEXT,
                 DEFAULT_START_DAYS INTEGER,
                 DEFAULT_END_DAYS INTEGER,
+                RACK_LIFTING_FORECAST_METHOD TEXT,
                 UPDATED_AT TEXT,
                 PRIMARY KEY (REGION, LOCATION, PRODUCT)
             )
@@ -125,7 +130,7 @@ def ensure_admin_config_table_sqlite():
             cur.execute(
                 f"""
                 INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
-                (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, UPDATED_AT)
+                (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
                 SELECT
                     REGION,
                     LOCATION,
@@ -136,6 +141,7 @@ def ensure_admin_config_table_sqlite():
                     NULL,
                     DEFAULT_START_DAYS,
                     DEFAULT_END_DAYS,
+                    '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}',
                     UPDATED_AT
                 FROM {old}
                 """
@@ -144,7 +150,7 @@ def ensure_admin_config_table_sqlite():
             cur.execute(
                 f"""
                 INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
-                (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, UPDATED_AT)
+                (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
                 SELECT
                     REGION,
                     LOCATION,
@@ -155,6 +161,7 @@ def ensure_admin_config_table_sqlite():
                     NULL,
                     DEFAULT_START_DAYS,
                     DEFAULT_END_DAYS,
+                    '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}',
                     datetime('now')
                 FROM {old}
                 """
@@ -175,6 +182,7 @@ def ensure_admin_config_table_sqlite():
                 NOTE TEXT,
                 DEFAULT_START_DAYS INTEGER,
                 DEFAULT_END_DAYS INTEGER,
+                RACK_LIFTING_FORECAST_METHOD TEXT,
                 UPDATED_AT TEXT,
                 PRIMARY KEY (REGION, LOCATION, PRODUCT)
             )
@@ -191,6 +199,7 @@ def ensure_admin_config_table_sqlite():
         "NOTE": "TEXT",
         "DEFAULT_START_DAYS": "INTEGER",
         "DEFAULT_END_DAYS": "INTEGER",
+        "RACK_LIFTING_FORECAST_METHOD": "TEXT",
         "UPDATED_AT": "TEXT",
     }
     for col, typ in desired.items():
@@ -213,6 +222,7 @@ def load_admin_config_df() -> pd.DataFrame:
         "NOTE",
         "DEFAULT_START_DAYS",
         "DEFAULT_END_DAYS",
+        "RACK_LIFTING_FORECAST_METHOD",
     ]
 
     if DATA_SOURCE == "sqlite":
@@ -224,23 +234,30 @@ def load_admin_config_df() -> pd.DataFrame:
         conn.close()
         return df
 
-    # Snowflake: ensure PRODUCT exists and is backfilled to '*'
+    # Snowflake: best-effort schema evolution
     session = get_snowflake_session()
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
-    # Best-effort schema evolution.
     try:
         session.sql(f"ALTER TABLE {SNOWFLAKE_ADMIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS PRODUCT STRING").collect()
         session.sql(f"ALTER TABLE {SNOWFLAKE_ADMIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS NOTE STRING").collect()
+        session.sql(
+            f"ALTER TABLE {SNOWFLAKE_ADMIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS RACK_LIFTING_FORECAST_METHOD STRING"
+        ).collect()
         session.sql(f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} SET PRODUCT='*' WHERE PRODUCT IS NULL").collect()
+        session.sql(
+            f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} SET RACK_LIFTING_FORECAST_METHOD='{RACK_LIFTING_FORECAST_METHOD_DEFAULT}' "
+            f"WHERE RACK_LIFTING_FORECAST_METHOD IS NULL"
+        ).collect()
     except Exception:
         # Don't block UI if the executing role doesn't have DDL rights.
         pass
 
-    # Coalesce PRODUCT to wildcard for older rows.
+    # Coalesce older rows.
     query = (
         f"SELECT REGION, LOCATION, COALESCE(PRODUCT, '*') AS PRODUCT, "
-        f"VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS "
+        f"VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, "
+        f"COALESCE(RACK_LIFTING_FORECAST_METHOD, '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}') AS RACK_LIFTING_FORECAST_METHOD "
         f"FROM {SNOWFLAKE_ADMIN_CONFIG_TABLE}"
     )
     return session.sql(query).to_pandas()
@@ -255,8 +272,8 @@ def _persist_sqlite(row: dict):
     cur.execute(
         f"""
         INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
-        (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, UPDATED_AT)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(REGION, LOCATION, PRODUCT) DO UPDATE SET
             VISIBLE_COLUMNS_JSON=excluded.VISIBLE_COLUMNS_JSON,
             BOTTOM=excluded.BOTTOM,
@@ -264,6 +281,7 @@ def _persist_sqlite(row: dict):
             NOTE=excluded.NOTE,
             DEFAULT_START_DAYS=excluded.DEFAULT_START_DAYS,
             DEFAULT_END_DAYS=excluded.DEFAULT_END_DAYS,
+            RACK_LIFTING_FORECAST_METHOD=excluded.RACK_LIFTING_FORECAST_METHOD,
             UPDATED_AT=datetime('now')
         """,
         (
@@ -276,6 +294,7 @@ def _persist_sqlite(row: dict):
             row.get("NOTE"),
             row.get("DEFAULT_START_DAYS"),
             row.get("DEFAULT_END_DAYS"),
+            row.get("RACK_LIFTING_FORECAST_METHOD"),
         ),
     )
     conn.commit()
@@ -290,7 +309,14 @@ def _persist_snowflake(row: dict):
     try:
         session.sql(f"ALTER TABLE {SNOWFLAKE_ADMIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS PRODUCT STRING").collect()
         session.sql(f"ALTER TABLE {SNOWFLAKE_ADMIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS NOTE STRING").collect()
+        session.sql(
+            f"ALTER TABLE {SNOWFLAKE_ADMIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS RACK_LIFTING_FORECAST_METHOD STRING"
+        ).collect()
         session.sql(f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} SET PRODUCT='*' WHERE PRODUCT IS NULL").collect()
+        session.sql(
+            f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} SET RACK_LIFTING_FORECAST_METHOD='{RACK_LIFTING_FORECAST_METHOD_DEFAULT}' "
+            f"WHERE RACK_LIFTING_FORECAST_METHOD IS NULL"
+        ).collect()
     except Exception:
         pass
 
@@ -318,6 +344,7 @@ def _persist_snowflake(row: dict):
     note = _sql_str(row.get("NOTE"))
     start_days = _sql_int(row.get("DEFAULT_START_DAYS"))
     end_days = _sql_int(row.get("DEFAULT_END_DAYS"))
+    method = _sql_str(row.get("RACK_LIFTING_FORECAST_METHOD") or RACK_LIFTING_FORECAST_METHOD_DEFAULT)
 
     sql = f"""
     MERGE INTO {SNOWFLAKE_ADMIN_CONFIG_TABLE} t
@@ -331,7 +358,8 @@ def _persist_snowflake(row: dict):
             {safefill}::FLOAT AS SAFEFILL,
             {note}::STRING AS NOTE,
             {start_days}::INTEGER AS DEFAULT_START_DAYS,
-            {end_days}::INTEGER AS DEFAULT_END_DAYS
+            {end_days}::INTEGER AS DEFAULT_END_DAYS,
+            {method}::STRING AS RACK_LIFTING_FORECAST_METHOD
     ) s
     ON t.REGION = s.REGION AND t.LOCATION = s.LOCATION AND COALESCE(t.PRODUCT, '*') = s.PRODUCT
     WHEN MATCHED THEN UPDATE SET
@@ -341,14 +369,27 @@ def _persist_snowflake(row: dict):
         NOTE = s.NOTE,
         DEFAULT_START_DAYS = s.DEFAULT_START_DAYS,
         DEFAULT_END_DAYS = s.DEFAULT_END_DAYS,
+        RACK_LIFTING_FORECAST_METHOD = s.RACK_LIFTING_FORECAST_METHOD,
         UPDATED_AT = CURRENT_TIMESTAMP()
     WHEN NOT MATCHED THEN INSERT (
-        REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, UPDATED_AT
+        REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT
     ) VALUES (
-        s.REGION, s.LOCATION, s.PRODUCT, s.VISIBLE_COLUMNS_JSON, s.BOTTOM, s.SAFEFILL, s.NOTE, s.DEFAULT_START_DAYS, s.DEFAULT_END_DAYS, CURRENT_TIMESTAMP()
+        s.REGION, s.LOCATION, s.PRODUCT, s.VISIBLE_COLUMNS_JSON, s.BOTTOM, s.SAFEFILL, s.NOTE, s.DEFAULT_START_DAYS, s.DEFAULT_END_DAYS, s.RACK_LIFTING_FORECAST_METHOD, CURRENT_TIMESTAMP()
     )
     """
     session.sql(sql).collect()
+
+
+def get_rack_lifting_forecast_method(*, region: str, location: str | None) -> str:
+    """Get the configured Rack/Liftings forecast method for a scope.
+
+    Forecast method is Region/Location scoped (not Product scoped).
+    """
+    cfg = get_effective_config(region=region, location=location, product=None)
+    method = str(cfg.get("RACK_LIFTING_FORECAST_METHOD") or "").strip() or RACK_LIFTING_FORECAST_METHOD_DEFAULT
+    if method not in set(RACK_LIFTING_FORECAST_METHODS):
+        return RACK_LIFTING_FORECAST_METHOD_DEFAULT
+    return method
 
 
 def save_admin_config(*, region: str, location: str | None, product: str | None, updates: dict):
@@ -534,6 +575,7 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
         selected_cols = None
         start_days = _to_int_or(cfg.get("DEFAULT_START_DAYS"), -10)
         end_days = _to_int_or(cfg.get("DEFAULT_END_DAYS"), 30)
+        rl_method = str(cfg.get("RACK_LIFTING_FORECAST_METHOD") or RACK_LIFTING_FORECAST_METHOD_DEFAULT)
     else:
         st.markdown("#### Column Visibility")
 
@@ -546,6 +588,21 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             "Visible columns",
             options=all_cols,
             default=[c for c in current_cols if c in all_cols],
+        )
+
+        st.markdown("#### Forecast (Rack/Liftings)")
+        rl_method = st.selectbox(
+            "Rack/Liftings forecast method",
+            options=list(RACK_LIFTING_FORECAST_METHODS),
+            index=(
+                list(RACK_LIFTING_FORECAST_METHODS).index(str(cfg.get("RACK_LIFTING_FORECAST_METHOD")))
+                if str(cfg.get("RACK_LIFTING_FORECAST_METHOD")) in set(RACK_LIFTING_FORECAST_METHODS)
+                else list(RACK_LIFTING_FORECAST_METHODS).index(RACK_LIFTING_FORECAST_METHOD_DEFAULT)
+            ),
+            help=(
+                "Controls how Details -> Forecast rows estimate Rack/Liftings. "
+                "7_day_avg and mtd_avg exclude 0 values when computing the average."
+            ),
         )
 
     st.markdown("#### Thresholds")
@@ -606,6 +663,9 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             "NOTE": (str(note).strip() or None),
             "DEFAULT_START_DAYS": int(start_days),
             "DEFAULT_END_DAYS": int(end_days),
+            "RACK_LIFTING_FORECAST_METHOD": (
+                str(rl_method).strip() if product is None else cfg.get("RACK_LIFTING_FORECAST_METHOD")
+            ),
         }
         save_admin_config(region=region, location=location, product=product, updates=updates)
         st.success("Saved")

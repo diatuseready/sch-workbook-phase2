@@ -128,3 +128,21 @@ DETAILS_RENAME_MAP = {
     COL_RACK_LIFTINGS_RAW: COL_RACK_LIFTING,
     COL_RACK_LIFTINGS_FACT_RAW: COL_RACK_LIFTING_FACT,
 }
+
+
+# -----------------------------------------------------------------------------
+# Forecast configuration
+# -----------------------------------------------------------------------------
+
+# How to forecast Rack/Liftings in Details -> Forecast rows.
+#
+# - weekday_weighted: existing behavior; weekday-specific weighted average
+# - 7_day_avg: constant average of last 7 days, excluding 0 values
+# - mtd_avg: constant average over all available history in the current details
+#            dataframe (typically ~MTD window), excluding 0 values
+RACK_LIFTING_FORECAST_METHOD_DEFAULT = "weekday_weighted"
+RACK_LIFTING_FORECAST_METHODS: tuple[str, ...] = (
+    "weekday_weighted",
+    "7_day_avg",
+    "mtd_avg",
+)

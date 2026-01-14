@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import timedelta
 
-from admin_config import get_visible_columns, get_threshold_overrides
+from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
 from utils import dynamic_input_data_editor
 from config import (
     COL_ADJUSTMENTS,
@@ -560,14 +560,64 @@ def _weekday_weighted_means(
     return out
 
 
-def estimate_forecast_flows(
-    group: pd.DataFrame,
+def _nonzero_mean(s: pd.Series) -> float:
+    """Mean excluding zeros (and NaNs). Returns 0.0 if nothing remains."""
+    if s is None:
+        return 0.0
+    vals = pd.to_numeric(s, errors="coerce").fillna(0.0)
+    vals = vals[vals != 0]
+    return float(vals.mean()) if len(vals) else 0.0
+
+
+def _constant_means_excluding_zeros(
+    hist: pd.DataFrame,
     flow_cols: list[str],
-    d: pd.Timestamp,
+    *,
+    tail_n: int | None,
 ) -> dict[str, float]:
-    means = _weekday_weighted_means(group, flow_cols=flow_cols)
-    wd = int(d.weekday())
-    return {c: float(means.get((wd, c), 0.0)) for c in flow_cols}
+    """Compute constant means for flow columns.
+
+    Rules:
+    - Optionally restrict to last N rows (by Date)
+    - Exclude 0-valued days from the mean
+    """
+    if hist is None or hist.empty or not flow_cols:
+        return {c: 0.0 for c in (flow_cols or [])}
+
+    h = hist.sort_values("Date").copy()
+    if tail_n is not None:
+        h = h.tail(int(tail_n))
+
+    out: dict[str, float] = {}
+    for c in flow_cols:
+        if c not in h.columns:
+            out[c] = 0.0
+            continue
+        out[c] = _nonzero_mean(h[c])
+    return out
+
+
+def _make_forecast_flow_estimator(
+    hist: pd.DataFrame,
+    *,
+    flow_cols: list[str],
+    method: str,
+):
+    """Return a function(d) -> {flow_col: value} for a given method."""
+    m = str(method or "").strip() or "weekday_weighted"
+
+    if m == "7_day_avg":
+        const = _constant_means_excluding_zeros(hist, flow_cols, tail_n=7)
+        return lambda d: dict(const)
+
+    if m == "mtd_avg":
+        # As requested: use the full available history in the current dataframe scope.
+        const = _constant_means_excluding_zeros(hist, flow_cols, tail_n=None)
+        return lambda d: dict(const)
+
+    # Default: weekday weighted
+    means = _weekday_weighted_means(hist, flow_cols=flow_cols)
+    return lambda d: {c: float(means.get((int(d.weekday()), c), 0.0)) for c in flow_cols}
 
 
 def _roll_inventory(prev_close: float, flows: dict[str, float], flow_cols: list[str], system: str = None, product: str = None) -> tuple[float, float]:
@@ -616,6 +666,8 @@ def _extend_with_30d_forecast(
     df: pd.DataFrame,
     *,
     id_col: str,
+    region: str | None,
+    location: str | None,
     forecast_end: pd.Timestamp | None = None,
     default_days: int = 30,
 ) -> pd.DataFrame:
@@ -636,16 +688,22 @@ def _extend_with_30d_forecast(
 
     forecast_rows: list[dict] = []
 
+    # Region/Location-scoped configuration for Rack/Liftings forecast.
+    # (Location = Location or System label depending on Details view.)
+    forecast_method = get_rack_lifting_forecast_method(region=str(region or "Unknown"), location=location)
+
     for (id_val, product), group in daily.groupby([id_col, "Product"], dropna=False):
         group = group.sort_values("Date")
         last_date = pd.Timestamp(group["Date"].max())
+
+        estimate = _make_forecast_flow_estimator(group, flow_cols=forecast_flow_cols, method=forecast_method)
 
         prev_close = _last_close_inv(group)
         for d in _forecast_dates(last_date, forecast_end, default_days):
             # Only estimate Rack/Liftings; keep everything else 0.
             flows = {c: 0.0 for c in flow_cols}
             if forecast_flow_cols:
-                flows.update(estimate_forecast_flows(group, flow_cols=forecast_flow_cols, d=d))
+                flows.update(estimate(d))
 
             opening, closing = _roll_inventory(
                 prev_close,
@@ -808,15 +866,21 @@ def display_midcon_details(
         st.info("No data available for the selected filters.")
         return
 
-    df_all = _extend_with_30d_forecast(df_filtered, id_col="System", forecast_end=end_ts)
-
-    df_display, cols = build_details_view(df_all, id_col="System")
-
     scope_sys = None
     if df_filtered is not None and not df_filtered.empty and "System" in df_filtered.columns:
         systems = sorted(df_filtered["System"].dropna().unique().tolist())
         if len(systems) == 1:
             scope_sys = systems[0]
+
+    df_all = _extend_with_30d_forecast(
+        df_filtered,
+        id_col="System",
+        region=active_region,
+        location=(str(scope_sys) if scope_sys is not None else None),
+        forecast_end=end_ts,
+    )
+
+    df_display, cols = build_details_view(df_all, id_col="System")
 
     # In Midcon view there isn't a single Product in scope (grid spans products),
     # so we show location-level thresholds.
@@ -964,7 +1028,13 @@ def display_location_details(
             df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
 
             # Forecast should be bounded by the user-selected date range.
-            df_all = _extend_with_30d_forecast(df_prod, id_col="Location", forecast_end=end_ts)
+            df_all = _extend_with_30d_forecast(
+                df_prod,
+                id_col="Location",
+                region=active_region,
+                location=str(selected_loc),
+                forecast_end=end_ts,
+            )
             df_display, cols = build_details_view(df_all, id_col="Location")
 
             bottom, safefill, note = _threshold_values(
