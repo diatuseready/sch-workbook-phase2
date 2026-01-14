@@ -27,6 +27,7 @@ from config import (
     COL_PIPELINE_OUT,
     COL_PIPELINE_OUT_FACT,
     COL_PRODUCT,
+    COL_PRODUCTION,
     COL_PRODUCTION_FACT,
     COL_RACK_LIFTING,
     COL_RACK_LIFTINGS_RAW,
@@ -53,9 +54,10 @@ DETAILS_COLS = [
     COL_RACK_LIFTING,
     COL_PIPELINE_IN,
     COL_PIPELINE_OUT,
-    COL_ADJUSTMENTS,  # New addition for Magellan
     COL_GAIN_LOSS,
     COL_TRANSFERS,
+    COL_PRODUCTION,
+    COL_ADJUSTMENTS,
     COL_NOTES,
 ]
 
@@ -94,6 +96,14 @@ SOURCE_BG = {
     # "forecast": "#d9ecff",
 }
 
+# When our calculated Opening/Close inventory differs from the upstream/system
+# value, we highlight those *system* rows in yellow instead of green.
+SYSTEM_DISCREPANCY_BG = "#fff2cc"
+
+# Allow small differences (bbl) between computed and upstream/system inventory
+# before highlighting the row.
+SYSTEM_DISCREPANCY_THRESHOLD_BBL = 5.0
+
 # Visual cue for read-only fact columns
 FACT_BG = "#eeeeee"
 
@@ -117,7 +127,7 @@ FACT_COL_MAP: dict[str, str] = {
     COL_ADJUSTMENTS: COL_ADJUSTMENTS_FACT,
     COL_GAIN_LOSS: COL_GAIN_LOSS_FACT,
     COL_TRANSFERS: COL_TRANSFERS_FACT,
-    "Production": COL_PRODUCTION_FACT,
+    COL_PRODUCTION: COL_PRODUCTION_FACT,
 }
 
 FACT_COL_MAP_RAW: dict[str, str] = {
@@ -131,7 +141,7 @@ FACT_COL_MAP_RAW: dict[str, str] = {
     COL_ADJUSTMENTS: COL_ADJUSTMENTS_FACT,
     COL_GAIN_LOSS: COL_GAIN_LOSS_FACT,
     COL_TRANSFERS: COL_TRANSFERS_FACT,
-    "Production": COL_PRODUCTION_FACT,
+    COL_PRODUCTION: COL_PRODUCTION_FACT,
 }
 
 
@@ -153,6 +163,38 @@ def _insert_fact_columns(column_order: list[str], *, df_cols: list[str], show_fa
             out.append(fact)
             seen.add(fact)
 
+    return out
+
+
+def _ensure_cols_after(
+    column_order: list[str],
+    *,
+    required: list[str],
+    after: str,
+    before: str | None = None,
+) -> list[str]:
+    """Ensure required columns exist and appear after a given column.
+
+    Used to force-show certain columns (even if admin-config visibility is
+    outdated) while controlling where they land in the grid.
+    """
+    out = list(column_order)
+    required = [c for c in required if c]
+
+    # Remove existing occurrences (we'll re-insert in the desired spot).
+    out = [c for c in out if c not in required]
+
+    # Preferred insertion point: right after `after`.
+    if after in out:
+        pos = out.index(after) + 1
+    # If `after` missing, insert before `before` if present, else append.
+    elif before is not None and before in out:
+        pos = out.index(before)
+    else:
+        pos = len(out)
+
+    for i, c in enumerate(required):
+        out.insert(pos + i, c)
     return out
 
 
@@ -187,8 +229,29 @@ def _style_source_cells(df: pd.DataFrame, cols_to_color: list[str]) -> "pd.io.fo
     cols_set = set(cols_to_color)
     fact_cols = {c for c in cols if str(c).endswith(" Fact")}
 
+    def _is_system_inv_discrepancy(row: pd.Series) -> bool:
+        src = str(row.get("source", "")).strip().lower()
+        if src != "system":
+            return False
+
+        # Compare our computed values against upstream/system values when available.
+        # Allow a small tolerance (± threshold) before highlighting.
+        pairs = [
+            ("Opening Inv", "Opening Inv Fact"),
+            ("Close Inv", "Close Inv Fact"),
+        ]
+        for base, fact in pairs:
+            if base in row.index and fact in row.index:
+                if abs(_to_float(row.get(base)) - _to_float(row.get(fact))) > SYSTEM_DISCREPANCY_THRESHOLD_BBL:
+                    return True
+        return False
+
     def _row_style(row: pd.Series) -> list[str]:
-        bg = SOURCE_BG.get(str(row.get("source", "")).strip().lower(), "")
+        src = str(row.get("source", "")).strip().lower()
+
+        bg = SOURCE_BG.get(src, "")
+        if src == "system" and _is_system_inv_discrepancy(row):
+            bg = SYSTEM_DISCREPANCY_BG
         base_style = f"background-color: {bg};" if bg else ""
 
         styles: list[str] = []
@@ -245,12 +308,23 @@ def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFram
 
     out = df.copy()
 
+    # If the upstream inventory values are not already present as Fact columns,
+    # preserve them before we overwrite Opening/Close with calculated values.
+    if "source" in out.columns:
+        src = out["source"].astype(str).str.strip().str.lower()
+        if "Opening Inv" in out.columns and "Opening Inv Fact" not in out.columns:
+            out["Opening Inv Fact"] = np.where(src.eq("system"), out["Opening Inv"], np.nan)
+        if "Close Inv" in out.columns and "Close Inv Fact" not in out.columns:
+            out["Close Inv Fact"] = np.where(src.eq("system"), out["Close Inv"], np.nan)
+
     # Work with datetimes internally for stable sorting; convert back to date at end.
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
 
     numeric_candidates = [
         "Opening Inv",
+        "Opening Inv Fact",
         "Close Inv",
+        "Close Inv Fact",
         *DISPLAY_INFLOW_COLS,
         *DISPLAY_OUTFLOW_COLS,
         *DISPLAY_NET_COLS,
@@ -276,22 +350,11 @@ def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFram
         is_magellan = (id_col == "System" and str(system_val) == "Magellan")
 
         for i, idx in enumerate(g.index):
-            current_source = str(g.at[idx, "source"]).strip().lower() if "source" in g.columns else ""
-
-            # For system rows: preserve existing Opening/Close Inv from database
-            if current_source == "system":
-                # Keep the database values as-is
-                existing_close = _to_float(g.at[idx, "Close Inv"]) if "Close Inv" in g.columns else 0.0
-                # Update prev_close so next row (forecast) can use this as opening
-                prev_close = existing_close
-                continue  # Don't recalculate system rows
-
-            # For forecast/manual rows: calculate inventory
+            # Opening inventory is always the previous row's closing inventory.
+            # For the first row in the group, fall back to its existing opening (from DB) or 0.
             if i == 0:
-                # First row in group: use its existing opening or 0
                 opening = _to_float(g.at[idx, "Opening Inv"]) if "Opening Inv" in g.columns else 0.0
             else:
-                # Subsequent rows: opening = previous row's closing
                 opening = prev_close
 
             # Calculate Closing Inv based on system type
@@ -710,7 +773,21 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "Rack/Lifting",
     ]
     # Always keep columns required for grouping + lineage.
-    base = ["Date", id_col, "source", "Product", "updated", "Notes", "Opening Inv", "Close Inv"]
+    # NOTE: We keep the inventory Fact columns even when they are not displayed.
+    # This lets us (a) preserve upstream system values and (b) highlight system
+    # rows when our calculated inventory differs.
+    base = [
+        "Date",
+        id_col,
+        "source",
+        "Product",
+        "updated",
+        "Notes",
+        "Opening Inv",
+        "Close Inv",
+        "Opening Inv Fact",
+        "Close Inv Fact",
+    ]
     desired = []
     for c in base + ui_cols + extra:
         if c in df_display.columns and c not in desired:
@@ -775,6 +852,15 @@ def display_midcon_details(
     for c in must_have + visible:
         if c in cols and c not in column_order and c != "source":
             column_order.append(c)
+
+    # Force-show Production/Adjustments (even if older admin config rows don't include them),
+    # and place them to the right, immediately after Transfers.
+    column_order = _ensure_cols_after(
+        column_order,
+        required=["Production", "Adjustments"],
+        after="Transfers",
+        before="Notes",
+    )
 
     column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
 
@@ -894,6 +980,13 @@ def display_location_details(
             for c in must_have + visible:
                 if c in cols and c not in column_order and c != "source":
                     column_order.append(c)
+
+            column_order = _ensure_cols_after(
+                column_order,
+                required=["Production", "Adjustments"],
+                after="Transfers",
+                before="Notes",
+            )
 
             column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
 

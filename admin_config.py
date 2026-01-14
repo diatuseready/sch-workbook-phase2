@@ -49,6 +49,8 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Pipeline Out",
     "Gain/Loss",
     "Transfers",
+    "Production",
+    "Adjustments",
     "Notes",
 ]
 
