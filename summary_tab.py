@@ -116,6 +116,16 @@ def calculate_required_min(row, group_cols, df_filtered):
     return float(GLOBAL_REQUIRED_MIN_FALLBACK)
 
 
+def _us_number_column_config(df: pd.DataFrame, cols: list[str]) -> dict[str, object]:
+    """Return Streamlit column_config for numeric columns with US thousands separators."""
+    cfg: dict[str, object] = {}
+    for c in cols:
+        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+            # "accounting" yields comma-separated values like 1,226,275.00
+            cfg[c] = st.column_config.NumberColumn(c, format="accounting")
+    return cfg
+
+
 def display_regional_summary(df_filtered, active_region):
     """Display the regional summary section."""
     st.subheader("Summary")
@@ -269,10 +279,14 @@ def display_regional_summary(df_filtered, active_region):
 
     final_cols = [c for c in desired_order if c in display_df.columns]
 
+    df_out = display_df[final_cols]
+    column_config = _us_number_column_config(df_out, final_cols)
+
     st.dataframe(
-        display_df[final_cols],
+        df_out,
         width="stretch",
         height=320,
+        column_config=column_config,
     )
 
 
@@ -341,11 +355,15 @@ def display_forecast_table(df_filtered, active_region):
 
         forecast_cols = [COL_LOCATION, COL_PRODUCT, "Beginning inventory", "Projected EOM", "Build/Draw"]
         forecast_cols = [c for c in forecast_cols if c in forecast_df.columns]
-        # st.dataframe(forecast_df[forecast_cols], width="stretch", height=320)
+
+        df_out = forecast_df[forecast_cols]
+        column_config = _us_number_column_config(df_out, forecast_cols)
+
         st.dataframe(
-            forecast_df[forecast_cols],
+            df_out,
             width="stretch",
             height=320,
+            column_config=column_config,
         )
 
     else:

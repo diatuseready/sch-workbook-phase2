@@ -367,6 +367,11 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
     # Fact columns should always be read-only.
     locked.update({c for c in cols if str(c).endswith(" Fact")})
 
+    # Use US thousands separators for all numeric columns.
+    # Streamlit's built-in "accounting" format yields comma-separated values like 1,226,275.00
+    # and keeps a fixed 2-decimal display.
+    NUM_FMT = "accounting"
+
     cfg: dict[str, object] = {
         "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD"),
         id_col: st.column_config.TextColumn(id_col, disabled=True),
@@ -385,14 +390,14 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         if c in cfg or c == "Notes":
             continue
         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format="%.2f")
+            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format=NUM_FMT)
 
     for c in locked:
         if c in {"Date", id_col, "source", "Product"}:
             continue
         if c in cols and c not in cfg:
             if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-                cfg[c] = st.column_config.NumberColumn(c, disabled=True, format="%.2f")
+                cfg[c] = st.column_config.NumberColumn(c, disabled=True, format=NUM_FMT)
             else:
                 cfg[c] = st.column_config.TextColumn(c, disabled=True)
 
@@ -653,7 +658,6 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
 
     with c0:
         st.markdown("")
-        pass
 
     with c1:
         v = "—" if safefill is None else f"{safefill:,.0f}"
@@ -746,12 +750,24 @@ def display_midcon_details(
     )
     _show_thresholds(region_label=active_region, bottom=bottom, safefill=safefill, note=note)
 
-    show_fact = st.toggle(
-        "Show Fact Columns",
-        value=bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False)),
-        key=f"details_show_fact|{active_region}|{scope_sys or ''}|midcon",
-        help="Show upstream FACT_* values next to the editable columns.",
-    )
+    # Put Toggle + Save button on the same row.
+    c_toggle, c_save = st.columns([8, 2])
+    with c_toggle:
+        show_fact = st.toggle(
+            "Show Terminal Values",
+            value=bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False)),
+            key=f"details_show_fact|{active_region}|{scope_sys or ''}|midcon",
+            help="Show upstream system values next to the editable columns.",
+        )
+    with c_save:
+        save_clicked = st.button(
+            "💾 Save Changes",
+            key=f"save_{active_region}",
+            disabled=True,
+            help="Save is temporarily disabled.",
+        )
+    if save_clicked:
+        st.success("✅ Changes saved successfully!")
 
     visible = get_visible_columns(region=active_region, location=str(scope_sys) if scope_sys is not None else None)
     must_have = ["Date", "System", "Product", "Opening Inv", "Close Inv"]
@@ -806,11 +822,6 @@ def display_midcon_details(
         st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
         st.rerun()
 
-    st.markdown('<div class="save-btn-bottom">', unsafe_allow_html=True)
-    if st.button("💾 Save Changes", key=f"save_{active_region}"):
-        st.success("✅ Changes saved successfully!")
-    st.markdown("</div>", unsafe_allow_html=True)
-
 
 def display_location_details(
     df_filtered: pd.DataFrame,
@@ -842,12 +853,24 @@ def display_location_details(
 
     # st.caption(f"Location: {selected_loc}")
 
-    show_fact = st.toggle(
-        "Show Fact Columns",
-        value=bool(st.session_state.get(f"details_show_fact|{active_region}|{selected_loc}|location", False)),
-        key=f"details_show_fact|{active_region}|{selected_loc}|location",
-        help="Show upstream FACT_* values next to the editable columns.",
-    )
+    # Put Toggle + Save button on the same row.
+    c_toggle, c_save = st.columns([8, 2])
+    with c_toggle:
+        show_fact = st.toggle(
+            "Show Terminal Values",
+            value=bool(st.session_state.get(f"details_show_fact|{active_region}|{selected_loc}|location", False)),
+            key=f"details_show_fact|{active_region}|{selected_loc}|location",
+            help="Show upstream system values next to the editable columns.",
+        )
+    with c_save:
+        save_clicked = st.button(
+            f"Save {selected_loc} Data",
+            key=f"save_{active_region}_{selected_loc}",
+            disabled=True,
+            help="Save is temporarily disabled.",
+        )
+    if save_clicked:
+        st.success(f"✅ Changes for {selected_loc} saved successfully!")
 
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
@@ -918,11 +941,6 @@ def display_location_details(
             if _needs_inventory_rerun(edited, recomputed):
                 st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
                 st.rerun()
-
-            st.markdown('<div class="save-btn-bottom">', unsafe_allow_html=True)
-            if st.button(f"💾 Save {selected_loc} / {prod_name}", key=f"save_{active_region}_{selected_loc}_{prod_name}"):
-                st.success(f"✅ Changes for {selected_loc} / {prod_name} saved successfully!")
-            st.markdown("</div>", unsafe_allow_html=True)
 
 
 def display_details_tab(

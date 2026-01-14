@@ -18,6 +18,18 @@ def apply_custom_css():
     """Apply custom CSS styling to the app."""
     css_style = f"""
     <style>
+    /* Remove top whitespace: hide Streamlit's header chrome and tighten main padding */
+    [data-testid="stHeader"],
+    [data-testid="stToolbar"] {{
+        display: none !important;
+    }}
+
+    /* Streamlit keeps default vertical padding around the app; reduce it */
+    .block-container {{
+        padding-top: 1rem;
+        padding-bottom: 1.5rem;
+    }}
+
     /* Hide the sidebar entirely (app is designed as a top-down, single-column flow) */
     [data-testid="stSidebar"],
     [data-testid="stSidebarNav"],
@@ -44,7 +56,7 @@ def apply_custom_css():
         font-weight: 600;
         border-radius: 10px;
         padding: 1rem;
-        margin-bottom: 1.8rem;
+        margin-bottom: 1.2rem;
     }}
     .stTabs [data-baseweb="tab-list"] {{ gap: 10px; }}
     .stTabs [data-baseweb="tab"] {{
@@ -90,6 +102,7 @@ def apply_custom_css():
         box-shadow: 0 2px 6px rgba(0,0,0,0.08);
         border-left: 4px solid {ACCENT_GREEN};
         line-height: 1.1;
+        margin-bottom: 0.5rem;
     }}
     .mini-card .label {{
         font-size: 0.8rem;
