@@ -209,8 +209,7 @@ def _to_float(x) -> float:
     try:
         if x is None or (isinstance(x, float) and pd.isna(x)):
             return 0.0
-        # Streamlit editor may return formatted strings (e.g. "1,234.00").
-        # Also guard against blanks / em-dash placeholders.
+
         if isinstance(x, str):
             s = x.strip()
             if s in {"", "—", "-"}:
@@ -561,8 +560,7 @@ def _extend_with_30d_forecast(
 
     daily = _ensure_lineage_cols(daily).sort_values("Date")
     flow_cols = _available_flow_cols(daily)
-    # We only forecast Rack/Liftings. All other flows default to 0 for forecast
-    # rows, but remain editable in the UI.
+
     forecast_flow_cols = [c for c in [COL_RACK_LIFTINGS_RAW] if c in flow_cols]
 
     if forecast_end is not None:
@@ -581,15 +579,12 @@ def _extend_with_30d_forecast(
             if forecast_flow_cols:
                 flows.update(estimate_forecast_flows(group, flow_cols=forecast_flow_cols, d=d))
 
-            # opening, closing = _roll_inventory(prev_close, flows, flow_cols)
-
-            # UPDATED CALL: Pass system/product for Magellan detection
             opening, closing = _roll_inventory(
                 prev_close,
                 flows,
                 flow_cols,
-                system=str(id_val) if id_col == "System" else None,  # NEW: Pass system name
-                product=str(product) if product else None  # NEW: Pass product name
+                system=str(id_val) if id_col == "System" else None,
+                product=str(product) if product else None
             )
 
             prev_close = closing
@@ -657,7 +652,8 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
     c0, c1, c2, c3 = st.columns([5, 2, 2, 3])
 
     with c0:
-        st.markdown(f"### 📍 {region_label}")
+        st.markdown("")
+        pass
 
     with c1:
         v = "—" if safefill is None else f"{safefill:,.0f}"
@@ -777,9 +773,6 @@ def display_midcon_details(
     column_config = _column_config(df_display, column_order, "System")
     column_config = {k: v for k, v in column_config.items() if k in column_order}
 
-    # IMPORTANT: the editor keeps its own dataframe in session_state.
-    # If we don't include the current filters in the keys, changing the sidebar
-    # date range (or selected System) won't refresh the table.
     base_key = (
         f"{active_region}|{scope_sys or ''}|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
         f"|fact={int(bool(show_fact))}_edit"
@@ -825,22 +818,15 @@ def display_location_details(
     *,
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
+    selected_loc: str | None,
 ):
-    """Non-Midcon details view.
-
-    New UX: user selects a single Location in sidebar, then we show tabs by
-    Product for that selected Location.
-    """
-
-    st.subheader("🧾 Details")
 
     if df_filtered.empty:
         st.info("No data available for the selected filters.")
         return
 
-    selected_loc = st.session_state.get("selected_loc")
     if selected_loc in (None, ""):
-        st.info("Select a Location in the sidebar and press Submit Filters.")
+        st.info("Select a Location/System above and press Submit.")
         return
 
     df_loc = df_filtered[df_filtered["Location"] == str(selected_loc)] if "Location" in df_filtered.columns else pd.DataFrame()
@@ -854,7 +840,7 @@ def display_location_details(
         st.info("No products available for the selected location.")
         return
 
-    st.caption(f"Location: {selected_loc}")
+    # st.caption(f"Location: {selected_loc}")
 
     show_fact = st.toggle(
         "Show Fact Columns",
@@ -872,8 +858,6 @@ def display_location_details(
             df_all = _extend_with_30d_forecast(df_prod, id_col="Location", forecast_end=end_ts)
             df_display, cols = build_details_view(df_all, id_col="Location")
 
-            # For non-Midcon details, each tab is a single Product, so we can apply
-            # product-scoped thresholds.
             bottom, safefill, note = _threshold_values(
                 region=active_region,
                 location=str(selected_loc),
@@ -914,8 +898,6 @@ def display_location_details(
             if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
                 st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="Location")
 
-            # Streamlit warning: when `num_rows='dynamic'`, `hide_index=True` only
-            # works if the input df uses a RangeIndex. Ensure that here.
             st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
 
             styled = _style_source_cells(st.session_state[df_key], locked_cols)
@@ -949,8 +931,97 @@ def display_details_tab(
     *,
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
+    selected_loc: str | None = None,
 ):
     if active_region == "Midcon":
         display_midcon_details(df_filtered, active_region, start_ts=start_ts, end_ts=end_ts)
     else:
-        display_location_details(df_filtered, active_region, start_ts=start_ts, end_ts=end_ts)
+        display_location_details(
+            df_filtered,
+            active_region,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            selected_loc=selected_loc,
+        )
+
+
+def render_details_filters(*, regions: list[str], active_region: str | None) -> dict:
+    from data_loader import load_region_filter_metadata
+    from admin_config import get_default_date_window
+
+    region = active_region
+    if not region:
+        return {
+            "active_region": None,
+            "start_ts": pd.Timestamp.today().normalize(),
+            "end_ts": pd.Timestamp.today().normalize(),
+            "selected_loc": None,
+            "loc_col": "Location",
+            "locations": [],
+        }
+
+    loc_col = "System" if region == "Midcon" else "Location"
+    filter_label = "🏭 System" if loc_col == "System" else "Location"
+
+    meta = load_region_filter_metadata(region=region, loc_col=loc_col)
+    locations = meta.get("locations", [])
+
+    c1, c2, c3 = st.columns([2.2, 2.8, 1.2])
+    with c1:
+        if not locations:
+            st.warning("No locations available")
+            selected_loc = None
+        else:
+            # Persist selection per region
+            key_loc = f"details_selected_loc|{region}"
+            current = st.session_state.get(key_loc)
+            index = locations.index(current) if current in locations else 0
+            selected_loc = st.selectbox(filter_label, options=locations, index=index, key=key_loc)
+
+    today = pd.Timestamp.today().date()
+    start_off, end_off = get_default_date_window(region=region, location=(str(selected_loc) if selected_loc else None))
+    default_start = today + timedelta(days=int(start_off))
+    default_end = today + timedelta(days=int(end_off))
+
+    with c2:
+        # Allow selection wider than defaults, within dataset bounds.
+        df_min = meta.get("min_date", pd.NaT)
+        df_max = meta.get("max_date", pd.NaT)
+        df_min_d = pd.to_datetime(df_min, errors="coerce").date() if pd.notna(df_min) else default_start
+        df_max_d = pd.to_datetime(df_max, errors="coerce").date() if pd.notna(df_max) else default_end
+        min_value = min(df_min_d, default_start)
+        max_value = max(df_max_d, default_end)
+
+        key_dates = f"details_date|{region}|{str(selected_loc) if selected_loc else 'all'}"
+        date_range = st.date_input(
+            "Date Range",
+            value=(default_start, default_end),
+            min_value=min_value,
+            max_value=max_value,
+            key=key_dates,
+        )
+
+        if isinstance(date_range, (list, tuple)):
+            if len(date_range) == 2:
+                start_date, end_date = date_range
+            else:
+                start_date = end_date = date_range[0] if date_range else today
+        else:
+            start_date = end_date = date_range
+
+    with c3:
+        st.markdown('<div class="btn-spacer"></div>', unsafe_allow_html=True)
+        submitted = st.button("Submit", type="primary")
+
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date)
+
+    return {
+        "active_region": region,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "selected_loc": selected_loc,
+        "loc_col": loc_col,
+        "locations": locations,
+        "submitted": bool(submitted),
+    }

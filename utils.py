@@ -32,12 +32,6 @@ DISPLAY_NUMERIC_COLS: tuple[str, ...] = (
 
 
 def _format_forecast_display(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a display-friendly dataframe for the details editor.
-
-    - Formats numeric columns with thousand separators and 2 decimals.
-    Note: This function intentionally returns *strings* for the formatted columns.
-    """
-
     if df is None or df.empty:
         return df
 
@@ -56,16 +50,6 @@ def _format_forecast_display(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def dynamic_input_data_editor(data, key, **_kwargs):
-    """Small wrapper around :func:`st.data_editor`.
-
-    Historically this function attempted to "restore" the editor's initial
-    dataframe on every edit. That behavior causes user edits to be lost when the
-    page reruns (Streamlit reruns the script on every interaction).
-
-    We now simply pass through to ``st.data_editor`` and (optionally) mark a
-    ``__changed`` flag in ``st.session_state``.
-    """
-
     changed_key = f"{key}__changed"
 
     user_on_change = _kwargs.get("on_change")

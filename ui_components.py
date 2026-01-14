@@ -1,12 +1,7 @@
-"""
-UI Components module for HF Sinclair Scheduler Dashboard
-Contains styling, CSS, and UI helper functions
-"""
-
 import streamlit as st
 import pandas as pd
 
-from config import BG_LIGHT, TEXT_DARK, PRIMARY_BLUE, CARD_BG, ACCENT_GREEN
+from config import BG_LIGHT, TEXT_DARK, PRIMARY_GREEN, CARD_BG, ACCENT_GREEN
 
 
 def setup_page():
@@ -14,7 +9,8 @@ def setup_page():
     st.set_page_config(
         page_title="HF Sinclair Scheduler Dashboard",
         layout="wide",
-        initial_sidebar_state="expanded"
+        # UX: we don't use the sidebar in this app flow.
+        initial_sidebar_state="collapsed"
     )
 
 
@@ -22,13 +18,26 @@ def apply_custom_css():
     """Apply custom CSS styling to the app."""
     css_style = f"""
     <style>
+    /* Hide the sidebar entirely (app is designed as a top-down, single-column flow) */
+    [data-testid="stSidebar"],
+    [data-testid="stSidebarNav"],
+    [data-testid="collapsedControl"] {{
+        display: none !important;
+    }}
+
+    /* Remove the left gutter Streamlit keeps for the sidebar */
+    section[data-testid="stMain"] {{
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
+    }}
+
     body {{
         background-color: {BG_LIGHT};
         color: {TEXT_DARK};
         font-family: 'Inter', sans-serif;
     }}
     .main-header {{
-        background-color: {PRIMARY_BLUE};
+        background-color: {PRIMARY_GREEN};
         color: white;
         text-align: center;
         font-size: 1.7rem;
@@ -41,25 +50,30 @@ def apply_custom_css():
     .stTabs [data-baseweb="tab"] {{
         background-color: {CARD_BG};
         border-radius: 8px 8px 0 0;
-        color: {PRIMARY_BLUE};
+        color: {PRIMARY_GREEN};
         font-weight: 600;
         border: 1px solid #E2E8F0;
         padding: 0.1rem 0.8rem;
     }}
     .stTabs [aria-selected="true"] {{
-        background-color: {PRIMARY_BLUE} !important;
+        background-color: {PRIMARY_GREEN} !important;
         color: white !important;
         border-bottom: 3px solid {ACCENT_GREEN} !important;
     }}
     div.stButton > button {{
-        background: {PRIMARY_BLUE} !important;
+        background: {PRIMARY_GREEN} !important;
         color: white;
         border-radius: 6px;
         font-weight: 600;
-        padding: 0.6rem 1.2rem;
         border: none;
         transition: 0.3s;
     }}
+
+    /* Utility: vertical spacer to align buttons with input widgets (labels). */
+    .btn-spacer {{
+        height: 1.6rem;
+    }}
+
     div.stButton > button:hover {{ opacity: 0.9; }}
     .card {{
         background-color: {CARD_BG};
@@ -87,7 +101,7 @@ def apply_custom_css():
     .mini-card .value {{
         font-size: 1.1rem;
         font-weight: 800;
-        color: {PRIMARY_BLUE};
+        color: {PRIMARY_GREEN};
         margin: 0.15rem 0 0 0;
     }}
     </style>
@@ -156,13 +170,6 @@ def display_data_freshness_cards(
     loc_col: str,
     source_status: "pd.DataFrame",
 ):
-    """Display data freshness cards for the selected location/system.
-
-    Previously, this section filtered only by Region, which could show cards for
-    many locations at once. The desired UX is to show freshness cards for the
-    currently selected Location/System.
-    """
-    st.subheader("📈 Data Freshness")
 
     if source_status is None or source_status.empty:
         st.info("No source status data available.")
@@ -233,7 +240,7 @@ def display_data_freshness_cards(
             st.markdown(
                 f"""
                 <div class="card">
-                    <h4 style="color:{PRIMARY_BLUE}; margin-bottom:0.2rem;">{name}</h4>
+                    <h4 style="color:{PRIMARY_GREEN}; margin-bottom:0.2rem;">{name}</h4>
                     <p style="margin:0; font-size:0.9rem; color:{TEXT_DARK};">
                         Last Updated: <b>{last_upd}</b><br>
                         Source System: <b>{source_system}</b><br>

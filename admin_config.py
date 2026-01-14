@@ -428,13 +428,7 @@ def get_threshold_overrides(*, region: str, location: str | None, product: str |
 
 
 def display_super_admin_panel(*, regions: list[str], active_region: str | None, all_data: pd.DataFrame | None = None):
-    """Streamlit UI for super-admin configuration.
-
-    Note: This used to live in `admin_panel.py` but was moved here so the admin
-    config storage + UI are in one place.
-    """
-
-    st.subheader("🛠️ Super Admin Configuration")
+    st.subheader("Super Admin Configuration")
 
     # ------------------------------------------------------------------
     # Manual product addition (writes to RAW_INVENTORY_TABLE / APP_INVENTORY)

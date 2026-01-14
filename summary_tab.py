@@ -1,8 +1,3 @@
-"""
-Summary Tab module for HF Sinclair Scheduler Dashboard
-Contains all logic and display components for the Regional Summary tab
-"""
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -123,7 +118,7 @@ def calculate_required_min(row, group_cols, df_filtered):
 
 def display_regional_summary(df_filtered, active_region):
     """Display the regional summary section."""
-    st.subheader("📊 Regional Summary")
+    st.subheader("Summary")
 
     if df_filtered.empty:
         st.info("No data available for the selected region and filters.")
@@ -273,11 +268,6 @@ def display_regional_summary(df_filtered, active_region):
     ]
 
     final_cols = [c for c in desired_order if c in display_df.columns]
-    # st.dataframe(
-    #     display_df[final_cols],
-    #     width="stretch",
-    #     height=320
-    # )
 
     st.dataframe(
         display_df[final_cols],
@@ -288,7 +278,7 @@ def display_regional_summary(df_filtered, active_region):
 
 def display_forecast_table(df_filtered, active_region):
     """Display the forecast table section."""
-    st.markdown("### 📈 Forecast Table")
+    st.markdown("### Forecast")
 
     if df_filtered.empty:
         st.info("No data available for the selected filters.")

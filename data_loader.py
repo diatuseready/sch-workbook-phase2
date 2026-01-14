@@ -1,15 +1,4 @@
 from __future__ import annotations
-
-"""Data loading + sidebar filters.
-
-Performance goal: do not load the full inventory table on page load.
-We load only lightweight metadata (regions, location list, date bounds) until the
-user submits filters.
-
-Note: we intentionally avoid importing `admin_config` at module import time to
-prevent circular imports (admin_config imports data_loader).
-"""
-
 import pandas as pd
 import streamlit as st
 
@@ -160,12 +149,6 @@ def insert_manual_product_today(
     closing_inventory_bbl: float,
     note: str,
 ) -> None:
-    """Insert a new *manual* inventory row for today's date.
-
-    - For SQLite we insert into :data:`SQLITE_TABLE`.
-    - For Snowflake we insert into :data:`RAW_INVENTORY_TABLE`.
-    - All flow columns (batch/rack/pipeline/etc) are set to 0.
-    """
 
     region_s = str(region).strip() or "Unknown"
     location_s = str(location).strip()
@@ -523,15 +506,6 @@ def load_source_status() -> pd.DataFrame:
 
 
 def initialize_data():
-    """Initialize lightweight session state.
-
-    We intentionally avoid loading the full inventory table up-front. Instead, we:
-    - load available regions (small distinct query)
-    - load source-status table (already small)
-
-    Actual inventory data is loaded only when the user submits filters.
-    """
-
     if "data_loaded" not in st.session_state:
         # Load and cache source freshness/status
         try:
@@ -702,21 +676,6 @@ def _normalize_region_label(active_region: str | None) -> str | None:
 
 
 def create_sidebar_filters(regions: list[str], df_region: pd.DataFrame) -> dict:
-    """Create sidebar filters UI.
-
-    This replaces sidebar_filters.py.
-
-    Key behavior:
-    - Location/System is **single-select**
-    - Product filter removed
-    - Designed to be used with a submit button (data loads on submit)
-
-    IMPORTANT UX NOTE:
-    The Region selector is expected to live **outside** the form so that changing
-    Region immediately triggers a rerun and we can refresh the Location/System
-    options without requiring the user to hit Submit.
-    """
-
     active_region = st.session_state.get("active_region")
 
     # Location/System selector (options depend on active_region)
@@ -753,24 +712,16 @@ def create_sidebar_filters(regions: list[str], df_region: pd.DataFrame) -> dict:
         region=_normalize_region_label(active_region or "Unknown") or "Unknown",
         location=scope_location,
     )
-    # Admin-configured offsets are expressed as "days from today".
-    # Example: start_off = -12 means 12 days in the past.
+
     default_start = today + timedelta(days=int(start_off))
     default_end = today + timedelta(days=int(end_off))
 
     df_min_d = pd.to_datetime(df_min, errors="coerce").date() if pd.notna(df_min) else default_start
     df_max_d = pd.to_datetime(df_max, errors="coerce").date() if pd.notna(df_max) else default_end
 
-    # Allow selection across both the available data bounds and the configured default window.
-    # NOTE: `min_value`/`max_value` control what the user *can* select, but the `value`
-    # controls what is *shown by default*.
     min_value = min(df_min_d, default_start)
     max_value = max(df_max_d, default_end)
 
-    # Default should always be based on the configured offset window (e.g., -12/+30)
-    # rather than jumping to the earliest date in the dataset.
-    #
-    # Users can still widen the window earlier/later using the calendar widget.
     actual_start = default_start
     actual_end = default_end
 
@@ -803,12 +754,6 @@ def create_sidebar_filters(regions: list[str], df_region: pd.DataFrame) -> dict:
 
 
 def apply_filters(df_region: pd.DataFrame, filters: dict) -> pd.DataFrame:
-    """Apply the selected filters to the dataframe (in-memory).
-
-    Note: with the new submit-driven querying, this will often be applied to
-    already-filtered DB results. It's still useful as a safety net.
-    """
-
     df_filtered = df_region.copy()
 
     if df_filtered.empty:
@@ -842,11 +787,6 @@ def _load_inventory_data_filtered_cached(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
 ) -> pd.DataFrame:
-    """Load inventory data filtered at the source (SQLite/Snowflake).
-
-    This is the performance-critical path: we avoid loading the entire dataset
-    when users only need a small slice.
-    """
 
     region_norm = _normalize_region_label(region) if region else None
 
@@ -955,6 +895,36 @@ def load_filtered_inventory_data(filters: dict) -> pd.DataFrame:
         start_ts=pd.Timestamp(filters.get("start_ts")),
         end_ts=pd.Timestamp(filters.get("end_ts")),
     )
+
+
+def load_region_inventory_data(*, region: str) -> pd.DataFrame:
+    loc_col = "System" if _normalize_region_label(region) == "Midcon" else "Location"
+    meta = load_region_filter_metadata(region=region, loc_col=loc_col)
+    max_date = meta.get("max_date", pd.NaT)
+
+    # The summary calculations only need a recent window (latest date, prior
+    # day, and 7-day average). To keep queries light, we load a bounded slice
+    # ending at the region's max date.
+    window_days = 90
+
+    if pd.isna(max_date):
+        end_ts = pd.Timestamp.today().normalize()
+    else:
+        end_ts = pd.to_datetime(max_date)
+
+    start_ts = end_ts - pd.Timedelta(days=window_days)
+
+    df = _load_inventory_data_filtered_cached(
+        DATA_SOURCE,
+        SQLITE_DB_PATH,
+        SQLITE_TABLE,
+        region=region,
+        loc_col=loc_col,
+        selected_loc=None,
+        start_ts=pd.Timestamp(start_ts),
+        end_ts=pd.Timestamp(end_ts),
+    )
+    return ensure_numeric_columns(df)
 
 
 def require_selected_location(filters: dict) -> None:
