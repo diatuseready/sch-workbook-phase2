@@ -1,12 +1,3 @@
-"""HF Sinclair Scheduler Dashboard - Main Application.
-
-Redesigned UX (top-down, no sidebar):
-- Region selector under the header
-- Summary/Details switch appears only after Region is selected
-- Summary is region-scoped and independent of Details filters
-- Details has in-page Location + Date filters + Submit above the table
-"""
-
 import streamlit as st
 import pandas as pd
 
@@ -35,6 +26,10 @@ def main():
     apply_custom_css()
     display_header()
 
+    # One-shot flag to collapse all expanders on the *next* rerun.
+    # (Used by Admin Config + Filters Submit actions.)
+    collapse_now = bool(st.session_state.pop("collapse_expandables_once", False))
+
     # Initialize lightweight metadata (regions + source status)
     regions = initialize_data()
 
@@ -55,7 +50,7 @@ def main():
         st.warning("No regions available")
         st.stop()
 
-    with st.expander("Controls", expanded=True):
+    with st.expander("Controls", expanded=(False if collapse_now else True)):
         header_c1, header_c2 = st.columns([4, 1])
         with header_c1:
             st.selectbox("Region", regions, key="active_region")
@@ -64,9 +59,12 @@ def main():
             st.markdown('<div class="btn-spacer"></div>', unsafe_allow_html=True)
             right = st.columns([1, 1])[1]
             with right:
-                if st.button("Admin Config", key="admin_open"):
+                def _open_admin_config():
+                    # Collapse all expanders on rerun, then enter admin view.
+                    st.session_state.collapse_expandables_once = True
                     st.session_state.admin_view = True
-                    st.rerun()
+
+                st.button("Admin Config", key="admin_open", on_click=_open_admin_config)
 
         main_tabs = ["📊 Regional Summary", "🧾 Details"]
         if "main_tab" not in st.session_state:
@@ -112,7 +110,7 @@ def main():
     # Details
     # -------
 
-    with st.expander("Filters", expanded=True):
+    with st.expander("Filters", expanded=(False if collapse_now else True)):
         details_filters = render_details_filters(regions=regions, active_region=active_region_norm)
 
     # Load details data only on submit (but keep previous results displayed).
@@ -130,11 +128,15 @@ def main():
             st.session_state[details_cache_key] = load_filtered_inventory_data(details_filters)
             st.session_state[filters_cache_key] = details_filters
 
+        # Collapse expanders after Submit. (Rerun ensures the expander state updates.)
+        st.session_state["collapse_expandables_once"] = True
+        st.rerun()
+
     df_details = st.session_state.get(details_cache_key, pd.DataFrame())
     effective_filters = st.session_state.get(filters_cache_key, details_filters)
 
     # Optional: show freshness only when a location/system is in-scope.
-    with st.expander("Data Freshness", expanded=False):
+    with st.expander("Data Freshness", expanded=(False if collapse_now else False)):
         source_status = st.session_state.get("source_status", pd.DataFrame())
         display_data_freshness_cards(
             active_region=active_region_norm,

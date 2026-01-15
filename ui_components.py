@@ -1,3 +1,6 @@
+import base64
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 
@@ -51,12 +54,36 @@ def apply_custom_css():
     .main-header {{
         background-color: {PRIMARY_GREEN};
         color: white;
-        text-align: center;
         font-size: 1.7rem;
         font-weight: 600;
         border-radius: 10px;
         padding: 1rem;
         margin-bottom: 1.2rem;
+        display: flex;
+        align-items: center;
+    }}
+
+    /* Header layout: logo on the far-left, title centered. */
+    .main-header .header-left,
+    .main-header .header-right {{
+        width: 10%; /* keep left/right equal so the title remains centered */
+        min-width: 56px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+    }}
+    .main-header .header-right {{
+        justify-content: flex-end;
+    }}
+    .main-header .header-title {{
+        flex: 1;
+        text-align: center;
+        line-height: 1.1;
+    }}
+    .main-header .header-logo {{
+        height: 40px;
+        width: auto;
+        display: block;
     }}
     .stTabs [data-baseweb="tab-list"] {{ gap: 10px; }}
     .stTabs [data-baseweb="tab"] {{
@@ -87,6 +114,11 @@ def apply_custom_css():
     }}
 
     div.stButton > button:hover {{ opacity: 0.9; }}
+
+    [data-testid="stDataEditor"] [data-testid="stElementToolbar"],
+    [data-testid="stDataEditor"] [data-testid="stToolbar"] {{
+        display: none !important;
+    }}
     .card {{
         background-color: {CARD_BG};
         padding: 0.9rem;
@@ -122,9 +154,48 @@ def apply_custom_css():
     st.markdown(css_style, unsafe_allow_html=True)
 
 
+@st.cache_data(show_spinner=False)
+def _get_logo_data_uri(filename: str = "hfs_dino_logo.png") -> str | None:
+    """Return a data URI for the header logo, or None if not available.
+
+    We embed the image as base64 so it works reliably in Streamlit without
+    needing static file hosting.
+    """
+    # Prefer a path relative to this source file (works regardless of CWD).
+    p = Path(__file__).resolve().with_name(filename)
+    if not p.exists():
+        # Fallback for cases where the app is executed from repo root.
+        p = Path(filename)
+    if not p.exists():
+        return None
+
+    data = base64.b64encode(p.read_bytes()).decode("utf-8")
+    return f"data:image/png;base64,{data}"
+
+
 def display_header():
     """Display the main header of the application."""
-    st.markdown('<div class="main-header">HF Sinclair Scheduler Dashboard</div>', unsafe_allow_html=True)
+    logo_uri = _get_logo_data_uri()
+    if logo_uri:
+        st.markdown(
+            f"""
+            <div class="main-header">
+                <div class="header-left">
+                    <img class="header-logo" src="{logo_uri}" alt="HF Sinclair" />
+                </div>
+                <div class="header-title">Scheduler FlowSight</div>
+                <div class="header-right"></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    # Fallback (no logo)
+    st.markdown(
+        '<div class="main-header"><div class="header-title">HF Sinclair Scheduler FlowSight</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _pipeline_down(processing_status: str) -> bool:

@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import html
 from datetime import timedelta
 
 from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
@@ -775,7 +776,9 @@ def _threshold_values(
 
 
 def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float | None, note: str | None = None):
-    c0, c1, c2, c3 = st.columns([5, 2, 2, 3])
+    """Render the SafeFill/Bottom/Note cards plus a hover tooltip for Close Inv formula."""
+
+    c0, c1, c2, c3, c4 = st.columns([5, 2, 2, 3, 0.6])
 
     with c0:
         st.markdown("")
@@ -811,6 +814,44 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
             <div class="mini-card">
               <p class="label">Note</p>
               <p class="value" style="font-size:0.95rem; font-weight:700;">{v}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with c4:
+        # Hover tooltip describing how Close Inv is calculated.
+        # Streamlit popovers are click-based; for hover we use HTML `title=`.
+        tip_raw = "\n".join(
+            [
+                "Closing Inventory calculation",
+                "Standard: Close = Opening + (Batch In + Pipeline In + Production) - (Batch Out + Rack/Lifting + Pipeline Out) + (Adjustments + Gain/Loss + Transfers)",
+                "Midcon (Magellan only): Close = Opening + Adjustments - Rack/Lifting",
+                "Note: Opening rolls forward from prior day Close (first day uses stored Opening).",
+            ]
+        )
+        tip_attr = html.escape(tip_raw, quote=True).replace("\n", "&#10;")
+
+        st.markdown(
+            f"""
+            <div style="display:flex; justify-content:flex-end; align-items:center; height:100%;">
+              <span
+                title="{tip_attr}"
+                style="
+                  display:inline-flex;
+                  align-items:center;
+                  justify-content:center;
+                  width:32px;
+                  height:32px;
+                  border-radius:8px;
+                  background: #F7FAFC;
+                  border: 1px solid #E2E8F0;
+                  font-weight: 800;
+                  color: #2F855A;
+                  cursor: help;
+                  user-select: none;
+                "
+              >ℹ️</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -895,7 +936,7 @@ def display_midcon_details(
     c_toggle, c_save = st.columns([8, 2])
     with c_toggle:
         show_fact = st.toggle(
-            "Show Terminal Values",
+            "Show Terminal Feed",
             value=bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False)),
             key=f"details_show_fact|{active_region}|{scope_sys or ''}|midcon",
             help="Show upstream system values next to the editable columns.",
@@ -958,6 +999,7 @@ def display_midcon_details(
 
     edited = dynamic_input_data_editor(
         styled,
+        num_rows="fixed",
         width="stretch",
         height=400,
         hide_index=True,
@@ -1007,7 +1049,7 @@ def display_location_details(
     c_toggle, c_save = st.columns([8, 2])
     with c_toggle:
         show_fact = st.toggle(
-            "Show Terminal Values",
+            "Show Terminal Feed",
             value=bool(st.session_state.get(f"details_show_fact|{active_region}|{selected_loc}|location", False)),
             key=f"details_show_fact|{active_region}|{selected_loc}|location",
             help="Show upstream system values next to the editable columns.",
@@ -1090,7 +1132,7 @@ def display_location_details(
 
             edited = dynamic_input_data_editor(
                 styled,
-                num_rows="dynamic",
+                num_rows="fixed",
                 width="stretch",
                 height=DETAILS_EDITOR_HEIGHT_PX,
                 hide_index=True,

@@ -462,12 +462,30 @@ def get_default_date_window(*, region: str, location: str | None) -> tuple[int, 
 
 
 def get_threshold_overrides(*, region: str, location: str | None, product: str | None = None) -> dict:
-    cfg = get_effective_config(region=region, location=location, product=product)
-    return {
-        "BOTTOM": cfg.get("BOTTOM"),
-        "SAFEFILL": cfg.get("SAFEFILL"),
-        "NOTE": cfg.get("NOTE"),
-    }
+    if product is None or str(product).strip() == "":
+        # No product in scope => thresholds are not applicable.
+        return {"BOTTOM": None, "SAFEFILL": None, "NOTE": None}
+
+    df = load_admin_config_df()
+    if df is None or df.empty:
+        return {"BOTTOM": None, "SAFEFILL": None, "NOTE": None}
+
+    region = str(region).strip() or "Unknown"
+    loc = _location_key(location)
+    prod = _product_key(product)
+
+    product_only = _rows_for_scope(df, Scope(region=region, location=None, product=prod))
+    location_product = _rows_for_scope(df, Scope(region=region, location=loc, product=prod))
+
+    out = {"BOTTOM": None, "SAFEFILL": None, "NOTE": None}
+    for rows in [product_only, location_product]:
+        if not rows.empty:
+            r = rows.iloc[-1]
+            for k in out.keys():
+                if k in rows.columns:
+                    out[k] = r.get(k)
+
+    return out
 
 
 def display_super_admin_panel(*, regions: list[str], active_region: str | None, all_data: pd.DataFrame | None = None):
@@ -606,25 +624,36 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
         )
 
     st.markdown("#### Thresholds")
-    c1, c2 = st.columns(2)
-    with c1:
-        bottom = st.text_input(
-            "Bottom",
-            value="" if cfg.get("BOTTOM") is None or pd.isna(cfg.get("BOTTOM")) else str(cfg.get("BOTTOM")),
-            placeholder="Leave blank for no override",
-        )
-    with c2:
-        safefill = st.text_input(
-            "SafeFill",
-            value="" if cfg.get("SAFEFILL") is None or pd.isna(cfg.get("SAFEFILL")) else str(cfg.get("SAFEFILL")),
-            placeholder="Leave blank for no override",
-        )
+    bottom = ""
+    safefill = ""
+    note = ""
 
-    note = st.text_input(
-        "Note",
-        value="" if cfg.get("NOTE") is None or (isinstance(cfg.get("NOTE"), float) and pd.isna(cfg.get("NOTE"))) else str(cfg.get("NOTE")),
-        placeholder="Optional note for this scope",
-    )
+    if product is None:
+        st.info("Select a Product to edit Bottom / SafeFill thresholds.")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            bottom = st.text_input(
+                "Bottom",
+                value="" if cfg.get("BOTTOM") is None or pd.isna(cfg.get("BOTTOM")) else str(cfg.get("BOTTOM")),
+                placeholder="Leave blank for no override",
+            )
+        with c2:
+            safefill = st.text_input(
+                "SafeFill",
+                value="" if cfg.get("SAFEFILL") is None or pd.isna(cfg.get("SAFEFILL")) else str(cfg.get("SAFEFILL")),
+                placeholder="Leave blank for no override",
+            )
+
+        note = st.text_input(
+            "Note",
+            value=(
+                ""
+                if cfg.get("NOTE") is None or (isinstance(cfg.get("NOTE"), float) and pd.isna(cfg.get("NOTE")))
+                else str(cfg.get("NOTE"))
+            ),
+            placeholder="Optional note for this product scope",
+        )
 
     if product is None:
         st.markdown("#### Default Date Range Selection")
@@ -658,9 +687,10 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 if product is None
                 else cfg.get("VISIBLE_COLUMNS_JSON")
             ),
-            "BOTTOM": _to_float_or_none(bottom),
-            "SAFEFILL": _to_float_or_none(safefill),
-            "NOTE": (str(note).strip() or None),
+
+            "BOTTOM": (_to_float_or_none(bottom) if product is not None else None),
+            "SAFEFILL": (_to_float_or_none(safefill) if product is not None else None),
+            "NOTE": ((str(note).strip() or None) if product is not None else None),
             "DEFAULT_START_DAYS": int(start_days),
             "DEFAULT_END_DAYS": int(end_days),
             "RACK_LIFTING_FORECAST_METHOD": (
