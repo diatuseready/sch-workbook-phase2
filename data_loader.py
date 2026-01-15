@@ -97,7 +97,16 @@ def get_snowflake_session():
 def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(index=raw_df.index)
 
-    df["Date"] = pd.to_datetime(_col(raw_df, "DATA_DATE"), errors="coerce")
+    # Use OPERATIONAL_DATE as the canonical date for the dashboard.
+    # Fall back to DATA_DATE for backward compatibility with older sources.
+    date_raw = _col(raw_df, "OPERATIONAL_DATE")
+    if date_raw.isna().all():
+        date_raw = _col(raw_df, "DATA_DATE")
+    # Per-row fallback: if OPERATIONAL_DATE is present but has some nulls,
+    # fill those from DATA_DATE so downstream filters remain consistent.
+    if "DATA_DATE" in raw_df.columns:
+        date_raw = date_raw.fillna(_col(raw_df, "DATA_DATE"))
+    df["Date"] = pd.to_datetime(date_raw, errors="coerce")
     df["Region"] = _col(raw_df, "REGION_CODE", "Unknown").fillna("Unknown")
     df["Location"] = _col(raw_df, "LOCATION_CODE")
     df["Product"] = _col(raw_df, "PRODUCT_DESCRIPTION")
@@ -173,7 +182,7 @@ def insert_manual_product_today(
                 f"""
                 SELECT 1
                 FROM {SQLITE_TABLE}
-                WHERE DATA_DATE = ? AND REGION_CODE = ? AND LOCATION_CODE = ? AND PRODUCT_DESCRIPTION = ?
+                WHERE OPERATIONAL_DATE = ? AND REGION_CODE = ? AND LOCATION_CODE = ? AND PRODUCT_DESCRIPTION = ?
                 LIMIT 1
                 """,
                 (today, region_s, location_s, product_s),
@@ -185,6 +194,7 @@ def insert_manual_product_today(
                 f"""
                 INSERT INTO {SQLITE_TABLE} (
                     INVENTORY_KEY,
+                    OPERATIONAL_DATE,
                     DATA_DATE,
                     REGION_CODE,
                     LOCATION_CODE,
@@ -217,7 +227,7 @@ def insert_manual_product_today(
                     CREATED_AT,
                     UPDATED_AT
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?,
@@ -227,6 +237,7 @@ def insert_manual_product_today(
                 """,
                 (
                     inv_key,
+                    today,
                     today,
                     region_s,
                     location_s,
@@ -279,7 +290,7 @@ def insert_manual_product_today(
         # Duplicate check
         dup_q = (
             f"SELECT 1 FROM {RAW_INVENTORY_TABLE} "
-            f"WHERE DATA_DATE = '{today}' "
+            f"WHERE OPERATIONAL_DATE = '{today}' "
             f"AND REGION_CODE = {_sql_str(region_s)} "
             f"AND LOCATION_CODE = {_sql_str(location_s)} "
             f"AND PRODUCT_DESCRIPTION = {_sql_str(product_s)} "
@@ -291,6 +302,7 @@ def insert_manual_product_today(
         insert_sql = f"""
             INSERT INTO {RAW_INVENTORY_TABLE} (
                 INVENTORY_KEY,
+                OPERATIONAL_DATE,
                 DATA_DATE,
                 REGION_CODE,
                 LOCATION_CODE,
@@ -321,6 +333,7 @@ def insert_manual_product_today(
                 UPDATED_AT
             ) VALUES (
                 {_sql_str(inv_key)},
+                {_sql_str(today)},
                 {_sql_str(today)},
                 {_sql_str(region_s)},
                 {_sql_str(location_s)},
@@ -354,8 +367,12 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         import sqlite3
 
         conn = sqlite3.connect(sqlite_db_path)
+        # Prefer OPERATIONAL_DATE; fall back to DATA_DATE for older DBs.
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{sqlite_table}')").fetchall()}
+        # Use COALESCE so we don't drop rows where OPERATIONAL_DATE is NULL.
+        date_expr = "COALESCE(OPERATIONAL_DATE, DATA_DATE)" if "OPERATIONAL_DATE" in cols else "DATA_DATE"
         raw_df = pd.read_sql_query(
-            f"SELECT * FROM {sqlite_table} WHERE DATA_DATE IS NOT NULL ORDER BY DATA_DATE DESC, LOCATION_CODE",
+            f"SELECT * FROM {sqlite_table} WHERE {date_expr} IS NOT NULL ORDER BY {date_expr} DESC, LOCATION_CODE",
             conn,
         )
         conn.close()
@@ -369,6 +386,7 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
 
     query = f"""
     SELECT
+        OPERATIONAL_DATE,
         DATA_DATE,
         REGION_CODE,
         LOCATION_CODE,
@@ -406,8 +424,8 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CREATED_AT,
         MANUAL_OVERRIDE_REASON
     FROM {RAW_INVENTORY_TABLE}
-    WHERE DATA_DATE IS NOT NULL
-    ORDER BY DATA_DATE DESC, LOCATION_CODE, PRODUCT_CODE
+    WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL
+    ORDER BY COALESCE(OPERATIONAL_DATE, DATA_DATE) DESC, LOCATION_CODE, PRODUCT_CODE
     """
 
     raw_df = session.sql(query).to_pandas()
@@ -592,6 +610,8 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
 
         conn = sqlite3.connect(SQLITE_DB_PATH)
         try:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
+            date_expr = "COALESCE(OPERATIONAL_DATE, DATA_DATE)" if "OPERATIONAL_DATE" in cols else "DATA_DATE"
             if loc_col == "System":
                 sys_sql = f"""
                     SELECT DISTINCT
@@ -601,7 +621,7 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
                             ELSE LOCATION_CODE
                         END AS System
                     FROM {SQLITE_TABLE}
-                    WHERE DATA_DATE IS NOT NULL
+                    WHERE {date_expr} IS NOT NULL
                       AND (? IS NULL OR REGION_CODE = ?)
                     ORDER BY System
                 """
@@ -611,7 +631,7 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
                 loc_sql = f"""
                     SELECT DISTINCT LOCATION_CODE AS Location
                     FROM {SQLITE_TABLE}
-                    WHERE DATA_DATE IS NOT NULL
+                    WHERE {date_expr} IS NOT NULL
                       AND (? IS NULL OR REGION_CODE = ?)
                       AND LOCATION_CODE IS NOT NULL
                     ORDER BY Location
@@ -620,9 +640,9 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
                 locations = sorted(df_locs["Location"].dropna().astype(str).unique().tolist())
 
             dates_sql = f"""
-                SELECT MIN(DATA_DATE) AS min_date, MAX(DATA_DATE) AS max_date
+                SELECT MIN({date_expr}) AS min_date, MAX({date_expr}) AS max_date
                 FROM {SQLITE_TABLE}
-                WHERE DATA_DATE IS NOT NULL
+                WHERE {date_expr} IS NOT NULL
                   AND (? IS NULL OR REGION_CODE = ?)
             """
             df_dates = pd.read_sql_query(dates_sql, conn, params=[region_norm, region_norm])
@@ -648,7 +668,7 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
             SELECT DISTINCT
                 COALESCE(NULLIF(SOURCE_OPERATOR, ''), NULLIF(SOURCE_SYSTEM, ''), LOCATION_CODE) AS System
             FROM {RAW_INVENTORY_TABLE}
-            WHERE DATA_DATE IS NOT NULL {region_filter}
+            WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL {region_filter}
             ORDER BY System
         """
         df_locs = session.sql(loc_query).to_pandas()
@@ -657,7 +677,7 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
         loc_query = f"""
             SELECT DISTINCT LOCATION_CODE AS Location
             FROM {RAW_INVENTORY_TABLE}
-            WHERE DATA_DATE IS NOT NULL {region_filter}
+            WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL {region_filter}
               AND LOCATION_CODE IS NOT NULL
             ORDER BY Location
         """
@@ -665,9 +685,10 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
         locations = sorted(df_locs["LOCATION"].dropna().astype(str).unique().tolist()) if "LOCATION" in df_locs.columns else []
 
     date_query = f"""
-        SELECT MIN(DATA_DATE) AS min_date, MAX(DATA_DATE) AS max_date
+        SELECT MIN(COALESCE(OPERATIONAL_DATE, DATA_DATE)) AS min_date,
+               MAX(COALESCE(OPERATIONAL_DATE, DATA_DATE)) AS max_date
         FROM {RAW_INVENTORY_TABLE}
-        WHERE DATA_DATE IS NOT NULL {region_filter}
+        WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL {region_filter}
     """
     df_dates = session.sql(date_query).to_pandas()
     min_date = pd.to_datetime(df_dates.iloc[0]["MIN_DATE"], errors="coerce") if not df_dates.empty else pd.NaT
@@ -810,7 +831,15 @@ def _load_inventory_data_filtered_cached(
         start_s = pd.Timestamp(start_ts).strftime("%Y-%m-%d")
         end_s = pd.Timestamp(end_ts).strftime("%Y-%m-%d")
 
-        where = ["DATA_DATE IS NOT NULL", "DATA_DATE >= ?", "DATA_DATE <= ?"]
+        conn = sqlite3.connect(sqlite_db_path)
+        try:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{sqlite_table}')").fetchall()}
+        finally:
+            conn.close()
+
+        date_expr = "COALESCE(OPERATIONAL_DATE, DATA_DATE)" if "OPERATIONAL_DATE" in cols else "DATA_DATE"
+
+        where = [f"{date_expr} IS NOT NULL", f"{date_expr} >= ?", f"{date_expr} <= ?"]
         params: list[object] = [start_s, end_s]
 
         if region_norm:
@@ -825,7 +854,7 @@ def _load_inventory_data_filtered_cached(
             SELECT *
             FROM {sqlite_table}
             WHERE {' AND '.join(where)}
-            ORDER BY DATA_DATE DESC, LOCATION_CODE
+            ORDER BY {date_expr} DESC, LOCATION_CODE
         """
 
         conn = sqlite3.connect(sqlite_db_path)
@@ -844,7 +873,11 @@ def _load_inventory_data_filtered_cached(
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
     # Snowflake filter pushdown
-    conditions = ["DATA_DATE IS NOT NULL", "DATA_DATE >= %(start)s", "DATA_DATE <= %(end)s"]
+    conditions = [
+        "COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL",
+        "COALESCE(OPERATIONAL_DATE, DATA_DATE) >= %(start)s",
+        "COALESCE(OPERATIONAL_DATE, DATA_DATE) <= %(end)s",
+    ]
     binds: dict[str, object] = {
         "start": pd.Timestamp(start_ts).strftime("%Y-%m-%d"),
         "end": pd.Timestamp(end_ts).strftime("%Y-%m-%d"),
@@ -859,6 +892,7 @@ def _load_inventory_data_filtered_cached(
     where_sql = " AND ".join(conditions)
     query = f"""
     SELECT
+        OPERATIONAL_DATE,
         DATA_DATE,
         REGION_CODE,
         LOCATION_CODE,
@@ -897,7 +931,7 @@ def _load_inventory_data_filtered_cached(
         MANUAL_OVERRIDE_REASON
     FROM {RAW_INVENTORY_TABLE}
     WHERE {where_sql}
-    ORDER BY DATA_DATE DESC, LOCATION_CODE, PRODUCT_CODE
+    ORDER BY COALESCE(OPERATIONAL_DATE, DATA_DATE) DESC, LOCATION_CODE, PRODUCT_CODE
     """
 
     # Bind substitution (safe basic string quoting)
