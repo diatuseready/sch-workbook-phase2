@@ -26,9 +26,14 @@ def main():
     apply_custom_css()
     display_header()
 
-    # One-shot flag to collapse all expanders on the *next* rerun.
-    # (Used by Admin Config + Filters Submit actions.)
-    collapse_now = bool(st.session_state.pop("collapse_expandables_once", False))
+    # Persisted flag to keep top-level expanders collapsed across reruns.
+    # We specifically *don't* want unrelated reruns (e.g. the Details "Show Terminal Feed"
+    # toggle) to re-open expanders that were collapsed after pressing Submit.
+    collapse_now = bool(st.session_state.get("collapse_expandables", False))
+
+    def _un_collapse_expandables() -> None:
+        """Allow expanders to render expanded again (used by control/filter changes)."""
+        st.session_state["collapse_expandables"] = False
 
     # Initialize lightweight metadata (regions + source status)
     regions = initialize_data()
@@ -53,15 +58,16 @@ def main():
     with st.expander("Controls", expanded=(False if collapse_now else True)):
         header_c1, header_c2 = st.columns([4, 1])
         with header_c1:
-            st.selectbox("Region", regions, key="active_region")
+            # If the user changes the Region, we should stop force-collapsing expanders.
+            st.selectbox("Region", regions, key="active_region", on_change=_un_collapse_expandables)
         with header_c2:
             # Align button with the selectbox (which renders its label above).
             st.markdown('<div class="btn-spacer"></div>', unsafe_allow_html=True)
             right = st.columns([1, 1])[1]
             with right:
                 def _open_admin_config():
-                    # Collapse all expanders on rerun, then enter admin view.
-                    st.session_state.collapse_expandables_once = True
+                    # Collapse all expanders before entering admin view.
+                    st.session_state["collapse_expandables"] = True
                     st.session_state.admin_view = True
 
                 st.button("Admin Config", key="admin_open", on_click=_open_admin_config)
@@ -84,6 +90,8 @@ def main():
     if st.session_state.admin_view:
         if st.button("⬅️ Back", key="admin_back"):
             st.session_state.admin_view = False
+            # Returning from admin view should not force everything collapsed.
+            st.session_state["collapse_expandables"] = False
             st.rerun()
         display_super_admin_panel(regions=regions, active_region=active_region_norm, all_data=None)
         return
@@ -128,8 +136,9 @@ def main():
             st.session_state[details_cache_key] = load_filtered_inventory_data(details_filters)
             st.session_state[filters_cache_key] = details_filters
 
-        # Collapse expanders after Submit. (Rerun ensures the expander state updates.)
-        st.session_state["collapse_expandables_once"] = True
+        # Collapse expanders after Submit and keep them collapsed across reruns until
+        # the user changes a control/filter.
+        st.session_state["collapse_expandables"] = True
         st.rerun()
 
     df_details = st.session_state.get(details_cache_key, pd.DataFrame())

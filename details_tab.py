@@ -1172,6 +1172,11 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
     from data_loader import load_region_filter_metadata
     from admin_config import get_default_date_window
 
+    # If the user changes any filter inputs (location/date range), we should stop
+    # force-collapsing the top-level expanders. (Submit will re-collapse them.)
+    def _un_collapse_expandables() -> None:
+        st.session_state["collapse_expandables"] = False
+
     region = active_region
     if not region:
         return {
@@ -1199,7 +1204,13 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
             key_loc = f"details_selected_loc|{region}"
             current = st.session_state.get(key_loc)
             index = locations.index(current) if current in locations else 0
-            selected_loc = st.selectbox(filter_label, options=locations, index=index, key=key_loc)
+            selected_loc = st.selectbox(
+                filter_label,
+                options=locations,
+                index=index,
+                key=key_loc,
+                on_change=_un_collapse_expandables,
+            )
 
     today = pd.Timestamp.today().date()
     start_off, end_off = get_default_date_window(region=region, location=(str(selected_loc) if selected_loc else None))
@@ -1222,6 +1233,7 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
             min_value=min_value,
             max_value=max_value,
             key=key_dates,
+            on_change=_un_collapse_expandables,
         )
 
         if isinstance(date_range, (list, tuple)):
