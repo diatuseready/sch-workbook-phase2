@@ -23,6 +23,22 @@ from data_loader import get_snowflake_session
 DEFAULT_SQLITE_USER_ID = "local_user"
 
 
+def _best_effort_use_warehouse(session) -> None:
+    """Try to set warehouse, but never fail logging if the runtime disallows it."""
+    try:
+        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+    except Exception:
+        return
+
+
+def _remember_logging_error(exc: Exception) -> None:
+    """Store last logging error for debugging (non-breaking)."""
+    try:
+        st.session_state["_last_logging_error"] = str(exc)
+    except Exception:
+        return
+
+
 def get_session_id() -> str:
     """Return a stable per-Streamlit-session id."""
     if "app_session_id" not in st.session_state:
@@ -37,7 +53,7 @@ def get_user_id() -> str | None:
 
     try:
         session = get_snowflake_session()
-        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+        _best_effort_use_warehouse(session)
         # CURRENT_USER() returns the active Snowflake user
         df = session.sql("SELECT CURRENT_USER() AS USER_ID").to_pandas()
         if df is not None and not df.empty:
@@ -98,8 +114,12 @@ def ensure_log_tables() -> None:
 
     # Snowflake
     try:
+        # Avoid repeated DDL attempts in the same session.
+        if st.session_state.get("_log_tables_checked"):
+            return
+
         session = get_snowflake_session()
-        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+        _best_effort_use_warehouse(session)
 
         session.sql(
             f"""
@@ -130,8 +150,11 @@ def ensure_log_tables() -> None:
             )
             """
         ).collect()
+
+        st.session_state["_log_tables_checked"] = True
     except Exception:
         # Don't block UI if role doesn't have DDL rights.
+        st.session_state["_log_tables_checked"] = True
         return
 
 
@@ -174,7 +197,7 @@ def log_audit(
             return
 
         session = get_snowflake_session()
-        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+        _best_effort_use_warehouse(session)
 
         meta_sql = _json_dumps_safe(payload).replace("'", "''")
         uid_sql = "NULL" if uid is None else "'" + str(uid).replace("'", "''") + "'"
@@ -188,6 +211,7 @@ def log_audit(
         ).collect()
     except Exception:
         # Logging must never break the app
+        _remember_logging_error(Exception(traceback.format_exc()))
         return
 
 
@@ -228,7 +252,7 @@ def log_error(
             return
 
         session = get_snowflake_session()
-        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+        _best_effort_use_warehouse(session)
 
         def _sql_str(v: str | None) -> str:
             if v is None:
@@ -250,6 +274,7 @@ def log_error(
             """
         ).collect()
     except Exception:
+        _remember_logging_error(Exception(traceback.format_exc()))
         return
 
 
