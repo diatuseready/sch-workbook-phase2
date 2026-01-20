@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import pandas as pd
 import streamlit as st
 
+from app_logging import logged_button, log_audit, log_error
+
 from config import (
     SQLITE_ADMIN_CONFIG_TABLE,
     SNOWFLAKE_ADMIN_CONFIG_TABLE,
@@ -533,7 +535,12 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
 
         b1, b2 = st.columns(2)
         with b1:
-            if st.button("💾 Save", type="primary"):
+            if logged_button(
+                "💾 Save",
+                type="primary",
+                event="admin_add_product_save",
+                metadata={"region": region_in, "location": location_in, "product": product_in},
+            ):
                 try:
                     if not locs:
                         raise ValueError("No locations available for selected region")
@@ -548,9 +555,19 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                     st.success("Added")
                     st.rerun()
                 except Exception as e:
+                    log_error(
+                        error_code="ADMIN_ADD_PRODUCT_FAILED",
+                        error_message=str(e),
+                        stack_trace=__import__("traceback").format_exc(),
+                        service_module="UI",
+                    )
                     st.error(str(e))
         with b2:
-            if st.button("Cancel"):
+            if logged_button(
+                "Cancel",
+                event="admin_add_product_cancel",
+                metadata={"region": region_in},
+            ):
                 st.rerun()
 
     region = st.selectbox(
@@ -674,9 +691,17 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
     # Action buttons: Add New Product (left) + Save configuration (right)
     a1, a2 = st.columns([1, 1])
     with a1:
-        save_clicked = st.button("💾 Save Configuration")
+        save_clicked = logged_button(
+            "💾 Save Configuration",
+            event="admin_config_save_clicked",
+            metadata={"region": region, "location": location, "product": product},
+        )
     with a2:
-        if st.button("Add New Product"):
+        if logged_button(
+            "Add New Product",
+            event="admin_add_product_open",
+            metadata={"region": region},
+        ):
             _add_new_product_dialog(default_region=region, region_options=regions)
 
     if save_clicked:
@@ -697,8 +722,25 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 str(rl_method).strip() if product is None else cfg.get("RACK_LIFTING_FORECAST_METHOD")
             ),
         }
-        save_admin_config(region=region, location=location, product=product, updates=updates)
-        st.success("Saved")
+        try:
+            save_admin_config(region=region, location=location, product=product, updates=updates)
+            log_audit(
+                event="admin_config_save_success",
+                metadata={"region": region, "location": location, "product": product, "updates": updates},
+            )
+            st.success("Saved")
+        except Exception as e:
+            log_error(
+                error_code="ADMIN_CONFIG_SAVE_FAILED",
+                error_message=str(e),
+                stack_trace=__import__("traceback").format_exc(),
+                service_module="UI",
+            )
+            log_audit(
+                event="admin_config_save_failed",
+                metadata={"region": region, "location": location, "product": product, "error": str(e)},
+            )
+            raise
 
     st.markdown("#### Current stored rows")
     df = load_admin_config_df()

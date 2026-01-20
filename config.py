@@ -35,6 +35,19 @@ SNOWFLAKE_SOURCE_STATUS_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_SOURCE
 
 
 # -----------------------------------------------------------------------------
+# App audit + error logging
+# -----------------------------------------------------------------------------
+
+# SQLite tables (local/dev)
+SQLITE_AUDIT_LOG_TABLE = "APP_AUDIT_LOG"
+SQLITE_ERROR_LOG_TABLE = "APP_ERROR_LOG"
+
+# Snowflake tables (prod)
+SNOWFLAKE_AUDIT_LOG_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_AUDIT_LOG"
+SNOWFLAKE_ERROR_LOG_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_ERROR_LOG"
+
+
+# -----------------------------------------------------------------------------
 # Canonical column names used across the dashboard
 # -----------------------------------------------------------------------------
 

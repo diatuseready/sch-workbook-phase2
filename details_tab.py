@@ -8,6 +8,7 @@ from datetime import timedelta
 from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
 from utils import dynamic_input_data_editor
 from data_loader import persist_details_rows
+from app_logging import logged_button, log_audit, log_error
 from config import (
     COL_ADJUSTMENTS,
     COL_ADJUSTMENTS_FACT,
@@ -247,7 +248,18 @@ def _confirm_save_dialog(*, payload: dict) -> None:
     # Right-aligned primary action (no cancel; user can close with X)
     _, c_yes = st.columns([8, 2])
     with c_yes:
-        if st.button("Save", type="primary"):
+        if logged_button(
+            "Save",
+            type="primary",
+            event="details_confirm_save",
+            metadata={
+                "region": payload.get("region"),
+                "location": payload.get("location"),
+                "system": payload.get("system"),
+                "product": payload.get("product"),
+                "scope_label": payload.get("scope_label"),
+            },
+        ):
             st.session_state["details_save_stage"] = "pre_save"
             st.session_state["details_save_payload"] = payload
             st.session_state["details_save_overlay"] = {"on": True, "df_key": payload.get("df_key")}
@@ -273,11 +285,6 @@ def _save_result_dialog(*, result: dict) -> None:
     ok = bool(result.get("ok"))
     n = int(result.get("n") or 0)
     err = str(result.get("error") or "")
-
-    # Header row: left spacer + right close cross
-    c_sp, c_x = st.columns([20, 1])
-    with c_sp:
-        st.markdown("")
 
     if ok:
         st.success(f"Saved successfully ({n} rows).")
@@ -1013,11 +1020,13 @@ def display_midcon_details(
         )
     with c_save:
         # Button is enabled; confirmation + actual save happens via dialog.
-        save_clicked = st.button(
+        save_clicked = logged_button(
             "💾 Save Changes",
             key=f"save_{active_region}",
             disabled=False,
             help="Save all rows shown in the grid.",
+            event="details_save_clicked",
+            metadata={"region": active_region, "scope": "system", "system": scope_sys},
         )
 
     visible = get_visible_columns(region=active_region, location=str(scope_sys) if scope_sys is not None else None)
@@ -1083,6 +1092,10 @@ def display_midcon_details(
 
     # Save flow (after editor so we persist the latest recomputed values).
     if save_clicked:
+        log_audit(
+            event="details_save_dialog_opened",
+            metadata={"region": active_region, "scope": "system", "system": scope_sys},
+        )
         _confirm_save_dialog(
             payload={
                 "df_key": df_key,
@@ -1105,8 +1118,34 @@ def display_midcon_details(
                 system=payload.get("system"),
                 product=payload.get("product"),
             )
+            log_audit(
+                event="details_save_success",
+                metadata={
+                    "region": str(payload.get("region") or active_region),
+                    "location": payload.get("location"),
+                    "system": payload.get("system"),
+                    "product": payload.get("product"),
+                    "rows_saved": int(n),
+                },
+            )
             st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
         except Exception as e:
+            log_error(
+                error_code="DETAILS_SAVE_FAILED",
+                error_message=str(e),
+                stack_trace=__import__("traceback").format_exc(),
+                service_module="UI",
+            )
+            log_audit(
+                event="details_save_failed",
+                metadata={
+                    "region": str(payload.get("region") or active_region),
+                    "location": payload.get("location"),
+                    "system": payload.get("system"),
+                    "product": payload.get("product"),
+                    "error": str(e),
+                },
+            )
             st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
 
         st.session_state["details_save_stage"] = "result"
@@ -1186,10 +1225,17 @@ def display_location_details(
             with c_spacer:
                 st.markdown("")
             with c_save:
-                save_clicked = st.button(
+                save_clicked = logged_button(
                     f"Save {prod_name} Data",
                     key=f"save_{active_region}_{selected_loc}_{prod_name}",
                     help="Save all rows shown in the grid for this product.",
+                    event="details_save_clicked",
+                    metadata={
+                        "region": active_region,
+                        "scope": "location",
+                        "location": selected_loc,
+                        "product": prod_name,
+                    },
                 )
 
             df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
@@ -1264,6 +1310,10 @@ def display_location_details(
 
             # Save flow (after editor so we persist the latest recomputed values).
             if save_clicked:
+                log_audit(
+                    event="details_save_dialog_opened",
+                    metadata={"region": active_region, "scope": "location", "location": selected_loc, "product": prod_name},
+                )
                 _confirm_save_dialog(
                     payload={
                         "df_key": df_key,
@@ -1286,8 +1336,34 @@ def display_location_details(
                         system=payload.get("system"),
                         product=payload.get("product"),
                     )
+                    log_audit(
+                        event="details_save_success",
+                        metadata={
+                            "region": str(payload.get("region") or active_region),
+                            "location": payload.get("location"),
+                            "system": payload.get("system"),
+                            "product": payload.get("product"),
+                            "rows_saved": int(n),
+                        },
+                    )
                     st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
                 except Exception as e:
+                    log_error(
+                        error_code="DETAILS_SAVE_FAILED",
+                        error_message=str(e),
+                        stack_trace=__import__("traceback").format_exc(),
+                        service_module="UI",
+                    )
+                    log_audit(
+                        event="details_save_failed",
+                        metadata={
+                            "region": str(payload.get("region") or active_region),
+                            "location": payload.get("location"),
+                            "system": payload.get("system"),
+                            "product": payload.get("product"),
+                            "error": str(e),
+                        },
+                    )
                     st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
 
                 st.session_state["details_save_stage"] = "result"
@@ -1391,7 +1467,12 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
 
     with c3:
         st.markdown('<div class="btn-spacer"></div>', unsafe_allow_html=True)
-        submitted = st.button("Submit", type="primary")
+        submitted = logged_button(
+            "Submit",
+            type="primary",
+            event="details_filters_submit",
+            metadata={"region": region, "selected_loc": selected_loc},
+        )
 
     start_ts = pd.to_datetime(start_date)
     end_ts = pd.to_datetime(end_date)

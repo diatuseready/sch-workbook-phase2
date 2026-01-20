@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 
+from app_logging import logged_button, logged_callback
+
 from ui_components import setup_page, apply_custom_css, display_header, display_data_freshness_cards
 from data_loader import (
     initialize_data,
@@ -19,9 +21,6 @@ def main():
     apply_custom_css()
     display_header()
 
-    # Persisted flag to keep top-level expanders collapsed across reruns.
-    # We specifically *don't* want unrelated reruns (e.g. the Details "Show Terminal Feed"
-    # toggle) to re-open expanders that were collapsed after pressing Submit.
     collapse_now = bool(st.session_state.get("collapse_expandables", False))
 
     def _un_collapse_expandables() -> None:
@@ -63,7 +62,16 @@ def main():
                     st.session_state["collapse_expandables"] = True
                     st.session_state.admin_view = True
 
-                st.button("Admin Config", key="admin_open", on_click=_open_admin_config)
+                st.button(
+                    "Admin Config",
+                    key="admin_open",
+                    on_click=logged_callback(
+                        _open_admin_config,
+                        event="nav_admin_open",
+                        metadata={"from": "main"},
+                        service_module="UI",
+                    ),
+                )
 
         main_tabs = ["📊 Regional Summary", "🧾 Details"]
         if "main_tab" not in st.session_state:
@@ -82,7 +90,7 @@ def main():
 
     # Admin view (full-screen)
     if st.session_state.admin_view:
-        if st.button("⬅️ Back", key="admin_back"):
+        if logged_button("⬅️ Back", key="admin_back", event="nav_admin_back"):
             st.session_state.admin_view = False
             # Returning from admin view should not force everything collapsed.
             st.session_state["collapse_expandables"] = False
