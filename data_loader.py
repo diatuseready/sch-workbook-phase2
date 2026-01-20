@@ -392,7 +392,6 @@ def persist_details_rows(
         if df.empty:
             return 0
 
-    # Normalize date to yyyy-mm-dd strings.
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
@@ -453,10 +452,13 @@ def persist_details_rows(
         if src not in {"system", "manual", "forecast"}:
             src = "system"
 
+        date_val = r.get("Date")
+        date_s = None if pd.isna(date_val) else str(date_val)
+
         d = {
             "INVENTORY_KEY": str(uuid4()),
-            "OPERATIONAL_DATE": str(r.get("Date") or ""),
-            "DATA_DATE": str(r.get("Date") or ""),
+            "OPERATIONAL_DATE": date_s,
+            "DATA_DATE": date_s,
             "REGION_CODE": region_s,
             "LOCATION_CODE": location_s,
             "PRODUCT_CODE": _product_code(prod_desc),
@@ -597,7 +599,13 @@ def persist_details_rows(
                 return "'" + str(v).replace("'", "''") + "'"
 
             # Most numeric columns in this table are *_BBL plus the override flag.
-            if col.endswith("_BBL") or col in {"MANUAL_OVERRIDE_FLAG"}:
+            if col == "MANUAL_OVERRIDE_FLAG":
+                try:
+                    return str(int(float(v)))
+                except Exception:
+                    return "0"
+
+            if col.endswith("_BBL"):
                 try:
                     return str(float(v))
                 except Exception:
@@ -608,13 +616,12 @@ def persist_details_rows(
 
         def _cast_expr(c: str) -> str:
             if c in {"OPERATIONAL_DATE", "DATA_DATE"}:
-                # Be tolerant if a caller passes empty/invalid date strings.
-                return f"TRY_TO_DATE({c}) AS {c}"
+                return f"TO_DATE({c}) AS {c}"
             if c == "MANUAL_OVERRIDE_FLAG":
-                return f"TRY_TO_NUMBER({c}) AS {c}"
+                return f"CAST({c} AS NUMBER(1,0)) AS {c}"
             if c.endswith("_BBL"):
-                return f"TRY_TO_DOUBLE({c}) AS {c}"
-            return f"{c}::STRING AS {c}"
+                return f"CAST({c} AS DOUBLE) AS {c}"
+            return f"CAST({c} AS STRING) AS {c}"
 
         update_set = ",\n            ".join([f"{c} = s.{c}" for c in update_cols if c not in {"CREATED_AT"}])
         insert_cols = ", ".join(cols + ["CREATED_AT", "UPDATED_AT"])
@@ -636,18 +643,14 @@ def persist_details_rows(
             cast_select = ",\n                    ".join(_cast_expr(c) for c in cols)
 
             merge_sql = f"""
-            WITH s_raw({cte_cols}) AS (
-                SELECT *
-                FROM VALUES
-                {values_sql}
-            ),
-            s AS (
+            MERGE INTO {RAW_INVENTORY_TABLE} t
+            USING (
                 SELECT
                     {cast_select}
-                FROM s_raw
-            )
-            MERGE INTO {RAW_INVENTORY_TABLE} t
-            USING s
+                FROM VALUES
+                {values_sql}
+                AS s_raw({cte_cols})
+            ) s
             ON COALESCE(t.OPERATIONAL_DATE, t.DATA_DATE) = s.OPERATIONAL_DATE
                AND t.REGION_CODE = s.REGION_CODE
                AND t.LOCATION_CODE = s.LOCATION_CODE
