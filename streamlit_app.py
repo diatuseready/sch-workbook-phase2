@@ -13,13 +13,6 @@ from details_tab import display_details_tab, render_details_filters
 from admin_config import display_super_admin_panel
 
 
-def _normalize_region_label(active_region: str | None) -> str | None:
-    """Match the same Midcon normalization used elsewhere in the app."""
-    if active_region is None:
-        return None
-    return "Midcon" if active_region == "Group Supply Report (Midcon)" else active_region
-
-
 def main():
     """Main application function."""
     setup_page()
@@ -84,7 +77,8 @@ def main():
             label_visibility="collapsed",
         )
 
-    active_region_norm = _normalize_region_label(st.session_state.get("active_region"))
+    # Region label is used as-is (no Midcon special-casing).
+    active_region_norm = st.session_state.get("active_region")
 
     # Admin view (full-screen)
     if st.session_state.admin_view:

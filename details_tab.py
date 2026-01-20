@@ -2,10 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import html
+import time
 from datetime import timedelta
 
 from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
 from utils import dynamic_input_data_editor
+from data_loader import persist_details_rows
 from config import (
     COL_ADJUSTMENTS,
     COL_ADJUSTMENTS_FACT,
@@ -97,12 +99,8 @@ SOURCE_BG = {
     # "forecast": "#d9ecff",
 }
 
-# When our calculated Opening/Close inventory differs from the upstream/system
-# value, we highlight those *system* rows in yellow instead of green.
 SYSTEM_DISCREPANCY_BG = "#fff2cc"
 
-# Allow small differences (bbl) between computed and upstream/system inventory
-# before highlighting the row.
 SYSTEM_DISCREPANCY_THRESHOLD_BBL = 5.0
 
 # Visual cue for read-only fact columns
@@ -174,11 +172,7 @@ def _ensure_cols_after(
     after: str,
     before: str | None = None,
 ) -> list[str]:
-    """Ensure required columns exist and appear after a given column.
 
-    Used to force-show certain columns (even if admin-config visibility is
-    outdated) while controlling where they land in the grid.
-    """
     out = list(column_order)
     required = [c for c in required if c]
 
@@ -203,6 +197,103 @@ DETAILS_EDITOR_VISIBLE_ROWS = 15
 DETAILS_EDITOR_ROW_PX = 35  # approx row height incl. padding
 DETAILS_EDITOR_HEADER_PX = 35
 DETAILS_EDITOR_HEIGHT_PX = DETAILS_EDITOR_HEADER_PX + (DETAILS_EDITOR_VISIBLE_ROWS * DETAILS_EDITOR_ROW_PX)
+
+
+def _render_blocking_overlay(show: bool, *, message: str = "Saving…") -> None:
+    """Render a full-screen overlay to block clicks during long operations."""
+    if not show:
+        return
+
+    # High z-index to sit above the whole app.
+    msg = html.escape(str(message or "Saving…"))
+    st.markdown(
+        f"""
+        <style>
+        #details-save-overlay {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.35);
+            /* Keep below Streamlit dialogs/modals, but above the app */
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: all;
+        }}
+        #details-save-overlay .card {{
+            background: white;
+            border-radius: 12px;
+            padding: 18px 22px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+            font-weight: 700;
+            color: #2D3748;
+        }}
+        </style>
+        <div id="details-save-overlay">
+          <div class="card">{msg}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+@st.dialog("Confirm Save")
+def _confirm_save_dialog(*, payload: dict) -> None:
+    """Confirmation dialog for saving edited details rows."""
+
+    scope_label = payload.get("scope_label") or "this selection"
+    st.write(f"Are you sure you want to save changes for **{scope_label}**?")
+
+    # Right-aligned primary action (no cancel; user can close with X)
+    _, c_yes = st.columns([8, 2])
+    with c_yes:
+        if st.button("Save", type="primary"):
+            st.session_state["details_save_stage"] = "pre_save"
+            st.session_state["details_save_payload"] = payload
+            st.session_state["details_save_overlay"] = {"on": True, "df_key": payload.get("df_key")}
+            st.rerun()
+
+
+@st.dialog("Save Result")
+def _save_result_dialog(*, result: dict) -> None:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stDialog"] button[aria-label="Close"],
+        [data-testid="stDialog"] button[title="Close"],
+        [data-baseweb="modal"] button[aria-label="Close"],
+        [data-baseweb="modal"] button[title="Close"] {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    ok = bool(result.get("ok"))
+    n = int(result.get("n") or 0)
+    err = str(result.get("error") or "")
+
+    # Header row: left spacer + right close cross
+    c_sp, c_x = st.columns([20, 1])
+    with c_sp:
+        st.markdown("")
+
+    if ok:
+        st.success(f"Saved successfully ({n} rows).")
+        ph = st.empty()
+        for i in range(5, 0, -1):
+            ph.caption(f"Closing in {i}s…")
+            time.sleep(1)
+        # Auto-close: close popup first, then remove overlay on the next rerun.
+        st.session_state["details_save_stage"] = None
+        st.session_state["details_save_result"] = None
+        st.session_state["details_save_overlay_removal_pending"] = result.get("df_key")
+        st.rerun()
+    else:
+        st.error("Save failed! Please try again, or reach out to an administrator.")
+        if err:
+            st.code(err)
 
 
 # Flow-column names *after* `DETAILS_RENAME` has been applied.
@@ -235,8 +326,6 @@ def _style_source_cells(df: pd.DataFrame, cols_to_color: list[str]) -> "pd.io.fo
         if src != "system":
             return False
 
-        # Compare our computed values against upstream/system values when available.
-        # Allow a small tolerance (± threshold) before highlighting.
         pairs = [
             ("Opening Inv", "Opening Inv Fact"),
             ("Close Inv", "Close Inv Fact"),
@@ -309,8 +398,6 @@ def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFram
 
     out = df.copy()
 
-    # If the upstream inventory values are not already present as Fact columns,
-    # preserve them before we overwrite Opening/Close with calculated values.
     if "source" in out.columns:
         src = out["source"].astype(str).str.strip().str.lower()
         if "Opening Inv" in out.columns and "Opening Inv Fact" not in out.columns:
@@ -346,30 +433,16 @@ def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFram
         g = g.sort_values("Date", kind="mergesort").copy()
         prev_close = 0.0
 
-        # Extract system for Magellan detection
-        system_val = g[id_col].iloc[0] if id_col in g.columns else None
-        is_magellan = (id_col == "System" and str(system_val) == "Magellan")
-
         for i, idx in enumerate(g.index):
-            # Opening inventory is always the previous row's closing inventory.
-            # For the first row in the group, fall back to its existing opening (from DB) or 0.
             if i == 0:
                 opening = _to_float(g.at[idx, "Opening Inv"]) if "Opening Inv" in g.columns else 0.0
             else:
                 opening = prev_close
 
-            # Calculate Closing Inv based on system type
-            if is_magellan:
-                # MAGELLAN FORMULA: Closing = Adjustments - Rack/Lifting + Opening
-                adjustments = _to_float(g.at[idx, "Adjustments"]) if "Adjustments" in g.columns else 0.0
-                rack_lifting = _to_float(g.at[idx, "Rack/Lifting"]) if "Rack/Lifting" in g.columns else 0.0
-                close = float(adjustments - rack_lifting + opening)
-            else:
-                # STANDARD FORMULA: Closing = Opening + Inflow - Outflow + Net
-                inflow = _sum_row(g.loc[idx], DISPLAY_INFLOW_COLS)
-                outflow = _sum_row(g.loc[idx], DISPLAY_OUTFLOW_COLS)
-                net = _sum_row(g.loc[idx], DISPLAY_NET_COLS)
-                close = float(opening + inflow - outflow + net)
+            inflow = _sum_row(g.loc[idx], DISPLAY_INFLOW_COLS)
+            outflow = _sum_row(g.loc[idx], DISPLAY_OUTFLOW_COLS)
+            net = _sum_row(g.loc[idx], DISPLAY_NET_COLS)
+            close = float(opening + inflow - outflow + net)
 
             # Update the dataframe with calculated values
             if "Opening Inv" in g.columns:
@@ -430,10 +503,6 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
     locked = set(_locked_cols(id_col, cols))
     # Fact columns should always be read-only.
     locked.update({c for c in cols if str(c).endswith(" Fact")})
-
-    # Use US thousands separators for all numeric columns.
-    # Streamlit's built-in "accounting" format yields comma-separated values like 1,226,275.00
-    # and keeps a fixed 2-decimal display.
     NUM_FMT = "accounting"
 
     cfg: dict[str, object] = {
@@ -612,31 +681,20 @@ def _make_forecast_flow_estimator(
         return lambda d: dict(const)
 
     if m == "mtd_avg":
-        # As requested: use the full available history in the current dataframe scope.
         const = _constant_means_excluding_zeros(hist, flow_cols, tail_n=None)
         return lambda d: dict(const)
 
-    # Default: weekday weighted
     means = _weekday_weighted_means(hist, flow_cols=flow_cols)
     return lambda d: {c: float(means.get((int(d.weekday()), c), 0.0)) for c in flow_cols}
 
 
 def _roll_inventory(prev_close: float, flows: dict[str, float], flow_cols: list[str], system: str = None, product: str = None) -> tuple[float, float]:
-    # Opening inventory is always the previous day's closing inventory
     opening = float(prev_close)
 
-    # MAGELLAN-SPECIFIC LOGIC: Special calculation for Midcon Magellan
-    if system == "Magellan" and product:
-        # For Magellan: Closing Inv = Adjustments - Rack/Lifting + Previous Day Closing Inv
-        adjustments = float(flows.get("Adjustments", 0.0) or 0.0)
-        rack_lifting = float(flows.get("Rack/Liftings", 0.0) or 0.0)
-        closing = adjustments - rack_lifting + opening
-    else:
-        # STANDARD LOGIC: For all other systems/regions (unchanged)
-        inflow = sum(float(flows.get(c, 0.0) or 0.0) for c in INFLOW_COLS if c in flow_cols)
-        outflow = sum(float(flows.get(c, 0.0) or 0.0) for c in OUTFLOW_COLS if c in flow_cols)
-        net = sum(float(flows.get(c, 0.0) or 0.0) for c in NET_COLS if c in flow_cols)
-        closing = opening + inflow - outflow + net
+    inflow = sum(float(flows.get(c, 0.0) or 0.0) for c in INFLOW_COLS if c in flow_cols)
+    outflow = sum(float(flows.get(c, 0.0) or 0.0) for c in OUTFLOW_COLS if c in flow_cols)
+    net = sum(float(flows.get(c, 0.0) or 0.0) for c in NET_COLS if c in flow_cols)
+    closing = opening + inflow - outflow + net
 
     return opening, closing
 
@@ -689,8 +747,6 @@ def _extend_with_30d_forecast(
 
     forecast_rows: list[dict] = []
 
-    # Region/Location-scoped configuration for Rack/Liftings forecast.
-    # (Location = Location or System label depending on Details view.)
     forecast_method = get_rack_lifting_forecast_method(region=str(region or "Unknown"), location=location)
 
     for (id_val, product), group in daily.groupby([id_col, "Product"], dropna=False):
@@ -722,7 +778,7 @@ def _extend_with_30d_forecast(
                 "Product": product,
                 "source": "forecast",
                 "updated": 0,
-                "Notes": "Forecast",
+                "Notes": "",
                 "Open Inv": opening,
                 "Close Inv": closing,
                 **flows,
@@ -820,14 +876,11 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
         )
 
     with c4:
-        # Hover tooltip describing how Close Inv is calculated.
-        # Streamlit popovers are click-based; for hover we use HTML `title=`.
+
         tip_raw = "\n".join(
             [
                 "Closing Inventory calculation",
                 "Standard: Close = Opening + (Batch In + Pipeline In + Production) - (Batch Out + Rack/Lifting + Pipeline Out) + (Adjustments + Gain/Loss + Transfers)",
-                "Midcon (Magellan only): Close = Opening + Adjustments - Rack/Lifting",
-                "Note: Opening rolls forward from prior day Close (first day uses stored Opening).",
             ]
         )
         tip_attr = html.escape(tip_raw, quote=True).replace("\n", "&#10;")
@@ -871,10 +924,7 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "Transfers",
         "Rack/Lifting",
     ]
-    # Always keep columns required for grouping + lineage.
-    # NOTE: We keep the inventory Fact columns even when they are not displayed.
-    # This lets us (a) preserve upstream system values and (b) highlight system
-    # rows when our calculated inventory differs.
+
     base = [
         "Date",
         id_col,
@@ -923,14 +973,34 @@ def display_midcon_details(
 
     df_display, cols = build_details_view(df_all, id_col="System")
 
-    # In Midcon view there isn't a single Product in scope (grid spans products),
-    # so we show location-level thresholds.
     bottom, safefill, note = _threshold_values(
         region=active_region,
         location=str(scope_sys) if scope_sys is not None else None,
         product=None,
     )
     _show_thresholds(region_label=active_region, bottom=bottom, safefill=safefill, note=note)
+
+    # Render overlay early if a save flow is active for this editor.
+    show_fact_curr = bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False))
+    base_key_overlay = (
+        f"{active_region}|{scope_sys or ''}|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
+        f"|fact={int(show_fact_curr)}_edit"
+    )
+    df_key_overlay = f"{base_key_overlay}__df"
+
+    overlay = st.session_state.get("details_save_overlay") or {}
+    if overlay.get("on") and overlay.get("df_key") == df_key_overlay:
+        _render_blocking_overlay(True, message="Saving…")
+
+    # If the success popup already closed, remove overlay in a follow-up rerun.
+    if (
+        st.session_state.get("details_save_stage") is None and
+        st.session_state.get("details_save_overlay_removal_pending") == df_key_overlay and
+        overlay.get("on")
+    ):
+        st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
+        st.session_state["details_save_overlay_removal_pending"] = None
+        st.rerun()
 
     # Put Toggle + Save button on the same row.
     c_toggle, c_save = st.columns([8, 2])
@@ -942,14 +1012,13 @@ def display_midcon_details(
             help="Show upstream system values next to the editable columns.",
         )
     with c_save:
+        # Button is enabled; confirmation + actual save happens via dialog.
         save_clicked = st.button(
             "💾 Save Changes",
             key=f"save_{active_region}",
-            disabled=True,
-            help="Save is temporarily disabled.",
+            disabled=False,
+            help="Save all rows shown in the grid.",
         )
-    if save_clicked:
-        st.success("✅ Changes saved successfully!")
 
     visible = get_visible_columns(region=active_region, location=str(scope_sys) if scope_sys is not None else None)
     must_have = ["Date", "System", "Product", "Opening Inv", "Close Inv"]
@@ -958,8 +1027,6 @@ def display_midcon_details(
         if c in cols and c not in column_order and c != "source":
             column_order.append(c)
 
-    # Force-show Production/Adjustments (even if older admin config rows don't include them),
-    # and place them to the right, immediately after Transfers.
     column_order = _ensure_cols_after(
         column_order,
         required=["Production", "Adjustments"],
@@ -1014,6 +1081,42 @@ def display_midcon_details(
         st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
         st.rerun()
 
+    # Save flow (after editor so we persist the latest recomputed values).
+    if save_clicked:
+        _confirm_save_dialog(
+            payload={
+                "df_key": df_key,
+                "region": active_region,
+                "location": None,
+                "system": scope_sys,
+                "product": None,
+                "scope_label": f"{active_region} / {scope_sys or 'All Systems'}",
+            }
+        )
+
+    # Execute save (after confirm dialog triggers a rerun and overlay is visible).
+    payload = st.session_state.get("details_save_payload") or {}
+    if st.session_state.get("details_save_stage") == "pre_save" and payload.get("df_key") == df_key:
+        try:
+            n = persist_details_rows(
+                st.session_state[df_key],
+                region=str(payload.get("region") or active_region),
+                location=payload.get("location"),
+                system=payload.get("system"),
+                product=payload.get("product"),
+            )
+            st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
+        except Exception as e:
+            st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
+
+        st.session_state["details_save_stage"] = "result"
+        st.rerun()
+
+    # Show result popup (overlay stays until popup closes)
+    result = st.session_state.get("details_save_result")
+    if st.session_state.get("details_save_stage") == "result" and isinstance(result, dict) and result.get("df_key") == df_key:
+        _save_result_dialog(result=result)
+
 
 def display_location_details(
     df_filtered: pd.DataFrame,
@@ -1043,10 +1146,7 @@ def display_location_details(
         st.info("No products available for the selected location.")
         return
 
-    # st.caption(f"Location: {selected_loc}")
-
-    # Put Toggle + Save button on the same row.
-    c_toggle, c_save = st.columns([8, 2])
+    c_toggle, _ = st.columns([8, 2])
     with c_toggle:
         show_fact = st.toggle(
             "Show Terminal Feed",
@@ -1054,19 +1154,44 @@ def display_location_details(
             key=f"details_show_fact|{active_region}|{selected_loc}|location",
             help="Show upstream system values next to the editable columns.",
         )
-    with c_save:
-        save_clicked = st.button(
-            f"Save {selected_loc} Data",
-            key=f"save_{active_region}_{selected_loc}",
-            disabled=True,
-            help="Save is temporarily disabled.",
-        )
-    if save_clicked:
-        st.success(f"✅ Changes for {selected_loc} saved successfully!")
 
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
         with tab:
+            # Compute keys early so we can render overlay/result properly.
+            base_key = (
+                f"{active_region}_{selected_loc}_{prod_name}"
+                f"|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
+                f"|fact={int(bool(show_fact))}_edit"
+            )
+            df_key = f"{base_key}__df"
+            ver_key = f"{base_key}__ver"
+            widget_key = f"{base_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
+
+            overlay = st.session_state.get("details_save_overlay") or {}
+            if overlay.get("on") and overlay.get("df_key") == df_key:
+                _render_blocking_overlay(True, message="Saving…")
+
+            if (
+                st.session_state.get("details_save_stage") is None and
+                st.session_state.get("details_save_overlay_removal_pending") == df_key and
+                overlay.get("on")
+            ):
+                st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
+                st.session_state["details_save_overlay_removal_pending"] = None
+                st.rerun()
+
+            # Save button for active tab/product
+            c_spacer, c_save = st.columns([8, 2])
+            with c_spacer:
+                st.markdown("")
+            with c_save:
+                save_clicked = st.button(
+                    f"Save {prod_name} Data",
+                    key=f"save_{active_region}_{selected_loc}_{prod_name}",
+                    help="Save all rows shown in the grid for this product.",
+                )
+
             df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
 
             # Forecast should be bounded by the user-selected date range.
@@ -1112,16 +1237,6 @@ def display_location_details(
             column_config = _column_config(df_display, column_order, "Location")
             column_config = {k: v for k, v in column_config.items() if k in column_order}
 
-            # Include filters in the key so changing sidebar date range refreshes the editor.
-            base_key = (
-                f"{active_region}_{selected_loc}_{prod_name}"
-                f"|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
-                f"|fact={int(bool(show_fact))}_edit"
-            )
-            df_key = f"{base_key}__df"
-            ver_key = f"{base_key}__ver"
-            widget_key = f"{base_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
-
             editor_df = _build_editor_df(df_display, id_col="Location", ui_cols=column_order)
             if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
                 st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="Location")
@@ -1147,6 +1262,41 @@ def display_location_details(
                 st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
                 st.rerun()
 
+            # Save flow (after editor so we persist the latest recomputed values).
+            if save_clicked:
+                _confirm_save_dialog(
+                    payload={
+                        "df_key": df_key,
+                        "region": active_region,
+                        "location": selected_loc,
+                        "system": None,
+                        "product": prod_name,
+                        "scope_label": f"{selected_loc} / {prod_name}",
+                    }
+                )
+
+            # Execute save (after confirm dialog triggers a rerun and overlay is visible).
+            payload = st.session_state.get("details_save_payload") or {}
+            if st.session_state.get("details_save_stage") == "pre_save" and payload.get("df_key") == df_key:
+                try:
+                    n = persist_details_rows(
+                        st.session_state[df_key],
+                        region=str(payload.get("region") or active_region),
+                        location=payload.get("location"),
+                        system=payload.get("system"),
+                        product=payload.get("product"),
+                    )
+                    st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
+                except Exception as e:
+                    st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
+
+                st.session_state["details_save_stage"] = "result"
+                st.rerun()
+
+            result = st.session_state.get("details_save_result")
+            if st.session_state.get("details_save_stage") == "result" and isinstance(result, dict) and result.get("df_key") == df_key:
+                _save_result_dialog(result=result)
+
 
 def display_details_tab(
     df_filtered: pd.DataFrame,
@@ -1156,24 +1306,19 @@ def display_details_tab(
     end_ts: pd.Timestamp,
     selected_loc: str | None = None,
 ):
-    if active_region == "Midcon":
-        display_midcon_details(df_filtered, active_region, start_ts=start_ts, end_ts=end_ts)
-    else:
-        display_location_details(
-            df_filtered,
-            active_region,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            selected_loc=selected_loc,
-        )
+    display_location_details(
+        df_filtered,
+        active_region,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        selected_loc=selected_loc,
+    )
 
 
 def render_details_filters(*, regions: list[str], active_region: str | None) -> dict:
     from data_loader import load_region_filter_metadata
     from admin_config import get_default_date_window
 
-    # If the user changes any filter inputs (location/date range), we should stop
-    # force-collapsing the top-level expanders. (Submit will re-collapse them.)
     def _un_collapse_expandables() -> None:
         st.session_state["collapse_expandables"] = False
 
@@ -1188,8 +1333,8 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
             "locations": [],
         }
 
-    loc_col = "System" if region == "Midcon" else "Location"
-    filter_label = "🏭 System" if loc_col == "System" else "Location"
+    loc_col = "Location"
+    filter_label = "Location"
 
     meta = load_region_filter_metadata(region=region, loc_col=loc_col)
     locations = meta.get("locations", [])

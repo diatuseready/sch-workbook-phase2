@@ -97,13 +97,10 @@ def get_snowflake_session():
 def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(index=raw_df.index)
 
-    # Use OPERATIONAL_DATE as the canonical date for the dashboard.
-    # Fall back to DATA_DATE for backward compatibility with older sources.
     date_raw = _col(raw_df, "OPERATIONAL_DATE")
     if date_raw.isna().all():
         date_raw = _col(raw_df, "DATA_DATE")
-    # Per-row fallback: if OPERATIONAL_DATE is present but has some nulls,
-    # fill those from DATA_DATE so downstream filters remain consistent.
+
     if "DATA_DATE" in raw_df.columns:
         date_raw = date_raw.fillna(_col(raw_df, "DATA_DATE"))
     df["Date"] = pd.to_datetime(date_raw, errors="coerce")
@@ -123,28 +120,28 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["SOURCE_FILE_ID"] = _col(raw_df, "SOURCE_FILE_ID")
     df["CREATED_AT"] = pd.to_datetime(_col(raw_df, "CREATED_AT"), errors="coerce")
 
-    # Notes: best-effort mapping for manual override reason.
-    # (SQLite schema includes MANUAL_OVERRIDE_REASON; Snowflake may as well.)
     df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
 
-    # Row lineage tracking:
-    # - If explicit columns exist (e.g. in Snowflake), use them.
-    # - Otherwise infer from DATA_SOURCE (we set DATA_SOURCE='manual' for manual inserts).
     if "source" in raw_df.columns:
         df["source"] = _col(raw_df, "source", "system").fillna("system")
     else:
         ds = _col(raw_df, "DATA_SOURCE", "").fillna("").astype(str).str.strip().str.lower()
-        df["source"] = ds.map(lambda v: "manual" if v == "manual" else "system")
+
+        def _map_source(v: str) -> str:
+            if v in {"manual", "forecast", "system"}:
+                return v
+            return "system"
+
+        df["source"] = ds.map(_map_source)
 
     if "updated" in raw_df.columns:
         df["updated"] = pd.to_numeric(_col(raw_df, "updated", 0), errors="coerce").fillna(0).astype(int)
+    elif "MANUAL_OVERRIDE_FLAG" in raw_df.columns:
+        df["updated"] = pd.to_numeric(_col(raw_df, "MANUAL_OVERRIDE_FLAG", 0), errors="coerce").fillna(0).astype(int)
     else:
         df["updated"] = (df["source"].astype(str).str.strip().str.lower().eq("manual")).astype(int)
 
-    # Midcon rows often use SOURCE_SYSTEM/OPERATOR differently; if System is missing, fall back to Location.
-    midcon_mask = df["Region"] == "Midcon"
-    needs_system = midcon_mask & df["System"].isna()
-    df.loc[needs_system, "System"] = df.loc[needs_system, "Location"]
+    # No region-specific overrides.
 
     return df
 
@@ -361,6 +358,265 @@ def insert_manual_product_today(
     load_regions.clear()
 
 
+def _product_code(product_description: str) -> str:
+    s = str(product_description or "").strip()
+    if not s:
+        return "UNKNOWN"
+    return s.upper().replace(" ", "_")[:50]
+
+
+def persist_details_rows(
+    df_details: pd.DataFrame,
+    *,
+    region: str,
+    location: str | None,
+    system: str | None = None,
+    product: str | None = None,
+) -> int:
+    """Persist the Details-grid rows back to the underlying inventory table.
+    """
+
+    if df_details is None or df_details.empty:
+        return 0
+
+    region_s = str(region).strip() or "Unknown"
+    location_s = None if location in (None, "") else str(location).strip()
+    system_s = None if system in (None, "") else str(system).strip()
+    product_s_filter = None if product in (None, "") else str(product).strip()
+
+    df = df_details.copy()
+
+    # Optional filter: in Location view we save only the active product tab.
+    if product_s_filter and "Product" in df.columns:
+        df = df[df["Product"].astype(str) == product_s_filter]
+        if df.empty:
+            return 0
+
+    # Normalize date to yyyy-mm-dd strings.
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # Resolve location.
+    if location_s is None and "Location" in df.columns:
+        locs = df["Location"].dropna().astype(str).unique().tolist()
+        if len(locs) == 1:
+            location_s = str(locs[0]).strip()
+
+    if not location_s:
+        raise ValueError("Location scope is required to save details")
+
+    # Map UI/display columns back to storage columns.
+    NUM_MAP = {
+        "Opening Inv": "OPENING_INVENTORY_BBL",
+        "Close Inv": "CLOSING_INVENTORY_BBL",
+        "Batch In": "RECEIPTS_BBL",
+        "Batch Out": "DELIVERIES_BBL",
+        "Production": "PRODUCTION_BBL",
+        "Rack/Lifting": "RACK_LIFTINGS_BBL",
+        "Pipeline In": "PIPELINE_IN_BBL",
+        "Pipeline Out": "PIPELINE_OUT_BBL",
+        "Transfers": "TRANSFERS_BBL",
+        "Adjustments": "ADJUSTMENTS_BBL",
+        "Gain/Loss": "GAIN_LOSS_BBL",
+    }
+    FACT_MAP = {
+        "Opening Inv Fact": "FACT_OPENING_INVENTORY_BBL",
+        "Close Inv Fact": "FACT_CLOSING_INVENTORY_BBL",
+        "Batch In Fact": "FACT_RECEIPTS_BBL",
+        "Batch Out Fact": "FACT_DELIVERIES_BBL",
+        "Production Fact": "FACT_PRODUCTION_BBL",
+        "Rack/Lifting Fact": "FACT_RACK_LIFTINGS_BBL",
+        "Pipeline In Fact": "FACT_PIPELINE_IN_BBL",
+        "Pipeline Out Fact": "FACT_PIPELINE_OUT_BBL",
+        "Transfers Fact": "FACT_TRANSFERS_BBL",
+        "Adjustments Fact": "FACT_ADJUSTMENTS_BBL",
+        "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
+    }
+
+    def _num(v) -> float:
+        try:
+            if v is None:
+                return 0.0
+            return float(pd.to_numeric(pd.Series([v]).astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0).iloc[0])
+        except Exception:
+            return 0.0
+
+    # Build a staging dataframe for upsert.
+    rows: list[dict] = []
+    for _, r in df.iterrows():
+        prod_desc = product_s_filter or (str(r.get("Product") or "").strip() or None)
+        if not prod_desc:
+            # Details UI always has Product, but don't hard-crash if missing.
+            prod_desc = "Unknown"
+
+        src = str(r.get("source") or "system").strip().lower() or "system"
+        if src not in {"system", "manual", "forecast"}:
+            src = "system"
+
+        d = {
+            "INVENTORY_KEY": str(uuid4()),
+            "OPERATIONAL_DATE": str(r.get("Date") or ""),
+            "DATA_DATE": str(r.get("Date") or ""),
+            "REGION_CODE": region_s,
+            "LOCATION_CODE": location_s,
+            "PRODUCT_CODE": _product_code(prod_desc),
+            "PRODUCT_DESCRIPTION": prod_desc,
+            "DATA_SOURCE": src,
+            "MANUAL_OVERRIDE_FLAG": int(_num(r.get("updated", 0)) or 0),
+            "MANUAL_OVERRIDE_REASON": str(r.get("Notes") or ""),
+            "MANUAL_OVERRIDE_USER": "streamlit_app",
+        }
+
+        if system_s:
+            d["SOURCE_OPERATOR"] = system_s
+            d["SOURCE_SYSTEM"] = system_s
+
+        for ui_col, db_col in {**NUM_MAP, **FACT_MAP}.items():
+            if ui_col in df.columns:
+                d[db_col] = _num(r.get(ui_col))
+
+        rows.append(d)
+
+    if not rows:
+        return 0
+
+    # Persist
+    if DATA_SOURCE == "sqlite":
+        import sqlite3
+
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        try:
+            cur = conn.cursor()
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+            def _exists_key(op_date: str, prod_desc: str) -> str | None:
+                res = cur.execute(
+                    f"""
+                    SELECT INVENTORY_KEY
+                    FROM {SQLITE_TABLE}
+                    WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) = ?
+                      AND REGION_CODE = ?
+                      AND LOCATION_CODE = ?
+                      AND PRODUCT_DESCRIPTION = ?
+                    LIMIT 1
+                    """,
+                    (op_date, region_s, location_s, prod_desc),
+                ).fetchone()
+                return str(res[0]) if res else None
+
+            for row in rows:
+                op_date = row["OPERATIONAL_DATE"]
+                prod_desc = row["PRODUCT_DESCRIPTION"]
+                existing_key = _exists_key(op_date, prod_desc)
+
+                # Columns we write (common subset across SQLite/Snowflake).
+                write_cols = [
+                    "OPERATIONAL_DATE",
+                    "DATA_DATE",
+                    "REGION_CODE",
+                    "LOCATION_CODE",
+                    "PRODUCT_CODE",
+                    "PRODUCT_DESCRIPTION",
+                    "DATA_SOURCE",
+                    "OPENING_INVENTORY_BBL",
+                    "CLOSING_INVENTORY_BBL",
+                    "RECEIPTS_BBL",
+                    "DELIVERIES_BBL",
+                    "PRODUCTION_BBL",
+                    "RACK_LIFTINGS_BBL",
+                    "PIPELINE_IN_BBL",
+                    "PIPELINE_OUT_BBL",
+                    "TRANSFERS_BBL",
+                    "ADJUSTMENTS_BBL",
+                    "GAIN_LOSS_BBL",
+                    "FACT_OPENING_INVENTORY_BBL",
+                    "FACT_CLOSING_INVENTORY_BBL",
+                    "FACT_RECEIPTS_BBL",
+                    "FACT_DELIVERIES_BBL",
+                    "FACT_PRODUCTION_BBL",
+                    "FACT_RACK_LIFTINGS_BBL",
+                    "FACT_PIPELINE_IN_BBL",
+                    "FACT_PIPELINE_OUT_BBL",
+                    "FACT_TRANSFERS_BBL",
+                    "FACT_ADJUSTMENTS_BBL",
+                    "FACT_GAIN_LOSS_BBL",
+                    "MANUAL_OVERRIDE_FLAG",
+                    "MANUAL_OVERRIDE_REASON",
+                    "MANUAL_OVERRIDE_USER",
+                ]
+
+                if system_s:
+                    write_cols.insert(4, "SOURCE_OPERATOR")
+                    write_cols.insert(5, "SOURCE_SYSTEM")
+
+                for c in write_cols:
+                    row.setdefault(c, 0.0 if c.endswith("_BBL") else None)
+
+                if existing_key:
+                    set_sql = ", ".join([f"{c}=?" for c in write_cols] + ["UPDATED_AT=?"])
+                    params = [row.get(c) for c in write_cols] + [now, existing_key]
+                    cur.execute(
+                        f"UPDATE {SQLITE_TABLE} SET {set_sql} WHERE INVENTORY_KEY = ?",
+                        params,
+                    )
+                else:
+                    insert_cols = ["INVENTORY_KEY"] + write_cols + ["CREATED_AT", "UPDATED_AT"]
+                    placeholders = ",".join(["?"] * len(insert_cols))
+                    params = [row.get(c) for c in insert_cols]
+                    # Fill created/updated at
+                    params[-2] = now
+                    params[-1] = now
+                    cur.execute(
+                        f"INSERT INTO {SQLITE_TABLE} ({', '.join(insert_cols)}) VALUES ({placeholders})",
+                        params,
+                    )
+
+            conn.commit()
+        finally:
+            conn.close()
+
+    else:
+        session = get_snowflake_session()
+        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+
+        stage = pd.DataFrame(rows)
+        tmp_view = f"TMP_DETAILS_SAVE_{uuid4().hex}".upper()
+        session.create_dataframe(stage).create_or_replace_temp_view(tmp_view)
+
+        # Build MERGE (Snowflake identifiers are uppercased by default).
+        cols = [c for c in stage.columns]
+        update_cols = [c for c in cols if c != "INVENTORY_KEY"]
+
+        update_set = ",\n            ".join([f"{c} = s.{c}" for c in update_cols if c not in {"CREATED_AT"}])
+        insert_cols = ", ".join(cols + ["CREATED_AT", "UPDATED_AT"])
+        insert_vals = ", ".join([f"s.{c}" for c in cols] + ["CURRENT_TIMESTAMP()", "CURRENT_TIMESTAMP()"])
+
+        merge_sql = f"""
+        MERGE INTO {RAW_INVENTORY_TABLE} t
+        USING {tmp_view} s
+        ON COALESCE(t.OPERATIONAL_DATE, t.DATA_DATE) = s.OPERATIONAL_DATE
+           AND t.REGION_CODE = s.REGION_CODE
+           AND t.LOCATION_CODE = s.LOCATION_CODE
+           AND t.PRODUCT_DESCRIPTION = s.PRODUCT_DESCRIPTION
+        WHEN MATCHED THEN UPDATE SET
+            {update_set},
+            UPDATED_AT = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT ({insert_cols})
+        VALUES ({insert_vals})
+        """
+        session.sql(merge_sql).collect()
+
+    # Invalidate caches so the updated rows can be fetched.
+    _load_inventory_data_cached.clear()
+    _load_inventory_data_filtered_cached.clear()
+    load_region_filter_metadata.clear()
+    load_products_for_admin_scope.clear()
+    load_region_location_pairs.clear()
+    load_regions.clear()
+
+    return len(rows)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: str) -> pd.DataFrame:
     if source == "sqlite":
@@ -572,9 +828,7 @@ def load_regions() -> list[str]:
     # Snowflake
     session = get_snowflake_session()
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
-    # NOTE: Snowflake uppercases unquoted identifiers/aliases, so `AS Region` often
-    # comes back as a column named `REGION`. We both (a) quote the alias to
-    # preserve case and (b) read the result case-insensitively for robustness.
+
     df = session.sql(
         f'SELECT DISTINCT REGION_CODE AS "Region" FROM {RAW_INVENTORY_TABLE} '
         f"WHERE REGION_CODE IS NOT NULL ORDER BY REGION_CODE"
@@ -603,7 +857,7 @@ def load_regions() -> list[str]:
 def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
     """Return lightweight metadata for sidebar filters: locations/systems + date bounds."""
 
-    region_norm = _normalize_region_label(region) if region else None
+    region_norm = region
 
     if DATA_SOURCE == "sqlite":
         import sqlite3
@@ -612,32 +866,16 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
         try:
             cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
             date_expr = "COALESCE(OPERATIONAL_DATE, DATA_DATE)" if "OPERATIONAL_DATE" in cols else "DATA_DATE"
-            if loc_col == "System":
-                sys_sql = f"""
-                    SELECT DISTINCT
-                        CASE
-                            WHEN SOURCE_OPERATOR IS NOT NULL AND TRIM(SOURCE_OPERATOR) != '' THEN SOURCE_OPERATOR
-                            WHEN SOURCE_SYSTEM IS NOT NULL AND TRIM(SOURCE_SYSTEM) != '' THEN SOURCE_SYSTEM
-                            ELSE LOCATION_CODE
-                        END AS System
-                    FROM {SQLITE_TABLE}
-                    WHERE {date_expr} IS NOT NULL
-                      AND (? IS NULL OR REGION_CODE = ?)
-                    ORDER BY System
-                """
-                df_locs = pd.read_sql_query(sys_sql, conn, params=[region_norm, region_norm])
-                locations = sorted(df_locs["System"].dropna().astype(str).unique().tolist())
-            else:
-                loc_sql = f"""
-                    SELECT DISTINCT LOCATION_CODE AS Location
-                    FROM {SQLITE_TABLE}
-                    WHERE {date_expr} IS NOT NULL
-                      AND (? IS NULL OR REGION_CODE = ?)
-                      AND LOCATION_CODE IS NOT NULL
-                    ORDER BY Location
-                """
-                df_locs = pd.read_sql_query(loc_sql, conn, params=[region_norm, region_norm])
-                locations = sorted(df_locs["Location"].dropna().astype(str).unique().tolist())
+            loc_sql = f"""
+                SELECT DISTINCT LOCATION_CODE AS Location
+                FROM {SQLITE_TABLE}
+                WHERE {date_expr} IS NOT NULL
+                  AND (? IS NULL OR REGION_CODE = ?)
+                  AND LOCATION_CODE IS NOT NULL
+                ORDER BY Location
+            """
+            df_locs = pd.read_sql_query(loc_sql, conn, params=[region_norm, region_norm])
+            locations = sorted(df_locs["Location"].dropna().astype(str).unique().tolist())
 
             dates_sql = f"""
                 SELECT MIN({date_expr}) AS min_date, MAX({date_expr}) AS max_date
@@ -663,26 +901,15 @@ def load_region_filter_metadata(*, region: str | None, loc_col: str) -> dict:
     region_escaped = str(region_norm).replace("'", "''") if region_norm else ""
     region_filter = "" if not region_norm else f" AND REGION_CODE = '{region_escaped}'"
 
-    if loc_col == "System":
-        loc_query = f"""
-            SELECT DISTINCT
-                COALESCE(NULLIF(SOURCE_OPERATOR, ''), NULLIF(SOURCE_SYSTEM, ''), LOCATION_CODE) AS System
-            FROM {RAW_INVENTORY_TABLE}
-            WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL {region_filter}
-            ORDER BY System
-        """
-        df_locs = session.sql(loc_query).to_pandas()
-        locations = sorted(df_locs["SYSTEM"].dropna().astype(str).unique().tolist()) if "SYSTEM" in df_locs.columns else []
-    else:
-        loc_query = f"""
-            SELECT DISTINCT LOCATION_CODE AS Location
-            FROM {RAW_INVENTORY_TABLE}
-            WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL {region_filter}
-              AND LOCATION_CODE IS NOT NULL
-            ORDER BY Location
-        """
-        df_locs = session.sql(loc_query).to_pandas()
-        locations = sorted(df_locs["LOCATION"].dropna().astype(str).unique().tolist()) if "LOCATION" in df_locs.columns else []
+    loc_query = f"""
+        SELECT DISTINCT LOCATION_CODE AS Location
+        FROM {RAW_INVENTORY_TABLE}
+        WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL {region_filter}
+          AND LOCATION_CODE IS NOT NULL
+        ORDER BY Location
+    """
+    df_locs = session.sql(loc_query).to_pandas()
+    locations = sorted(df_locs["LOCATION"].dropna().astype(str).unique().tolist()) if "LOCATION" in df_locs.columns else []
 
     date_query = f"""
         SELECT MIN(COALESCE(OPERATIONAL_DATE, DATA_DATE)) AS min_date,
@@ -704,18 +931,16 @@ def ensure_numeric_columns(df_filtered: pd.DataFrame) -> pd.DataFrame:
 
 
 def _normalize_region_label(active_region: str | None) -> str | None:
-    """Normalize UI region labels to match data Region values."""
-    if active_region is None:
-        return None
-    return "Midcon" if active_region == "Group Supply Report (Midcon)" else active_region
+    # Backward compatible alias; no normalization.
+    return active_region
 
 
 def create_sidebar_filters(regions: list[str], df_region: pd.DataFrame) -> dict:
     active_region = st.session_state.get("active_region")
 
-    # Location/System selector (options depend on active_region)
-    loc_col = "System" if _normalize_region_label(active_region) == "Midcon" else "Location"
-    filter_label = "🏭 System" if loc_col == "System" else "📍 Location"
+    # Location selector
+    loc_col = "Location"
+    filter_label = "📍 Location"
 
     if df_region is not None and not df_region.empty and loc_col in df_region.columns:
         locations = sorted(df_region[loc_col].dropna().unique().tolist())
@@ -744,7 +969,7 @@ def create_sidebar_filters(regions: list[str], df_region: pd.DataFrame) -> dict:
     from admin_config import get_default_date_window
 
     start_off, end_off = get_default_date_window(
-        region=_normalize_region_label(active_region or "Unknown") or "Unknown",
+        region=str(active_region or "Unknown"),
         location=scope_location,
     )
 
@@ -823,7 +1048,7 @@ def _load_inventory_data_filtered_cached(
     end_ts: pd.Timestamp,
 ) -> pd.DataFrame:
 
-    region_norm = _normalize_region_label(region) if region else None
+    region_norm = region
 
     if source == "sqlite":
         import sqlite3
@@ -862,8 +1087,6 @@ def _load_inventory_data_filtered_cached(
         conn.close()
 
         df = _normalize_inventory_df(raw_df)
-        if selected_loc and loc_col == "System":
-            df = df[df["System"].astype(str) == str(selected_loc)]
         return df
 
     if source != "snowflake":
@@ -940,8 +1163,6 @@ def _load_inventory_data_filtered_cached(
 
     raw_df = session.sql(query).to_pandas()
     df = _normalize_inventory_df(raw_df)
-    if selected_loc and loc_col == "System":
-        df = df[df["System"].astype(str) == str(selected_loc)]
     return df
 
 
@@ -960,13 +1181,10 @@ def load_filtered_inventory_data(filters: dict) -> pd.DataFrame:
 
 
 def load_region_inventory_data(*, region: str) -> pd.DataFrame:
-    loc_col = "System" if _normalize_region_label(region) == "Midcon" else "Location"
+    loc_col = "Location"
     meta = load_region_filter_metadata(region=region, loc_col=loc_col)
     max_date = meta.get("max_date", pd.NaT)
 
-    # The summary calculations only need a recent window (latest date, prior
-    # day, and 7-day average). To keep queries light, we load a bounded slice
-    # ending at the region's max date.
     window_days = 90
 
     if pd.isna(max_date):
@@ -992,7 +1210,7 @@ def load_region_inventory_data(*, region: str) -> pd.DataFrame:
 def require_selected_location(filters: dict) -> None:
     """Enforce that a location/system must be selected before loading data."""
     if filters.get("selected_loc") in (None, ""):
-        st.warning("Please select a Location/System before submitting filters.")
+        st.warning("Please select a Location before submitting filters.")
         st.stop()
 
 
@@ -1045,7 +1263,7 @@ def load_region_location_pairs() -> pd.DataFrame:
 def load_products_for_admin_scope(*, region: str, location: str | None) -> list[str]:
     """Small helper for admin UI: distinct products for Region (+ optional Location)."""
 
-    region_norm = _normalize_region_label(region) if region else None
+    region_norm = region
 
     if DATA_SOURCE == "sqlite":
         import sqlite3
