@@ -580,31 +580,89 @@ def persist_details_rows(
         session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
         stage = pd.DataFrame(rows)
-        tmp_view = f"TMP_DETAILS_SAVE_{uuid4().hex}".upper()
-        session.create_dataframe(stage).create_or_replace_temp_view(tmp_view)
 
         # Build MERGE (Snowflake identifiers are uppercased by default).
         cols = [c for c in stage.columns]
         update_cols = [c for c in cols if c != "INVENTORY_KEY"]
 
+        def _is_nullish(v) -> bool:
+            return v is None or (isinstance(v, float) and pd.isna(v)) or (isinstance(v, pd.Timestamp) and pd.isna(v))
+
+        def _sql_literal(v, *, col: str) -> str:
+            if _is_nullish(v):
+                return "NULL"
+
+            # Dates are passed as strings like YYYY-MM-DD.
+            if col in {"OPERATIONAL_DATE", "DATA_DATE"}:
+                return "'" + str(v).replace("'", "''") + "'"
+
+            # Most numeric columns in this table are *_BBL plus the override flag.
+            if col.endswith("_BBL") or col in {"MANUAL_OVERRIDE_FLAG"}:
+                try:
+                    return str(float(v))
+                except Exception:
+                    return "0"
+
+            # Strings
+            return "'" + str(v).replace("'", "''") + "'"
+
+        def _cast_expr(c: str) -> str:
+            if c in {"OPERATIONAL_DATE", "DATA_DATE"}:
+                # Be tolerant if a caller passes empty/invalid date strings.
+                return f"TRY_TO_DATE({c}) AS {c}"
+            if c == "MANUAL_OVERRIDE_FLAG":
+                return f"TRY_TO_NUMBER({c}) AS {c}"
+            if c.endswith("_BBL"):
+                return f"TRY_TO_DOUBLE({c}) AS {c}"
+            return f"{c}::STRING AS {c}"
+
         update_set = ",\n            ".join([f"{c} = s.{c}" for c in update_cols if c not in {"CREATED_AT"}])
         insert_cols = ", ".join(cols + ["CREATED_AT", "UPDATED_AT"])
         insert_vals = ", ".join([f"s.{c}" for c in cols] + ["CURRENT_TIMESTAMP()", "CURRENT_TIMESTAMP()"])
 
-        merge_sql = f"""
-        MERGE INTO {RAW_INVENTORY_TABLE} t
-        USING {tmp_view} s
-        ON COALESCE(t.OPERATIONAL_DATE, t.DATA_DATE) = s.OPERATIONAL_DATE
-           AND t.REGION_CODE = s.REGION_CODE
-           AND t.LOCATION_CODE = s.LOCATION_CODE
-           AND t.PRODUCT_DESCRIPTION = s.PRODUCT_DESCRIPTION
-        WHEN MATCHED THEN UPDATE SET
-            {update_set},
-            UPDATED_AT = CURRENT_TIMESTAMP()
-        WHEN NOT MATCHED THEN INSERT ({insert_cols})
-        VALUES ({insert_vals})
-        """
-        session.sql(merge_sql).collect()
+        chunk_size = 500
+        total_written = 0
+        for start in range(0, len(stage), chunk_size):
+            chunk = stage.iloc[start:start + chunk_size]
+
+            values_rows: list[str] = []
+            for _, r in chunk.iterrows():
+                values_rows.append(
+                    "(" + ", ".join(_sql_literal(r.get(c), col=c) for c in cols) + ")"
+                )
+            values_sql = ",\n                ".join(values_rows)
+
+            cte_cols = ", ".join(cols)
+            cast_select = ",\n                    ".join(_cast_expr(c) for c in cols)
+
+            merge_sql = f"""
+            WITH s_raw({cte_cols}) AS (
+                SELECT *
+                FROM VALUES
+                {values_sql}
+            ),
+            s AS (
+                SELECT
+                    {cast_select}
+                FROM s_raw
+            )
+            MERGE INTO {RAW_INVENTORY_TABLE} t
+            USING s
+            ON COALESCE(t.OPERATIONAL_DATE, t.DATA_DATE) = s.OPERATIONAL_DATE
+               AND t.REGION_CODE = s.REGION_CODE
+               AND t.LOCATION_CODE = s.LOCATION_CODE
+               AND t.PRODUCT_DESCRIPTION = s.PRODUCT_DESCRIPTION
+            WHEN MATCHED THEN UPDATE SET
+                {update_set},
+                UPDATED_AT = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN INSERT ({insert_cols})
+            VALUES ({insert_vals})
+            """
+
+            session.sql(merge_sql).collect()
+            total_written += int(len(chunk))
+
+        rows_written = total_written
 
     # Invalidate caches so the updated rows can be fetched.
     _load_inventory_data_cached.clear()
@@ -614,7 +672,7 @@ def persist_details_rows(
     load_region_location_pairs.clear()
     load_regions.clear()
 
-    return len(rows)
+    return int(locals().get("rows_written", len(rows)))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -696,8 +754,6 @@ def _normalize_source_status_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     """Normalize source status records for UI display."""
     df = raw_df.copy()
 
-    # Standardize column names to match CSV/table.
-    # (SQLite table uses these exact names; Snowflake equivalent should match.)
     for c in ["RECEIVED_TIMESTAMP", "PROCESSED_AT"]:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
