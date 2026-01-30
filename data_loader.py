@@ -20,6 +20,9 @@ from config import (
     COL_OPEN_INV_RAW,
     COL_CLOSE_INV_RAW,
 
+    # Free-text column
+    COL_BATCH,
+
     # Flow columns
     COL_BATCH_IN_RAW,
     COL_BATCH_OUT_RAW,
@@ -121,6 +124,8 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["CREATED_AT"] = pd.to_datetime(_col(raw_df, "CREATED_AT"), errors="coerce")
 
     df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
+
+    df[COL_BATCH] = _col(raw_df, "BATCH", "").fillna("").astype(str)
 
     if "source" in raw_df.columns:
         df["source"] = _col(raw_df, "source", "system").fillna("system")
@@ -418,6 +423,7 @@ def persist_details_rows(
         "Adjustments": "ADJUSTMENTS_BBL",
         "Gain/Loss": "GAIN_LOSS_BBL",
     }
+
     FACT_MAP = {
         "Opening Inv Fact": "FACT_OPENING_INVENTORY_BBL",
         "Close Inv Fact": "FACT_CLOSING_INVENTORY_BBL",
@@ -468,6 +474,9 @@ def persist_details_rows(
             "MANUAL_OVERRIDE_REASON": str(r.get("Notes") or ""),
             "MANUAL_OVERRIDE_USER": "streamlit_app",
         }
+
+        if COL_BATCH in df.columns:
+            d["BATCH"] = str(r.get(COL_BATCH) or "")
 
         if system_s:
             d["SOURCE_OPERATOR"] = system_s
@@ -545,6 +554,7 @@ def persist_details_rows(
                     "MANUAL_OVERRIDE_FLAG",
                     "MANUAL_OVERRIDE_REASON",
                     "MANUAL_OVERRIDE_USER",
+                    "BATCH",
                 ]
 
                 if system_s:
@@ -711,6 +721,7 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         DATA_SOURCE,
+        CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,
@@ -1182,6 +1193,7 @@ def _load_inventory_data_filtered_cached(
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         DATA_SOURCE,
+        CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,

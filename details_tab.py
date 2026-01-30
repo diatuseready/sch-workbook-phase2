@@ -42,6 +42,7 @@ from config import (
     COL_TRANSFERS_FACT,
     COL_GAIN_LOSS,
     COL_GAIN_LOSS_FACT,
+    COL_BATCH,
     COL_NOTES,
     DETAILS_RENAME_MAP,
 )
@@ -62,6 +63,7 @@ DETAILS_COLS = [
     COL_TRANSFERS,
     COL_PRODUCTION,
     COL_ADJUSTMENTS,
+    COL_BATCH,
     COL_NOTES,
 ]
 
@@ -523,6 +525,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         ),
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
+        "Batch": st.column_config.TextColumn("Batch"),
         "Notes": st.column_config.TextColumn("Notes"),
     }
 
@@ -578,6 +581,8 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         agg_map["source"] = "first"
     if "updated" in df.columns:
         agg_map["updated"] = "max"
+    if "Batch" in df.columns:
+        agg_map["Batch"] = "last"
     if "Notes" in df.columns:
         agg_map["Notes"] = "last"
 
@@ -785,6 +790,7 @@ def _extend_with_30d_forecast(
                 "Product": product,
                 "source": "forecast",
                 "updated": 0,
+                "Batch": "",
                 "Notes": "",
                 "Open Inv": opening,
                 "Close Inv": closing,
@@ -938,6 +944,7 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "Gain/Loss",
         "Transfers",
         "Rack/Lifting",
+        "Batch",
     ]
 
     base = [
@@ -946,6 +953,7 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "source",
         "Product",
         "updated",
+        "Batch",
         "Notes",
         "Opening Inv",
         "Close Inv",

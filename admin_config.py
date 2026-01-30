@@ -55,6 +55,7 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Transfers",
     "Production",
     "Adjustments",
+    "Batch",
     "Notes",
 ]
 
