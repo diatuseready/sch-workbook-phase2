@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import pandas as pd
 import streamlit as st
 
@@ -12,6 +13,7 @@ from config import (
     RAW_INVENTORY_TABLE,
     SNOWFLAKE_SOURCE_STATUS_TABLE,
     SNOWFLAKE_WAREHOUSE,
+    SNOWFLAKE_WORKBOOK_STAGE,
     SQLITE_DB_PATH,
     SQLITE_SOURCE_STATUS_TABLE,
     SQLITE_TABLE,
@@ -52,6 +54,60 @@ from config import (
     COL_GAIN_LOSS_FACT,
     COL_TRANSFERS_FACT,
 )
+
+
+# ----------------------------------------------------------------------------
+# System file download support (Snowflake-only)
+# ----------------------------------------------------------------------------
+
+def generate_snowflake_signed_urls(file_paths: list[str], *, expiry_seconds: int = 3600) -> list[dict[str, str]]:
+    """Generate Snowflake signed URLs for a list of stage file paths.
+
+    This uses Snowflake's GET_PRESIGNED_URL against the configured stage.
+    Only works when DATA_SOURCE == "snowflake".
+
+    Returns a list of {"path": <original>, "url": <signed_url>}.
+    """
+
+    if not file_paths:
+        return []
+
+    if DATA_SOURCE != "snowflake":
+        # Feature explicitly not supported for SQLite/local.
+        return []
+
+    session = get_snowflake_session()
+    session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+
+    out: list[dict[str, str]] = []
+    for p in file_paths:
+        path = str(p or "").strip()
+        if not path:
+            continue
+
+        # Quote path + stage safely.
+        stage_sql = "'" + str(SNOWFLAKE_WORKBOOK_STAGE).replace("'", "''") + "'"
+        path_sql = "'" + path.replace("'", "''") + "'"
+        exp_sql = str(int(expiry_seconds))
+
+        q = f"SELECT GET_PRESIGNED_URL({stage_sql}, {path_sql}, {exp_sql}) AS URL"
+        rows = session.sql(q).collect()
+        if rows:
+            # Snowpark Row behaves like dict/attr; be defensive.
+            url = None
+            try:
+                url = rows[0]["URL"]
+            except Exception:
+                try:
+                    url = rows[0].URL
+                except Exception:
+                    url = None
+
+            if url:
+                out.append({"path": path, "url": str(url)})
+
+    return out
+
 
 NUMERIC_COLUMN_MAP = {
     COL_BATCH_IN_RAW: "RECEIPTS_BBL",
@@ -100,6 +156,40 @@ def get_snowflake_session():
 def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(index=raw_df.index)
 
+    def _parse_file_locations(v) -> list[str]:
+        """Parse Snowflake VARIANT array (or its string form) into list[str]."""
+        try:
+            if v is None:
+                return []
+            if isinstance(v, float) and pd.isna(v):
+                return []
+
+            if isinstance(v, (list, tuple)):
+                return [str(x) for x in v if x is not None and str(x).strip()]
+
+            if isinstance(v, str):
+                s = v.strip()
+                if not s or s.lower() == "null":
+                    return []
+                if s.startswith("["):
+                    try:
+                        parsed = json.loads(s)
+                        if isinstance(parsed, list):
+                            return [str(x) for x in parsed if x is not None and str(x).strip()]
+                    except Exception:
+                        # fall through
+                        pass
+                # Treat as single path.
+                return [s]
+
+            # Some connectors may return a dict-like; best-effort.
+            if isinstance(v, dict) and "data" in v and isinstance(v.get("data"), list):
+                return [str(x) for x in v.get("data") if x is not None and str(x).strip()]
+
+            return [str(v)]
+        except Exception:
+            return []
+
     date_raw = _col(raw_df, "OPERATIONAL_DATE")
     if date_raw.isna().all():
         date_raw = _col(raw_df, "DATA_DATE")
@@ -122,6 +212,12 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["INVENTORY_KEY"] = _col(raw_df, "INVENTORY_KEY")
     df["SOURCE_FILE_ID"] = _col(raw_df, "SOURCE_FILE_ID")
     df["CREATED_AT"] = pd.to_datetime(_col(raw_df, "CREATED_AT"), errors="coerce")
+
+    # VARIANT array of file paths used for Details -> "View File".
+    file_loc_raw = _col(raw_df, "FILE_LOCATION")
+    if file_loc_raw.isna().all():
+        file_loc_raw = _col(raw_df, "file_location")
+    df["FILE_LOCATION"] = file_loc_raw.map(_parse_file_locations)
 
     df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
 
@@ -749,6 +845,7 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
+        TO_JSON(FILE_LOCATION) AS FILE_LOCATION,
         CREATED_AT,
         MANUAL_OVERRIDE_REASON
     FROM {RAW_INVENTORY_TABLE}
@@ -1221,6 +1318,7 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
+        TO_JSON(FILE_LOCATION) AS FILE_LOCATION,
         CREATED_AT,
         MANUAL_OVERRIDE_REASON
     FROM {RAW_INVENTORY_TABLE}

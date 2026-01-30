@@ -8,6 +8,7 @@ from datetime import timedelta
 from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
 from utils import dynamic_input_data_editor
 from data_loader import persist_details_rows
+from data_loader import generate_snowflake_signed_urls
 from app_logging import logged_button, log_audit, log_error
 from config import (
     COL_ADJUSTMENTS,
@@ -45,6 +46,7 @@ from config import (
     COL_BATCH,
     COL_NOTES,
     DETAILS_RENAME_MAP,
+    DATA_SOURCE,
 )
 
 DETAILS_RENAME = DETAILS_RENAME_MAP
@@ -66,6 +68,50 @@ DETAILS_COLS = [
     COL_BATCH,
     COL_NOTES,
 ]
+
+# UI-only column (not persisted)
+COL_VIEW_FILE = "View File"
+
+
+@st.dialog("System Files")
+def _view_files_dialog(*, file_locations: list[str] | None, context: dict | None = None) -> None:
+    """Popup showing signed download links for system files for a given row/day."""
+
+    ctx = context or {}
+    date_label = ctx.get("date")
+    loc_label = ctx.get("location")
+    prod_label = ctx.get("product")
+
+    title_bits = [b for b in [date_label, loc_label, prod_label] if b]
+    if title_bits:
+        st.caption(" / ".join(str(b) for b in title_bits))
+
+    paths = file_locations or []
+    paths = [str(p).strip() for p in paths if p is not None and str(p).strip()]
+
+    if DATA_SOURCE != "snowflake":
+        st.info("File downloads are only available in Snowflake mode.")
+        return
+
+    if not paths:
+        st.info("No system files found for this row.")
+        return
+
+    with st.spinner("Generating signed URLs…"):
+        signed = generate_snowflake_signed_urls(paths, expiry_seconds=3600)
+
+    if not signed:
+        st.warning("No downloadable links could be generated.")
+        return
+
+    st.write("Click a file to download:")
+    for item in signed:
+        p = str(item.get("path") or "")
+        url = str(item.get("url") or "")
+        label = p.split("/")[-1] if "/" in p else p
+        if url:
+            st.link_button(label=label, url=url)
+
 
 FORECAST_FLOW_COLS = [
     COL_BATCH_IN_RAW,
@@ -527,6 +573,13 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
         "Notes": st.column_config.TextColumn("Notes"),
+        COL_VIEW_FILE: st.column_config.SelectboxColumn(
+            COL_VIEW_FILE,
+            options=["", "View"],
+            required=False,
+            disabled=(DATA_SOURCE != "snowflake"),
+            help="Select 'View' to open a popup with downloadable system files for this row.",
+        ),
     }
 
     for c in cols:
@@ -585,6 +638,10 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         agg_map["Batch"] = "last"
     if "Notes" in df.columns:
         agg_map["Notes"] = "last"
+
+    # Keep file locations for the day (Snowflake-only; list column).
+    if "FILE_LOCATION" in df.columns:
+        agg_map["FILE_LOCATION"] = "last"
 
     return df.groupby(group_cols, as_index=False).agg(agg_map)
 
@@ -792,6 +849,7 @@ def _extend_with_30d_forecast(
                 "updated": 0,
                 "Batch": "",
                 "Notes": "",
+                "FILE_LOCATION": [],
                 "Open Inv": opening,
                 "Close Inv": closing,
                 **flows,
@@ -955,16 +1013,29 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "updated",
         "Batch",
         "Notes",
+        "FILE_LOCATION",
+        COL_VIEW_FILE,
         "Opening Inv",
         "Close Inv",
         "Opening Inv Fact",
         "Close Inv Fact",
     ]
     desired = []
+    always_include = {"FILE_LOCATION", COL_VIEW_FILE}
     for c in base + ui_cols + extra:
-        if c in df_display.columns and c not in desired:
+        if c in desired:
+            continue
+        if c in always_include or c in df_display.columns:
             desired.append(c)
-    return df_display[desired].reset_index(drop=True)
+
+    out = df_display.copy()
+    # Ensure list column exists even in SQLite/forecast rows.
+    if "FILE_LOCATION" not in out.columns:
+        out["FILE_LOCATION"] = [[] for _ in range(len(out))]
+    # UI action column: always starts blank.
+    out[COL_VIEW_FILE] = ""
+
+    return out[desired].reset_index(drop=True)
 
 
 def display_location_details(
@@ -1016,6 +1087,19 @@ def display_location_details(
             df_key = f"{base_key}__df"
             ver_key = f"{base_key}__ver"
             widget_key = f"{base_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
+
+            # If a prior rerun requested opening the View File dialog, do it now.
+            vf_payload = st.session_state.get("details_view_file_payload")
+            if isinstance(vf_payload, dict) and vf_payload.get("df_key") == df_key:
+                _view_files_dialog(
+                    file_locations=vf_payload.get("file_locations"),
+                    context={
+                        "date": vf_payload.get("date"),
+                        "location": vf_payload.get("location"),
+                        "product": vf_payload.get("product"),
+                    },
+                )
+                st.session_state["details_view_file_payload"] = None
 
             overlay = st.session_state.get("details_save_overlay") or {}
             if overlay.get("on") and overlay.get("df_key") == df_key:
@@ -1108,6 +1192,14 @@ def display_location_details(
                 before="Notes",
             )
 
+            # UI action column (Snowflake-only).
+            column_order = _ensure_cols_after(
+                column_order,
+                required=[COL_VIEW_FILE],
+                after="Notes",
+                before=None,
+            )
+
             column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
 
             locked_cols = _locked_cols("Location", cols)
@@ -1141,6 +1233,30 @@ def display_location_details(
 
             recomputed = _recalculate_open_close_inv(edited, id_col="Location").reset_index(drop=True)
             st.session_state[df_key] = recomputed
+
+            # Handle "View File" action: if user selected "View" for any row,
+            # open a dialog (next rerun) and clear the cell value.
+            if COL_VIEW_FILE in recomputed.columns:
+                view_mask = recomputed[COL_VIEW_FILE].astype(str).str.strip().eq("View")
+                if bool(view_mask.any()):
+                    idx = int(view_mask[view_mask].index[0])
+                    file_locations = recomputed.at[idx, "FILE_LOCATION"] if "FILE_LOCATION" in recomputed.columns else []
+
+                    # Clear the action cell so it behaves like a button.
+                    st.session_state[df_key].at[idx, COL_VIEW_FILE] = ""
+
+                    st.session_state["details_view_file_payload"] = {
+                        "df_key": df_key,
+                        "row": idx,
+                        "date": str(recomputed.at[idx, "Date"]) if "Date" in recomputed.columns else None,
+                        "location": str(selected_loc) if selected_loc is not None else None,
+                        "product": str(prod_name) if prod_name is not None else None,
+                        "file_locations": file_locations,
+                    }
+                    # Force the editor to refresh so the selectbox resets.
+                    st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
+                    st.rerun()
+
             if _needs_inventory_rerun(edited, recomputed):
                 st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
                 st.rerun()
