@@ -105,12 +105,24 @@ def _view_files_dialog(*, file_locations: list[str] | None, context: dict | None
         return
 
     st.write("Click a file to download:")
+
+    def _short_label(name: str, *, max_len: int = 55) -> str:
+        s = str(name or "")
+        if len(s) <= max_len:
+            return s
+        # Keep start + end so users can still distinguish files.
+        head = max(10, (max_len - 1) // 2)
+        tail = max(10, max_len - 1 - head)
+        return s[:head].rstrip() + "…" + s[-tail:].lstrip()
+
     for item in signed:
         p = str(item.get("path") or "")
         url = str(item.get("url") or "")
         label = p.split("/")[-1] if "/" in p else p
         if url:
-            st.link_button(label=label, url=url)
+            st.link_button(label=_short_label(label), url=url)
+            # Full path (useful when truncated)
+            st.caption(p)
 
 
 FORECAST_FLOW_COLS = [
@@ -573,12 +585,11 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
         "Notes": st.column_config.TextColumn("Notes"),
-        COL_VIEW_FILE: st.column_config.SelectboxColumn(
+        COL_VIEW_FILE: st.column_config.CheckboxColumn(
             COL_VIEW_FILE,
-            options=["", "View"],
-            required=False,
+            default=False,
             disabled=(DATA_SOURCE != "snowflake"),
-            help="Select 'View' to open a popup with downloadable system files for this row.",
+            help="Check to open a popup with downloadable system files for this row.",
         ),
     }
 
@@ -1032,8 +1043,8 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
     # Ensure list column exists even in SQLite/forecast rows.
     if "FILE_LOCATION" not in out.columns:
         out["FILE_LOCATION"] = [[] for _ in range(len(out))]
-    # UI action column: always starts blank.
-    out[COL_VIEW_FILE] = ""
+    # UI action column: checkbox that behaves like a button.
+    out[COL_VIEW_FILE] = False
 
     return out[desired].reset_index(drop=True)
 
@@ -1196,7 +1207,7 @@ def display_location_details(
             column_order = _ensure_cols_after(
                 column_order,
                 required=[COL_VIEW_FILE],
-                after="Notes",
+                after="Close Inv",
                 before=None,
             )
 
@@ -1235,15 +1246,15 @@ def display_location_details(
             st.session_state[df_key] = recomputed
 
             # Handle "View File" action: if user selected "View" for any row,
-            # open a dialog (next rerun) and clear the cell value.
+            # open a dialog (next rerun) and clear the checkbox.
             if COL_VIEW_FILE in recomputed.columns:
-                view_mask = recomputed[COL_VIEW_FILE].astype(str).str.strip().eq("View")
+                view_mask = recomputed[COL_VIEW_FILE].fillna(False).astype(bool)
                 if bool(view_mask.any()):
                     idx = int(view_mask[view_mask].index[0])
                     file_locations = recomputed.at[idx, "FILE_LOCATION"] if "FILE_LOCATION" in recomputed.columns else []
 
                     # Clear the action cell so it behaves like a button.
-                    st.session_state[df_key].at[idx, COL_VIEW_FILE] = ""
+                    st.session_state[df_key].at[idx, COL_VIEW_FILE] = False
 
                     st.session_state["details_view_file_payload"] = {
                         "df_key": df_key,
