@@ -79,10 +79,12 @@ COL_OPENING_INV_FACT = "Opening Inv Fact"  # renamed for UI/editor
 COL_CLOSE_INV_FACT_RAW = "Close Inv Fact"  # display name is the same
 
 COL_BATCH_IN_FACT_RAW = "Batch In Fact (FACT_RECEIPTS_BBL)"
-COL_BATCH_IN_FACT = "Batch In Fact"
+# Display name in the UI/details editor
+COL_BATCH_IN_FACT = "Receipts Fact"
 
 COL_BATCH_OUT_FACT_RAW = "Batch Out Fact (FACT_DELIVERIES_BBL)"
-COL_BATCH_OUT_FACT = "Batch Out Fact"
+# Display name in the UI/details editor
+COL_BATCH_OUT_FACT = "Deliveries Fact"
 
 COL_RACK_LIFTINGS_FACT_RAW = "Rack/Liftings Fact"
 COL_RACK_LIFTING_FACT = "Rack/Lifting Fact"
@@ -97,8 +99,9 @@ COL_TRANSFERS_FACT = "Transfers Fact"
 # Flows
 COL_BATCH_IN_RAW = "Batch In (RECEIPTS_BBL)"
 COL_BATCH_OUT_RAW = "Batch Out (DELIVERIES_BBL)"
-COL_BATCH_IN = "Batch In"  # renamed for UI/editor
-COL_BATCH_OUT = "Batch Out"  # renamed for UI/editor
+# Display names in the UI/details editor
+COL_BATCH_IN = "Receipts"
+COL_BATCH_OUT = "Deliveries"
 
 COL_RACK_LIFTINGS_RAW = "Rack/Liftings"
 COL_RACK_LIFTING = "Rack/Lifting"  # renamed for UI/editor
@@ -153,7 +156,7 @@ DETAILS_RENAME_MAP = {
 # - 7_day_avg: constant average of last 7 days, excluding 0 values
 # - mtd_avg: constant average over all available history in the current details
 #            dataframe (typically ~MTD window), excluding 0 values
-RACK_LIFTING_FORECAST_METHOD_DEFAULT = "weekday_weighted"
+RACK_LIFTING_FORECAST_METHOD_DEFAULT = "7_day_avg"
 RACK_LIFTING_FORECAST_METHODS: tuple[str, ...] = (
     "weekday_weighted",
     "7_day_avg",

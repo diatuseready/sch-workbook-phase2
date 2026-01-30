@@ -46,8 +46,8 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Product",
     "Opening Inv",
     "Close Inv",
-    "Batch In",
-    "Batch Out",
+    "Receipts",
+    "Deliveries",
     "Rack/Lifting",
     "Pipeline In",
     "Pipeline Out",
@@ -449,7 +449,14 @@ def get_visible_columns(*, region: str, location: str | None) -> list[str]:
 
     cols = json.loads(str(raw) or "[]")
     if isinstance(cols, list) and cols:
-        return [str(c) for c in cols]
+        # Backward compatible: older stored configs used Batch In/Out.
+        rename = {
+            "Batch In": "Receipts",
+            "Batch Out": "Deliveries",
+            "Batch In Fact": "Receipts Fact",
+            "Batch Out Fact": "Deliveries Fact",
+        }
+        return [rename.get(str(c), str(c)) for c in cols]
     return list(DEFAULT_VISIBLE_COLUMNS)
 
 

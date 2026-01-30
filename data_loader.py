@@ -408,8 +408,8 @@ def persist_details_rows(
     NUM_MAP = {
         "Opening Inv": "OPENING_INVENTORY_BBL",
         "Close Inv": "CLOSING_INVENTORY_BBL",
-        "Batch In": "RECEIPTS_BBL",
-        "Batch Out": "DELIVERIES_BBL",
+        "Receipts": "RECEIPTS_BBL",
+        "Deliveries": "DELIVERIES_BBL",
         "Production": "PRODUCTION_BBL",
         "Rack/Lifting": "RACK_LIFTINGS_BBL",
         "Pipeline In": "PIPELINE_IN_BBL",
@@ -421,8 +421,8 @@ def persist_details_rows(
     FACT_MAP = {
         "Opening Inv Fact": "FACT_OPENING_INVENTORY_BBL",
         "Close Inv Fact": "FACT_CLOSING_INVENTORY_BBL",
-        "Batch In Fact": "FACT_RECEIPTS_BBL",
-        "Batch Out Fact": "FACT_DELIVERIES_BBL",
+        "Receipts Fact": "FACT_RECEIPTS_BBL",
+        "Deliveries Fact": "FACT_DELIVERIES_BBL",
         "Production Fact": "FACT_PRODUCTION_BBL",
         "Rack/Lifting Fact": "FACT_RACK_LIFTINGS_BBL",
         "Pipeline In Fact": "FACT_PIPELINE_IN_BBL",

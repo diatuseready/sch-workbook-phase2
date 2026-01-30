@@ -305,13 +305,13 @@ def _save_result_dialog(*, result: dict) -> None:
 
 # Flow-column names *after* `DETAILS_RENAME` has been applied.
 DISPLAY_INFLOW_COLS = [
-    "Batch In",
+    "Receipts",
     "Pipeline In",
     "Production",
 ]
 
 DISPLAY_OUTFLOW_COLS = [
-    "Batch Out",
+    "Deliveries",
     "Rack/Lifting",
     "Pipeline Out",
 ]
@@ -887,7 +887,7 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
         tip_raw = "\n".join(
             [
                 "Closing Inventory calculation",
-                "Standard: Close = Opening + (Batch In + Pipeline In + Production) - (Batch Out + Rack/Lifting + Pipeline Out) + (Adjustments + Gain/Loss + Transfers)",
+                "Standard: Close = Opening + (Receipts + Pipeline In + Production) - (Deliveries + Rack/Lifting + Pipeline Out) + (Adjustments + Gain/Loss + Transfers)",
             ]
         )
         tip_attr = html.escape(tip_raw, quote=True).replace("\n", "&#10;")
@@ -923,8 +923,8 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
     extra = [
         "Production",
         "Adjustments",
-        "Batch In",
-        "Batch Out",
+        "Receipts",
+        "Deliveries",
         "Pipeline In",
         "Pipeline Out",
         "Gain/Loss",
