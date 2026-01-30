@@ -99,12 +99,16 @@ def apply_custom_css():
         color: white !important;
         border-bottom: 3px solid {ACCENT_GREEN} !important;
     }}
-    div.stButton > button {{
+
+    div.stButton > button,
+    div[data-testid="stButton"] > button,
+    button[kind="primary"],
+    button[kind="secondary"] {{
         background: {PRIMARY_GREEN} !important;
-        color: white;
+        color: white !important;
         border-radius: 6px;
         font-weight: 600;
-        border: none;
+        border: none !important;
         transition: 0.3s;
     }}
 
@@ -113,7 +117,10 @@ def apply_custom_css():
         height: 1.6rem;
     }}
 
-    div.stButton > button:hover {{ opacity: 0.9; }}
+    div.stButton > button:hover,
+    div[data-testid="stButton"] > button:hover,
+    button[kind="primary"]:hover,
+    button[kind="secondary"]:hover {{ opacity: 0.9; }}
 
     [data-testid="stDataEditor"] [data-testid="stElementToolbar"],
     [data-testid="stDataEditor"] [data-testid="stToolbar"] {{

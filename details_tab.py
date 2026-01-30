@@ -838,19 +838,28 @@ def _threshold_values(
     return b, s, n
 
 
-def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float | None, note: str | None = None):
-    """Render the SafeFill/Bottom/Note cards plus a hover tooltip for Close Inv formula."""
+def _render_threshold_cards(
+    *,
+    bottom: float | None,
+    safefill: float | None,
+    note: str | None = None,
+    c_safefill,
+    c_bottom,
+    c_note,
+    c_info,
+) -> None:
+    """Render SafeFill/Bottom/Note cards + info tooltip inside provided columns.
 
-    c0, c1, c2, c3, c4 = st.columns([5, 2, 2, 3, 0.6])
+    This lets callers place the cards on the same row as other controls
+    (e.g., the Save button) to reduce vertical space.
+    """
 
-    with c0:
-        st.markdown("")
-
-    with c1:
+    with c_safefill:
         v = "—" if safefill is None else f"{safefill:,.0f}"
         st.markdown(
             f"""
-            <div class="mini-card">
+            <div class="mini-card" style="margin-bottom:1rem
+            ;">
               <p class="label">SafeFill</p>
               <p class="value">{v}</p>
             </div>
@@ -858,11 +867,11 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
             unsafe_allow_html=True,
         )
 
-    with c2:
+    with c_bottom:
         v = "—" if bottom is None else f"{bottom:,.0f}"
         st.markdown(
             f"""
-            <div class="mini-card">
+            <div class="mini-card" style="margin-bottom:1rem;">
               <p class="label">Bottom</p>
               <p class="value">{v}</p>
             </div>
@@ -870,11 +879,11 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
             unsafe_allow_html=True,
         )
 
-    with c3:
+    with c_note:
         v = "—" if note in (None, "") else str(note)
         st.markdown(
             f"""
-            <div class="mini-card">
+            <div class="mini-card" style="margin-bottom:1rem;">
               <p class="label">Note</p>
               <p class="value" style="font-size:0.95rem; font-weight:700;">{v}</p>
             </div>
@@ -882,40 +891,39 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
             unsafe_allow_html=True,
         )
 
-    with c4:
+    # with c_info:
+    #     tip_raw = "\n".join(
+    #         [
+    #             "Closing Inventory calculation",
+    #             "Standard: Close = Opening + (Receipts + Pipeline In + Production) - (Deliveries + Rack/Lifting + Pipeline Out) + (Adjustments + Gain/Loss + Transfers)",
+    #         ]
+    #     )
+    #     tip_attr = html.escape(tip_raw, quote=True).replace("\n", "&#10;")
 
-        tip_raw = "\n".join(
-            [
-                "Closing Inventory calculation",
-                "Standard: Close = Opening + (Receipts + Pipeline In + Production) - (Deliveries + Rack/Lifting + Pipeline Out) + (Adjustments + Gain/Loss + Transfers)",
-            ]
-        )
-        tip_attr = html.escape(tip_raw, quote=True).replace("\n", "&#10;")
-
-        st.markdown(
-            f"""
-            <div style="display:flex; justify-content:flex-end; align-items:center; height:100%;">
-              <span
-                title="{tip_attr}"
-                style="
-                  display:inline-flex;
-                  align-items:center;
-                  justify-content:center;
-                  width:32px;
-                  height:32px;
-                  border-radius:8px;
-                  background: #F7FAFC;
-                  border: 1px solid #E2E8F0;
-                  font-weight: 800;
-                  color: #2F855A;
-                  cursor: help;
-                  user-select: none;
-                "
-              >ℹ️</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    #     st.markdown(
+    #         f"""
+    #         <div style="display:flex; justify-content:flex-end; align-items:center; height:100%;">
+    #           <span
+    #             title="{tip_attr}"
+    #             style="
+    #               display:inline-flex;
+    #               align-items:center;
+    #               justify-content:center;
+    #               width:32px;
+    #               height:32px;
+    #               border-radius:8px;
+    #               background: #F7FAFC;
+    #               border: 1px solid #E2E8F0;
+    #               font-weight: 800;
+    #               color: #2F855A;
+    #               cursor: help;
+    #               user-select: none;
+    #             "
+    #           >ℹ️</span>
+    #         </div>
+    #         """,
+    #         unsafe_allow_html=True,
+    #     )
 
 
 def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str]) -> pd.DataFrame:
@@ -949,212 +957,6 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         if c in df_display.columns and c not in desired:
             desired.append(c)
     return df_display[desired].reset_index(drop=True)
-
-
-def display_midcon_details(
-    df_filtered: pd.DataFrame,
-    active_region: str,
-    *,
-    start_ts: pd.Timestamp,
-    end_ts: pd.Timestamp,
-):
-    st.subheader("🧾 Group Daily Details")
-
-    if df_filtered.empty:
-        st.info("No data available for the selected filters.")
-        return
-
-    scope_sys = None
-    if df_filtered is not None and not df_filtered.empty and "System" in df_filtered.columns:
-        systems = sorted(df_filtered["System"].dropna().unique().tolist())
-        if len(systems) == 1:
-            scope_sys = systems[0]
-
-    df_all = _extend_with_30d_forecast(
-        df_filtered,
-        id_col="System",
-        region=active_region,
-        location=(str(scope_sys) if scope_sys is not None else None),
-        forecast_end=end_ts,
-    )
-
-    df_display, cols = build_details_view(df_all, id_col="System")
-
-    bottom, safefill, note = _threshold_values(
-        region=active_region,
-        location=str(scope_sys) if scope_sys is not None else None,
-        product=None,
-    )
-    _show_thresholds(region_label=active_region, bottom=bottom, safefill=safefill, note=note)
-
-    # Render overlay early if a save flow is active for this editor.
-    show_fact_curr = bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False))
-    base_key_overlay = (
-        f"{active_region}|{scope_sys or ''}|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
-        f"|fact={int(show_fact_curr)}_edit"
-    )
-    df_key_overlay = f"{base_key_overlay}__df"
-
-    overlay = st.session_state.get("details_save_overlay") or {}
-    if overlay.get("on") and overlay.get("df_key") == df_key_overlay:
-        _render_blocking_overlay(True, message="Saving…")
-
-    # If the success popup already closed, remove overlay in a follow-up rerun.
-    if (
-        st.session_state.get("details_save_stage") is None and
-        st.session_state.get("details_save_overlay_removal_pending") == df_key_overlay and
-        overlay.get("on")
-    ):
-        st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
-        st.session_state["details_save_overlay_removal_pending"] = None
-        st.rerun()
-
-    # Put Toggle + Save button on the same row.
-    c_toggle, c_save = st.columns([8, 2])
-    with c_toggle:
-        show_fact = st.toggle(
-            "Show Terminal Feed",
-            value=bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False)),
-            key=f"details_show_fact|{active_region}|{scope_sys or ''}|midcon",
-            help="Show upstream system values next to the editable columns.",
-        )
-    with c_save:
-        # Button is enabled; confirmation + actual save happens via dialog.
-        save_clicked = logged_button(
-            "💾 Save Changes",
-            key=f"save_{active_region}",
-            disabled=False,
-            help="Save all rows shown in the grid.",
-            event="details_save_clicked",
-            metadata={"region": active_region, "scope": "system", "system": scope_sys},
-        )
-
-    visible = get_visible_columns(region=active_region, location=str(scope_sys) if scope_sys is not None else None)
-    must_have = ["Date", "System", "Product", "Opening Inv", "Close Inv"]
-    column_order = []
-    for c in must_have + visible:
-        if c in cols and c not in column_order and c != "source":
-            column_order.append(c)
-
-    column_order = _ensure_cols_after(
-        column_order,
-        required=["Production", "Adjustments"],
-        after="Transfers",
-        before="Notes",
-    )
-
-    column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
-
-    # Include fact columns for coloring if the base column is colored.
-    locked_cols = _locked_cols("System", cols)
-    if show_fact:
-        for base in list(locked_cols):
-            fact = FACT_COL_MAP.get(base)
-            if fact and fact in df_display.columns and fact not in locked_cols:
-                locked_cols.append(fact)
-
-    column_config = _column_config(df_display, column_order, "System")
-    column_config = {k: v for k, v in column_config.items() if k in column_order}
-
-    base_key = (
-        f"{active_region}|{scope_sys or ''}|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
-        f"|fact={int(bool(show_fact))}_edit"
-    )
-    df_key = f"{base_key}__df"
-    ver_key = f"{base_key}__ver"
-    widget_key = f"{base_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
-
-    editor_df = _build_editor_df(df_display, id_col="System", ui_cols=column_order)
-
-    if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
-        st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="System")
-
-    st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
-
-    styled = _style_source_cells(st.session_state[df_key], locked_cols)
-
-    edited = dynamic_input_data_editor(
-        styled,
-        num_rows="fixed",
-        width="stretch",
-        height=400,
-        hide_index=True,
-        column_order=column_order,
-        key=widget_key,
-        column_config=column_config,
-    )
-
-    recomputed = _recalculate_open_close_inv(edited, id_col="System").reset_index(drop=True)
-    st.session_state[df_key] = recomputed
-    if _needs_inventory_rerun(edited, recomputed):
-        st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
-        st.rerun()
-
-    # Save flow (after editor so we persist the latest recomputed values).
-    if save_clicked:
-        log_audit(
-            event="details_save_dialog_opened",
-            metadata={"region": active_region, "scope": "system", "system": scope_sys},
-        )
-        _confirm_save_dialog(
-            payload={
-                "df_key": df_key,
-                "region": active_region,
-                "location": None,
-                "system": scope_sys,
-                "product": None,
-                "scope_label": f"{active_region} / {scope_sys or 'All Systems'}",
-            }
-        )
-
-    # Execute save (after confirm dialog triggers a rerun and overlay is visible).
-    payload = st.session_state.get("details_save_payload") or {}
-    if st.session_state.get("details_save_stage") == "pre_save" and payload.get("df_key") == df_key:
-        try:
-            n = persist_details_rows(
-                st.session_state[df_key],
-                region=str(payload.get("region") or active_region),
-                location=payload.get("location"),
-                system=payload.get("system"),
-                product=payload.get("product"),
-            )
-            log_audit(
-                event="details_save_success",
-                metadata={
-                    "region": str(payload.get("region") or active_region),
-                    "location": payload.get("location"),
-                    "system": payload.get("system"),
-                    "product": payload.get("product"),
-                    "rows_saved": int(n),
-                },
-            )
-            st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
-        except Exception as e:
-            log_error(
-                error_code="DETAILS_SAVE_FAILED",
-                error_message=str(e),
-                stack_trace=__import__("traceback").format_exc(),
-                service_module="UI",
-            )
-            log_audit(
-                event="details_save_failed",
-                metadata={
-                    "region": str(payload.get("region") or active_region),
-                    "location": payload.get("location"),
-                    "system": payload.get("system"),
-                    "product": payload.get("product"),
-                    "error": str(e),
-                },
-            )
-            st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
-
-        st.session_state["details_save_stage"] = "result"
-        st.rerun()
-
-    # Show result popup (overlay stays until popup closes)
-    result = st.session_state.get("details_save_result")
-    if st.session_state.get("details_save_stage") == "result" and isinstance(result, dict) and result.get("df_key") == df_key:
-        _save_result_dialog(result=result)
 
 
 def display_location_details(
@@ -1220,14 +1022,48 @@ def display_location_details(
                 st.session_state["details_save_overlay_removal_pending"] = None
                 st.rerun()
 
-            # Save button for active tab/product
-            c_spacer, c_save = st.columns([8, 2])
-            with c_spacer:
-                st.markdown("")
+            bottom, safefill, note = _threshold_values(
+                region=active_region,
+                location=str(selected_loc),
+                product=str(prod_name),
+            )
+
+            # Threshold cards + Enable-Save toggle + Save button on the same row.
+            c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([2, 2, 3, 0.7, 1.3, 2])
+            _render_threshold_cards(
+                bottom=bottom,
+                safefill=safefill,
+                note=note,
+                c_safefill=c_sf,
+                c_bottom=c_bt,
+                c_note=c_note,
+                c_info=c_info,
+            )
+
+            enable_key = f"details_enable_save|{active_region}|{selected_loc}|{prod_name}"
+            reset_enable_key = f"{enable_key}__reset_pending"
+
+            # If a previous Save requested resetting the toggle, do it *before*
+            # instantiating the widget (Streamlit disallows modifying widget
+            # state after creation within the same run).
+            if st.session_state.get(reset_enable_key):
+                st.session_state.pop(enable_key, None)
+                st.session_state[reset_enable_key] = False
+
+            with c_enable:
+                enable_save = st.toggle(
+                    "Enable Save",
+                    value=bool(st.session_state.get(enable_key, False)),
+                    key=enable_key,
+                    help="Toggle ON before saving to ensure the last edited cell commits to the table.",
+                )
+
             with c_save:
                 save_clicked = logged_button(
                     f"Save {prod_name} Data",
                     key=f"save_{active_region}_{selected_loc}_{prod_name}",
+                    type="primary",
+                    disabled=(not bool(enable_save)),
                     help="Save all rows shown in the grid for this product.",
                     event="details_save_clicked",
                     metadata={
@@ -1249,13 +1085,6 @@ def display_location_details(
                 forecast_end=end_ts,
             )
             df_display, cols = build_details_view(df_all, id_col="Location")
-
-            bottom, safefill, note = _threshold_values(
-                region=active_region,
-                location=str(selected_loc),
-                product=str(prod_name),
-            )
-            _show_thresholds(region_label=str(selected_loc), bottom=bottom, safefill=safefill, note=note)
 
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
             must_have = ["Date", "Location", "Product", "Opening Inv", "Close Inv"]
@@ -1310,6 +1139,8 @@ def display_location_details(
 
             # Save flow (after editor so we persist the latest recomputed values).
             if save_clicked:
+                # Reset the enable toggle on the next rerun (can't touch widget state in this run).
+                st.session_state[reset_enable_key] = True
                 log_audit(
                     event="details_save_dialog_opened",
                     metadata={"region": active_region, "scope": "location", "location": selected_loc, "product": prod_name},
