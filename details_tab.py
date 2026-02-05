@@ -1066,7 +1066,7 @@ def display_location_details(
         st.info("No products available for the selected location.")
         return
 
-    c_toggle, _ = st.columns([8, 2])
+    c_toggle, c_loc, _ = st.columns([3.5, 4.5, 2])
     with c_toggle:
         show_fact = st.toggle(
             "Show Terminal Feed",
@@ -1074,6 +1074,8 @@ def display_location_details(
             key=f"details_show_fact|{active_region}|{selected_loc}|location",
             help="Show upstream system values next to the editable columns.",
         )
+    with c_loc:
+        st.markdown(f"**{str(selected_loc)}**")
 
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
@@ -1183,9 +1185,14 @@ def display_location_details(
             df_display, cols = build_details_view(df_all, id_col="Location")
 
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
-            must_have = ["Date", "Location", "Product", "Opening Inv", "Close Inv"]
+
+            # Location + Product are already known from the current selection and the tab,
+            # so we don't show them in the grid.
+            must_have = ["Date", "Opening Inv", "Close Inv"]
             column_order = []
             for c in must_have + visible:
+                if c in {"Location", "Product"}:
+                    continue
                 if c in cols and c not in column_order and c != "source":
                     column_order.append(c)
 
@@ -1247,7 +1254,7 @@ def display_location_details(
             )
 
             editor_column_order = [c for c in column_order if c in view_cols]
-            editor_column_config = {k: v for k, v in column_config.items() if k in view_cols}
+            editor_column_config = {k: v for k, v in column_config.items() if k in editor_column_order}
 
             edited = dynamic_input_data_editor(
                 styled,
