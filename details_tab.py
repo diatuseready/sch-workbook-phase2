@@ -1376,7 +1376,8 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
         }
 
     loc_col = "Location"
-    filter_label = "Location"
+    region_norm = str(region or "").strip().lower()
+    filter_label = "System" if region_norm == "midcon" else "Location"
 
     meta = load_region_filter_metadata(region=region, loc_col=loc_col)
     locations = meta.get("locations", [])

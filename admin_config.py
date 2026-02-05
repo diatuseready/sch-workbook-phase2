@@ -519,7 +519,8 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             index=(region_options.index(default_region) if default_region in (region_options or []) else 0),
         )
 
-        # Location dropdown (depends on region)
+        # Location input (depends on region). Allow either selecting an existing
+        # location or typing a brand-new one.
         locs: list[str] = []
         try:
             pairs = load_region_location_pairs()
@@ -528,7 +529,19 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
         except Exception:
             locs = []
 
-        location_in = st.selectbox("Location", options=(locs or ["(No locations found)"]))
+        mode = st.radio(
+            "Location entry",
+            options=["Select Existing", "Add New Location"],
+            horizontal=True,
+        )
+
+        if mode == "Select existing":
+            location_in = st.selectbox("Location", options=(locs or ["(No locations found)"]))
+        else:
+            location_in = st.text_input(
+                "New Location",
+                placeholder="Please be careful with spaces and capitalization",
+            )
 
         product_in = st.text_input("Product name")
 
@@ -550,7 +563,7 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 metadata={"region": region_in, "location": location_in, "product": product_in},
             ):
                 try:
-                    if not locs:
+                    if mode == "Select existing" and not locs:
                         raise ValueError("No locations available for selected region")
                     insert_manual_product_today(
                         region=region_in,
