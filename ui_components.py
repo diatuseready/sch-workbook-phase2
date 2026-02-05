@@ -279,7 +279,11 @@ def display_data_freshness_cards(
 
     # Filter to the selected Location/System.
     if str(loc_col) == "Location":
-        if "LOCATION" in df.columns:
+        # Source status table may still have *old* location names in LOCATION,
+        # but we join the master mapping table to get the *current* name in APP_LOCATION_DESC.
+        if "APP_LOCATION_DESC" in df.columns:
+            df = df[df["APP_LOCATION_DESC"].astype(str) == selected_loc_s]
+        elif "LOCATION" in df.columns:
             df = df[df["LOCATION"].astype(str) == selected_loc_s]
     else:
         op = df["SOURCE_OPERATOR"] if "SOURCE_OPERATOR" in df.columns else ""

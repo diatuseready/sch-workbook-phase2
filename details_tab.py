@@ -1185,39 +1185,36 @@ def display_location_details(
             df_display, cols = build_details_view(df_all, id_col="Location")
 
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
-
-            # Location + Product are already known from the current selection and the tab,
-            # so we don't show them in the grid.
-            must_have = ["Date", "Opening Inv", "Close Inv"]
-            column_order = []
-            for c in must_have + visible:
-                if c in {"Location", "Product"}:
+            column_order: list[str] = []
+            for c in visible:
+                if c == "source":
                     continue
-                if c in cols and c not in column_order and c != "source":
+
+                if c == COL_VIEW_FILE:
+                    if c not in column_order:
+                        column_order.append(c)
+                    continue
+
+                if c in cols and c not in column_order:
                     column_order.append(c)
 
-            column_order = _ensure_cols_after(
-                column_order,
-                required=["Production", "Adjustments"],
-                after="Transfers",
-                before="Notes",
-            )
+            if "Close Inv" in column_order:
+                if COL_VIEW_FILE in column_order:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=[COL_VIEW_FILE],
+                        after="Close Inv",
+                        before=None,
+                    )
 
-            # UI action column (Snowflake-only).
-            column_order = _ensure_cols_after(
-                column_order,
-                required=[COL_VIEW_FILE],
-                after="Close Inv",
-                before=None,
-            )
-
-            # Keep Batch immediately after View File.
-            column_order = _ensure_cols_after(
-                column_order,
-                required=["Batch"],
-                after=COL_VIEW_FILE,
-                before="Notes",
-            )
+                if "Batch" in column_order:
+                    anchor = COL_VIEW_FILE if COL_VIEW_FILE in column_order else "Close Inv"
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=["Batch"],
+                        after=anchor,
+                        before=None,
+                    )
 
             column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
 

@@ -12,6 +12,7 @@ from config import (
     DATA_SOURCE,
     RAW_INVENTORY_TABLE,
     SNOWFLAKE_SOURCE_STATUS_TABLE,
+    SNOWFLAKE_LOCATION_MAPPING_TABLE,
     SNOWFLAKE_WAREHOUSE,
     SNOWFLAKE_WORKBOOK_STAGE,
     SQLITE_DB_PATH,
@@ -879,8 +880,9 @@ def _normalize_source_status_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["LAST_UPDATED_AT"] = pd.NaT
 
-    # Human friendly name for cards
-    if "LOCATION" in df.columns:
+    if "APP_LOCATION_DESC" in df.columns:
+        df["DISPLAY_NAME"] = df["APP_LOCATION_DESC"].fillna("")
+    elif "LOCATION" in df.columns:
         df["DISPLAY_NAME"] = df["LOCATION"].fillna("")
     else:
         df["DISPLAY_NAME"] = ""
@@ -932,24 +934,27 @@ def _load_source_status_cached(source: str, sqlite_db_path: str) -> pd.DataFrame
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
     query = f"""
-    SELECT
-        CLASS,
-        LOCATION,
-        REGION,
-        SOURCE_OPERATOR,
-        SOURCE_SYSTEM,
-        SOURCE_TYPE,
-        FILE_ID,
-        INTEGRATION_JOB_ID,
-        FILE_NAME,
-        SOURCE_PATH,
-        PROCESSING_STATUS,
-        ERROR_MESSAGE,
-        WARNING_COLUMNS,
-        RECORD_COUNT,
-        RECEIVED_TIMESTAMP,
-        PROCESSED_AT
-    FROM {SNOWFLAKE_SOURCE_STATUS_TABLE}
+    SELECT DISTINCT
+        m.APP_LOCATION_DESC,
+        s.CLASS,
+        s.LOCATION,
+        s.REGION,
+        s.SOURCE_OPERATOR,
+        s.SOURCE_SYSTEM,
+        s.SOURCE_TYPE,
+        s.FILE_ID,
+        s.INTEGRATION_JOB_ID,
+        s.FILE_NAME,
+        s.SOURCE_PATH,
+        s.PROCESSING_STATUS,
+        s.ERROR_MESSAGE,
+        s.WARNING_COLUMNS,
+        s.RECORD_COUNT,
+        s.RECEIVED_TIMESTAMP,
+        s.PROCESSED_AT
+    FROM {SNOWFLAKE_LOCATION_MAPPING_TABLE} m
+    LEFT JOIN {SNOWFLAKE_SOURCE_STATUS_TABLE} s
+        ON m.CLASS_NAME = s.CLASS
     """
 
     raw_df = session.sql(query).to_pandas()

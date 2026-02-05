@@ -41,11 +41,9 @@ class Scope:
 
 DEFAULT_VISIBLE_COLUMNS = [
     "Date",
-    "Location",
-    "System",
-    "Product",
     "Opening Inv",
     "Close Inv",
+    "View File",
     "Receipts",
     "Deliveries",
     "Rack/Lifting",
@@ -513,14 +511,15 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
 
         st.caption(f"Creates a new row for today ({date.today().strftime('%Y-%m-%d')}) with all flows set to 0.")
 
+        _k = "admin_add_product"
+
         region_in = st.selectbox(
             "Region",
             options=region_options or ["Unknown"],
             index=(region_options.index(default_region) if default_region in (region_options or []) else 0),
+            key=f"{_k}_region",
         )
 
-        # Location input (depends on region). Allow either selecting an existing
-        # location or typing a brand-new one.
         locs: list[str] = []
         try:
             pairs = load_region_location_pairs()
@@ -533,23 +532,41 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             "Location entry",
             options=["Select Existing", "Add New Location"],
             horizontal=True,
+            key=f"{_k}_loc_mode",
         )
 
-        if mode == "Select existing":
-            location_in = st.selectbox("Location", options=(locs or ["(No locations found)"]))
+        if mode == "Select Existing":
+            location_in = st.selectbox(
+                "Location",
+                options=(locs or ["(No locations found)"]),
+                key=f"{_k}_loc_select",
+            )
         else:
             location_in = st.text_input(
                 "New Location",
                 placeholder="Please be careful with spaces and capitalization",
+                key=f"{_k}_loc_new",
             )
 
-        product_in = st.text_input("Product name")
+        product_in = st.text_input("Product name", key=f"{_k}_product")
 
         c1, c2 = st.columns(2)
         with c1:
-            opening_in = st.number_input("Opening Inventory (today)", value=0.0, step=1.0, format="%.2f")
+            opening_in = st.number_input(
+                "Opening Inventory (today)",
+                value=0.0,
+                step=1.0,
+                format="%.2f",
+                key=f"{_k}_opening",
+            )
         with c2:
-            closing_in = st.number_input("Closing Inventory (today)", value=0.0, step=1.0, format="%.2f")
+            closing_in = st.number_input(
+                "Closing Inventory (today)",
+                value=0.0,
+                step=1.0,
+                format="%.2f",
+                key=f"{_k}_closing",
+            )
 
         note = "This Product was added manually today"
         st.text_input("Note", value=note, disabled=True)
@@ -563,7 +580,7 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 metadata={"region": region_in, "location": location_in, "product": product_in},
             ):
                 try:
-                    if mode == "Select existing" and not locs:
+                    if mode == "Select Existing" and not locs:
                         raise ValueError("No locations available for selected region")
                     insert_manual_product_today(
                         region=region_in,

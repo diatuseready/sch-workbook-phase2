@@ -33,6 +33,7 @@ SQLITE_SOURCE_STATUS_TABLE = "APP_SOURCE_STATUS"
 SNOWFLAKE_WAREHOUSE = "HFS_ADHOC_WH"
 SNOWFLAKE_SOURCE_STATUS_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_SOURCE_STATUS"
 SNOWFLAKE_WORKBOOK_STAGE = "@CONSUMPTION.HFS_COMMERCIAL_INVENTORY.SCHEDULERWORKBOOKS_INTERNAL_COPY_STG"
+SNOWFLAKE_LOCATION_MAPPING_TABLE = "CONFORMED.HFS_COMMERCIAL_INVENTORY.MASTER_LOCATION_CODE_MAPPING"
 
 
 # -----------------------------------------------------------------------------
@@ -67,13 +68,6 @@ COL_BATCH = "Batch"
 COL_OPEN_INV_RAW = "Open Inv"
 COL_CLOSE_INV_RAW = "Close Inv"
 COL_OPENING_INV = "Opening Inv"  # renamed for UI/editor
-
-# -----------------------------------------------------------------------------
-# "Fact" columns (source-of-truth values coming from the upstream inventory fact)
-#
-# These are optionally displayed in the Details grid via a UI toggle.
-# They map to the FACT_* columns in APP_INVENTORY.
-# -----------------------------------------------------------------------------
 
 COL_OPEN_INV_FACT_RAW = "Open Inv Fact"
 COL_OPENING_INV_FACT = "Opening Inv Fact"  # renamed for UI/editor
@@ -149,17 +143,6 @@ DETAILS_RENAME_MAP = {
     COL_RACK_LIFTINGS_FACT_RAW: COL_RACK_LIFTING_FACT,
 }
 
-
-# -----------------------------------------------------------------------------
-# Forecast configuration
-# -----------------------------------------------------------------------------
-
-# How to forecast Rack/Liftings in Details -> Forecast rows.
-#
-# - weekday_weighted: existing behavior; weekday-specific weighted average
-# - 7_day_avg: constant average of last 7 days, excluding 0 values
-# - mtd_avg: constant average over all available history in the current details
-#            dataframe (typically ~MTD window), excluding 0 values
 RACK_LIFTING_FORECAST_METHOD_DEFAULT = "7_day_avg"
 RACK_LIFTING_FORECAST_METHODS: tuple[str, ...] = (
     "weekday_weighted",
