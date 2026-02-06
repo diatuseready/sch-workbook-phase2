@@ -824,12 +824,115 @@ def _last_close_inv(group: pd.DataFrame) -> float:
     return float(val) if pd.notna(val) else 0.0
 
 
+def _fill_missing_internal_dates(
+    daily: pd.DataFrame,
+    *,
+    id_col: str,
+    start_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    By default we fill only the internal gaps between the first and last existing
+    date for each group.
+
+    Note: prepending normally changes the rolling inventory anchor (the first row
+    drives the whole series). To keep the series stable, we seed the prepended
+    rows' Open/Close Inv to the first observed Open Inv (so inventory stays flat
+    across the prepended window unless the user edits flows).
+    """
+
+    if daily is None or daily.empty or "Date" not in daily.columns:
+        return daily
+
+    out = daily.copy()
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+
+    group_cols = [id_col]
+    if "Product" in out.columns:
+        group_cols.append("Product")
+
+    # Identify which numeric columns should be zero-filled for inserted days.
+    flow_cols = _available_flow_cols(out)
+    zero_fill_cols = [
+        "Open Inv",
+        "Close Inv",
+        *flow_cols,
+    ]
+    # Also zero-fill any fact columns if present.
+    zero_fill_cols += [c for c in out.columns if str(c).endswith(" Fact")]
+    zero_fill_cols = [c for c in zero_fill_cols if c in out.columns]
+
+    filled_parts: list[pd.DataFrame] = []
+    for keys, g in out.groupby(group_cols, dropna=False, sort=False):
+        g = g.sort_values("Date", kind="mergesort").copy()
+        if g.empty:
+            filled_parts.append(g)
+            continue
+
+        min_d = pd.to_datetime(g["Date"].min(), errors="coerce")
+        max_d = pd.to_datetime(g["Date"].max(), errors="coerce")
+        if pd.isna(min_d) or pd.isna(max_d):
+            filled_parts.append(g)
+            continue
+
+        start_d = min_d
+        if start_date is not None:
+            sd = pd.to_datetime(start_date, errors="coerce")
+            if pd.notna(sd) and sd < start_d:
+                start_d = sd
+
+        full_idx = pd.date_range(start=start_d, end=max_d, freq="D")
+        g2 = g.set_index("Date").reindex(full_idx)
+
+        if start_date is not None and "Open Inv" in g2.columns:
+            try:
+                anchor_open = float(pd.to_numeric(g.loc[g["Date"] == min_d, "Open Inv"], errors="coerce").fillna(0.0).iloc[0])
+            except Exception:
+                anchor_open = 0.0
+            if "Close Inv" in g2.columns:
+                g2.loc[g2.index < min_d, ["Open Inv", "Close Inv"]] = anchor_open
+            else:
+                g2.loc[g2.index < min_d, ["Open Inv"]] = anchor_open
+
+        # Restore non-date group key columns.
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        for col, val in zip(group_cols, keys):
+            g2[col] = val
+
+        # Defaults for inserted rows.
+        if "source" in g2.columns:
+            g2["source"] = g2["source"].fillna("manual")
+        if "updated" in g2.columns:
+            g2["updated"] = pd.to_numeric(g2["updated"], errors="coerce").fillna(0).astype(int)
+
+        # Strings / misc columns.
+        if "Batch" in g2.columns:
+            g2["Batch"] = g2["Batch"].fillna("")
+        if "Notes" in g2.columns:
+            g2["Notes"] = g2["Notes"].fillna("")
+        if "FILE_LOCATION" in g2.columns:
+            # Only fill NaNs; keep existing lists.
+            g2["FILE_LOCATION"] = g2["FILE_LOCATION"].apply(
+                lambda v: ([] if (v is None or (isinstance(v, float) and pd.isna(v))) else v)
+            )
+
+        # Numeric columns: 0 for inserted days.
+        for c in zero_fill_cols:
+            g2[c] = pd.to_numeric(g2[c], errors="coerce").fillna(0.0)
+
+        g2 = g2.reset_index().rename(columns={"index": "Date"})
+        filled_parts.append(g2)
+
+    return pd.concat(filled_parts, ignore_index=True) if filled_parts else out
+
+
 def _extend_with_30d_forecast(
     df: pd.DataFrame,
     *,
     id_col: str,
     region: str | None,
     location: str | None,
+    history_start: pd.Timestamp | None = None,
     forecast_end: pd.Timestamp | None = None,
     default_days: int = 30,
 ) -> pd.DataFrame:
@@ -841,6 +944,8 @@ def _extend_with_30d_forecast(
         return daily
 
     daily = _ensure_lineage_cols(daily).sort_values("Date")
+    # Ensure the UI has a continuous day-by-day grid within the observed history
+    daily = _fill_missing_internal_dates(daily, id_col=id_col, start_date=history_start).sort_values("Date")
     flow_cols = _available_flow_cols(daily)
 
     forecast_flow_cols = [c for c in [COL_RACK_LIFTINGS_RAW] if c in flow_cols]
@@ -1180,6 +1285,7 @@ def display_location_details(
                 id_col="Location",
                 region=active_region,
                 location=str(selected_loc),
+                history_start=start_ts,
                 forecast_end=end_ts,
             )
             df_display, cols = build_details_view(df_all, id_col="Location")
