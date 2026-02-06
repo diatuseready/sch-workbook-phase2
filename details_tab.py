@@ -593,6 +593,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
     locked = set(_locked_cols(id_col, cols))
     # Fact columns should always be read-only.
     locked.update({c for c in cols if str(c).endswith(" Fact")})
+    locked.add("SOURCE_TYPE")
     NUM_FMT = "accounting"
 
     cfg: dict[str, object] = {
@@ -608,6 +609,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
         "Notes": st.column_config.TextColumn("Notes"),
+        "SOURCE_TYPE": st.column_config.TextColumn("SOURCE_TYPE", disabled=True),
         COL_VIEW_FILE: st.column_config.CheckboxColumn(
             COL_VIEW_FILE,
             default=False,
@@ -904,6 +906,8 @@ def _fill_missing_internal_dates(
             g2["source"] = g2["source"].fillna("manual")
         if "updated" in g2.columns:
             g2["updated"] = pd.to_numeric(g2["updated"], errors="coerce").fillna(0).astype(int)
+        if "SOURCE_TYPE" in g2.columns:
+            g2["SOURCE_TYPE"] = g2["SOURCE_TYPE"].fillna("")
 
         # Strings / misc columns.
         if "Batch" in g2.columns:
@@ -1110,6 +1114,7 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         id_col,
         "source",
         "Product",
+        "SOURCE_TYPE",
         "updated",
         "Batch",
         "Notes",
@@ -1388,6 +1393,10 @@ def display_location_details(
                         canonical[c] = recomputed_view[c].values
                     else:
                         canonical[c] = recomputed_view[c].values
+
+            changed_key = f"{widget_key}__changed"
+            if bool(st.session_state.get(changed_key)):
+                canonical["SOURCE_TYPE"] = "user"
 
             st.session_state[df_key] = canonical
 

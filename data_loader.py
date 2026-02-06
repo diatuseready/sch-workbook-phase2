@@ -213,6 +213,7 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["INVENTORY_KEY"] = _col(raw_df, "INVENTORY_KEY")
     df["SOURCE_FILE_ID"] = _col(raw_df, "SOURCE_FILE_ID")
     df["CREATED_AT"] = pd.to_datetime(_col(raw_df, "CREATED_AT"), errors="coerce")
+    df["SOURCE_TYPE"] = _col(raw_df, "SOURCE_TYPE", "").fillna("")
 
     # VARIANT array of file paths used for Details -> "View File".
     file_loc_raw = _col(raw_df, "FILE_LOCATION")
@@ -300,6 +301,7 @@ def insert_manual_product_today(
                     PRODUCT_CODE,
                     PRODUCT_DESCRIPTION,
                     DATA_SOURCE,
+                    SOURCE_TYPE,
                     OPENING_INVENTORY_BBL,
                     CLOSING_INVENTORY_BBL,
                     BATCH,
@@ -343,6 +345,7 @@ def insert_manual_product_today(
                     prod_code,
                     product_s,
                     "manual",
+                    "user",
                     float(opening_inventory_bbl or 0.0),
                     float(closing_inventory_bbl or 0.0),
                     0.0,  # BATCH
@@ -408,6 +411,7 @@ def insert_manual_product_today(
                 PRODUCT_CODE,
                 PRODUCT_DESCRIPTION,
                 DATA_SOURCE,
+                SOURCE_TYPE,
                 OPENING_INVENTORY_BBL,
                 CLOSING_INVENTORY_BBL,
                 BATCH,
@@ -439,6 +443,7 @@ def insert_manual_product_today(
                 {_sql_str(prod_code)},
                 {_sql_str(product_s)},
                 {_sql_str('manual')},
+                {_sql_str('user')},
                 {_sql_num(opening_inventory_bbl)},
                 {_sql_num(closing_inventory_bbl)},
                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -567,6 +572,10 @@ def persist_details_rows(
             "PRODUCT_CODE": _product_code(prod_desc),
             "PRODUCT_DESCRIPTION": prod_desc,
             "DATA_SOURCE": src,
+            # When a user saves from the Details grid, they "own" the whole
+            # grid for that scope (we persist the full dataframe), so stamp all
+            # rows with SOURCE_TYPE='user'.
+            "SOURCE_TYPE": "user",
             "MANUAL_OVERRIDE_FLAG": int(_num(r.get("updated", 0)) or 0),
             "MANUAL_OVERRIDE_REASON": str(r.get("Notes") or ""),
             "MANUAL_OVERRIDE_USER": "streamlit_app",
@@ -626,6 +635,7 @@ def persist_details_rows(
                     "PRODUCT_CODE",
                     "PRODUCT_DESCRIPTION",
                     "DATA_SOURCE",
+                    "SOURCE_TYPE",
                     "OPENING_INVENTORY_BBL",
                     "CLOSING_INVENTORY_BBL",
                     "RECEIPTS_BBL",
@@ -846,6 +856,7 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
+        SOURCE_TYPE,
         TO_JSON(FILE_LOCATION) AS FILE_LOCATION,
         CREATED_AT,
         MANUAL_OVERRIDE_REASON
@@ -1323,6 +1334,7 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
+        SOURCE_TYPE,
         TO_JSON(FILE_LOCATION) AS FILE_LOCATION,
         CREATED_AT,
         MANUAL_OVERRIDE_REASON
