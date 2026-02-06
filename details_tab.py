@@ -13,6 +13,8 @@ from app_logging import logged_button, log_audit, log_error
 from config import (
     COL_ADJUSTMENTS,
     COL_ADJUSTMENTS_FACT,
+    COL_AVAILABLE,
+    COL_AVAILABLE_FACT,
     COL_BATCH_IN,
     COL_BATCH_IN_RAW,
     COL_BATCH_IN_FACT_RAW,
@@ -23,6 +25,8 @@ from config import (
     COL_BATCH_OUT_FACT,
     COL_CLOSE_INV_RAW,
     COL_CLOSE_INV_FACT_RAW,
+    COL_INTRANSIT,
+    COL_INTRANSIT_FACT,
     COL_OPEN_INV_RAW,
     COL_OPEN_INV_FACT_RAW,
     COL_OPENING_INV,
@@ -55,6 +59,8 @@ DETAILS_COLS = [
     COL_SOURCE,
     COL_PRODUCT,
     COL_OPENING_INV,
+    COL_AVAILABLE,
+    COL_INTRANSIT,
     COL_CLOSE_INV_RAW,
     COL_BATCH_IN,
     COL_BATCH_OUT,
@@ -178,6 +184,8 @@ LOCKED_BASE_COLS = [
 
 FACT_COL_MAP: dict[str, str] = {
     COL_OPENING_INV: COL_OPENING_INV_FACT,
+    COL_AVAILABLE: COL_AVAILABLE_FACT,
+    COL_INTRANSIT: COL_INTRANSIT_FACT,
     COL_CLOSE_INV_RAW: COL_CLOSE_INV_FACT_RAW,
     COL_BATCH_IN: COL_BATCH_IN_FACT,
     COL_BATCH_OUT: COL_BATCH_OUT_FACT,
@@ -501,6 +509,10 @@ def _recalculate_open_close_inv(
     numeric_candidates = [
         "Opening Inv",
         "Opening Inv Fact",
+        COL_AVAILABLE,
+        COL_AVAILABLE_FACT,
+        COL_INTRANSIT,
+        COL_INTRANSIT_FACT,
         "Close Inv",
         "Close Inv Fact",
         *DISPLAY_INFLOW_COLS,
@@ -651,6 +663,12 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     if "Close Inv" in df.columns:
         agg_map["Close Inv"] = "last"
 
+    # Additional inventory metrics (not flows)
+    if COL_AVAILABLE in df.columns:
+        agg_map[COL_AVAILABLE] = "last"
+    if COL_INTRANSIT in df.columns:
+        agg_map[COL_INTRANSIT] = "last"
+
     for c in _available_flow_cols(df):
         agg_map[c] = "sum"
 
@@ -661,7 +679,7 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         base_s = str(base_col)
         if base_s in {"Opening Inv", "Open Inv"}:
             agg_map[fact_col] = "first"
-        elif base_s == "Close Inv":
+        elif base_s in {"Close Inv", COL_AVAILABLE, COL_INTRANSIT}:
             agg_map[fact_col] = "last"
         else:
             agg_map[fact_col] = "sum"
@@ -857,6 +875,8 @@ def _fill_missing_internal_dates(
     zero_fill_cols = [
         "Open Inv",
         "Close Inv",
+        COL_AVAILABLE,
+        COL_INTRANSIT,
         *flow_cols,
     ]
     # Also zero-fill any fact columns if present.

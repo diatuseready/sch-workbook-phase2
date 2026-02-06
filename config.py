@@ -69,6 +69,10 @@ COL_OPEN_INV_RAW = "Open Inv"
 COL_CLOSE_INV_RAW = "Close Inv"
 COL_OPENING_INV = "Opening Inv"  # renamed for UI/editor
 
+# Additional inventory metrics
+COL_AVAILABLE = "Available"
+COL_INTRANSIT = "Intransit"
+
 COL_OPEN_INV_FACT_RAW = "Open Inv Fact"
 COL_OPENING_INV_FACT = "Opening Inv Fact"  # renamed for UI/editor
 
@@ -91,6 +95,10 @@ COL_PRODUCTION_FACT = "Production Fact"
 COL_ADJUSTMENTS_FACT = "Adjustments Fact"
 COL_GAIN_LOSS_FACT = "Gain/Loss Fact"
 COL_TRANSFERS_FACT = "Transfers Fact"
+
+# Fact inventory metrics
+COL_AVAILABLE_FACT = "Available Fact"
+COL_INTRANSIT_FACT = "Intransit Fact"
 
 # Flows
 COL_BATCH_IN_RAW = "Batch In (RECEIPTS_BBL)"
@@ -125,6 +133,8 @@ SUMMARY_AGG_COLS = (
     COL_PRODUCTION,
     COL_PIPELINE_IN,
     COL_PIPELINE_OUT,
+    COL_AVAILABLE,
+    COL_INTRANSIT,
     COL_TANK_CAPACITY,
     COL_SAFE_FILL_LIMIT,
     COL_AVAILABLE_SPACE,

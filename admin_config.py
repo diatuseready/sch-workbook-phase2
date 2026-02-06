@@ -42,6 +42,8 @@ class Scope:
 DEFAULT_VISIBLE_COLUMNS = [
     "Date",
     "Opening Inv",
+    "Available",
+    "Intransit",
     "Close Inv",
     "View File",
     "Receipts",
