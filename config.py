@@ -32,6 +32,8 @@ SQLITE_SOURCE_STATUS_TABLE = "APP_SOURCE_STATUS"
 # Snowflake configuration
 SNOWFLAKE_WAREHOUSE = "HFS_ADHOC_WH"
 SNOWFLAKE_SOURCE_STATUS_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_SOURCE_STATUS"
+SNOWFLAKE_WORKBOOK_STAGE = "@CONSUMPTION.HFS_COMMERCIAL_INVENTORY.SCHEDULERWORKBOOKS_INTERNAL_COPY_STG"
+SNOWFLAKE_LOCATION_MAPPING_TABLE = "CONFORMED.HFS_COMMERCIAL_INVENTORY.MASTER_LOCATION_CODE_MAPPING"
 
 
 # -----------------------------------------------------------------------------
@@ -60,18 +62,16 @@ COL_PRODUCT = "Product"
 COL_SOURCE = "source"
 COL_UPDATED = "updated"
 COL_NOTES = "Notes"
+COL_BATCH = "Batch"
 
 # Inventory columns
 COL_OPEN_INV_RAW = "Open Inv"
 COL_CLOSE_INV_RAW = "Close Inv"
 COL_OPENING_INV = "Opening Inv"  # renamed for UI/editor
 
-# -----------------------------------------------------------------------------
-# "Fact" columns (source-of-truth values coming from the upstream inventory fact)
-#
-# These are optionally displayed in the Details grid via a UI toggle.
-# They map to the FACT_* columns in APP_INVENTORY.
-# -----------------------------------------------------------------------------
+# Additional inventory metrics
+COL_AVAILABLE = "Available"
+COL_INTRANSIT = "Intransit"
 
 COL_OPEN_INV_FACT_RAW = "Open Inv Fact"
 COL_OPENING_INV_FACT = "Opening Inv Fact"  # renamed for UI/editor
@@ -79,10 +79,12 @@ COL_OPENING_INV_FACT = "Opening Inv Fact"  # renamed for UI/editor
 COL_CLOSE_INV_FACT_RAW = "Close Inv Fact"  # display name is the same
 
 COL_BATCH_IN_FACT_RAW = "Batch In Fact (FACT_RECEIPTS_BBL)"
-COL_BATCH_IN_FACT = "Batch In Fact"
+# Display name in the UI/details editor
+COL_BATCH_IN_FACT = "Receipts Fact"
 
 COL_BATCH_OUT_FACT_RAW = "Batch Out Fact (FACT_DELIVERIES_BBL)"
-COL_BATCH_OUT_FACT = "Batch Out Fact"
+# Display name in the UI/details editor
+COL_BATCH_OUT_FACT = "Deliveries Fact"
 
 COL_RACK_LIFTINGS_FACT_RAW = "Rack/Liftings Fact"
 COL_RACK_LIFTING_FACT = "Rack/Lifting Fact"
@@ -94,11 +96,16 @@ COL_ADJUSTMENTS_FACT = "Adjustments Fact"
 COL_GAIN_LOSS_FACT = "Gain/Loss Fact"
 COL_TRANSFERS_FACT = "Transfers Fact"
 
+# Fact inventory metrics
+COL_AVAILABLE_FACT = "Available Fact"
+COL_INTRANSIT_FACT = "Intransit Fact"
+
 # Flows
 COL_BATCH_IN_RAW = "Batch In (RECEIPTS_BBL)"
 COL_BATCH_OUT_RAW = "Batch Out (DELIVERIES_BBL)"
-COL_BATCH_IN = "Batch In"  # renamed for UI/editor
-COL_BATCH_OUT = "Batch Out"  # renamed for UI/editor
+# Display names in the UI/details editor
+COL_BATCH_IN = "Receipts"
+COL_BATCH_OUT = "Deliveries"
 
 COL_RACK_LIFTINGS_RAW = "Rack/Liftings"
 COL_RACK_LIFTING = "Rack/Lifting"  # renamed for UI/editor
@@ -126,6 +133,8 @@ SUMMARY_AGG_COLS = (
     COL_PRODUCTION,
     COL_PIPELINE_IN,
     COL_PIPELINE_OUT,
+    COL_AVAILABLE,
+    COL_INTRANSIT,
     COL_TANK_CAPACITY,
     COL_SAFE_FILL_LIMIT,
     COL_AVAILABLE_SPACE,
@@ -134,6 +143,8 @@ SUMMARY_AGG_COLS = (
 DETAILS_RENAME_MAP = {
     COL_OPEN_INV_RAW: COL_OPENING_INV,
     COL_OPEN_INV_FACT_RAW: COL_OPENING_INV_FACT,
+    # Free-text column stored in APP_INVENTORY.BATCH
+    "BATCH": COL_BATCH,
     COL_BATCH_IN_RAW: COL_BATCH_IN,
     COL_BATCH_IN_FACT_RAW: COL_BATCH_IN_FACT,
     COL_BATCH_OUT_RAW: COL_BATCH_OUT,
@@ -142,18 +153,7 @@ DETAILS_RENAME_MAP = {
     COL_RACK_LIFTINGS_FACT_RAW: COL_RACK_LIFTING_FACT,
 }
 
-
-# -----------------------------------------------------------------------------
-# Forecast configuration
-# -----------------------------------------------------------------------------
-
-# How to forecast Rack/Liftings in Details -> Forecast rows.
-#
-# - weekday_weighted: existing behavior; weekday-specific weighted average
-# - 7_day_avg: constant average of last 7 days, excluding 0 values
-# - mtd_avg: constant average over all available history in the current details
-#            dataframe (typically ~MTD window), excluding 0 values
-RACK_LIFTING_FORECAST_METHOD_DEFAULT = "weekday_weighted"
+RACK_LIFTING_FORECAST_METHOD_DEFAULT = "7_day_avg"
 RACK_LIFTING_FORECAST_METHODS: tuple[str, ...] = (
     "weekday_weighted",
     "7_day_avg",

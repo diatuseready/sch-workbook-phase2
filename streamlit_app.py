@@ -85,7 +85,6 @@ def main():
             label_visibility="collapsed",
         )
 
-    # Region label is used as-is (no Midcon special-casing).
     active_region_norm = st.session_state.get("active_region")
 
     # Admin view (full-screen)

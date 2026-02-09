@@ -41,13 +41,13 @@ class Scope:
 
 DEFAULT_VISIBLE_COLUMNS = [
     "Date",
-    "Location",
-    "System",
-    "Product",
     "Opening Inv",
+    "Available",
+    "Intransit",
     "Close Inv",
-    "Batch In",
-    "Batch Out",
+    "View File",
+    "Receipts",
+    "Deliveries",
     "Rack/Lifting",
     "Pipeline In",
     "Pipeline Out",
@@ -55,6 +55,7 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Transfers",
     "Production",
     "Adjustments",
+    "Batch",
     "Notes",
 ]
 
@@ -449,7 +450,14 @@ def get_visible_columns(*, region: str, location: str | None) -> list[str]:
 
     cols = json.loads(str(raw) or "[]")
     if isinstance(cols, list) and cols:
-        return [str(c) for c in cols]
+        # Backward compatible: older stored configs used Batch In/Out.
+        rename = {
+            "Batch In": "Receipts",
+            "Batch Out": "Deliveries",
+            "Batch In Fact": "Receipts Fact",
+            "Batch Out Fact": "Deliveries Fact",
+        }
+        return [rename.get(str(c), str(c)) for c in cols]
     return list(DEFAULT_VISIBLE_COLUMNS)
 
 
@@ -505,13 +513,15 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
 
         st.caption(f"Creates a new row for today ({date.today().strftime('%Y-%m-%d')}) with all flows set to 0.")
 
+        _k = "admin_add_product"
+
         region_in = st.selectbox(
             "Region",
             options=region_options or ["Unknown"],
             index=(region_options.index(default_region) if default_region in (region_options or []) else 0),
+            key=f"{_k}_region",
         )
 
-        # Location dropdown (depends on region)
         locs: list[str] = []
         try:
             pairs = load_region_location_pairs()
@@ -520,15 +530,45 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
         except Exception:
             locs = []
 
-        location_in = st.selectbox("Location", options=(locs or ["(No locations found)"]))
+        mode = st.radio(
+            "Location entry",
+            options=["Select Existing", "Add New Location"],
+            horizontal=True,
+            key=f"{_k}_loc_mode",
+        )
 
-        product_in = st.text_input("Product name")
+        if mode == "Select Existing":
+            location_in = st.selectbox(
+                "Location",
+                options=(locs or ["(No locations found)"]),
+                key=f"{_k}_loc_select",
+            )
+        else:
+            location_in = st.text_input(
+                "New Location",
+                placeholder="Please be careful with spaces and capitalization",
+                key=f"{_k}_loc_new",
+            )
+
+        product_in = st.text_input("Product name", key=f"{_k}_product")
 
         c1, c2 = st.columns(2)
         with c1:
-            opening_in = st.number_input("Opening Inventory (today)", value=0.0, step=1.0, format="%.2f")
+            opening_in = st.number_input(
+                "Opening Inventory (today)",
+                value=0.0,
+                step=1.0,
+                format="%.2f",
+                key=f"{_k}_opening",
+            )
         with c2:
-            closing_in = st.number_input("Closing Inventory (today)", value=0.0, step=1.0, format="%.2f")
+            closing_in = st.number_input(
+                "Closing Inventory (today)",
+                value=0.0,
+                step=1.0,
+                format="%.2f",
+                key=f"{_k}_closing",
+            )
 
         note = "This Product was added manually today"
         st.text_input("Note", value=note, disabled=True)
@@ -542,7 +582,7 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 metadata={"region": region_in, "location": location_in, "product": product_in},
             ):
                 try:
-                    if not locs:
+                    if mode == "Select Existing" and not locs:
                         raise ValueError("No locations available for selected region")
                     insert_manual_product_today(
                         region=region_in,

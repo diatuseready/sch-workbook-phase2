@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import pandas as pd
 import streamlit as st
 
@@ -11,7 +12,9 @@ from config import (
     DATA_SOURCE,
     RAW_INVENTORY_TABLE,
     SNOWFLAKE_SOURCE_STATUS_TABLE,
+    SNOWFLAKE_LOCATION_MAPPING_TABLE,
     SNOWFLAKE_WAREHOUSE,
+    SNOWFLAKE_WORKBOOK_STAGE,
     SQLITE_DB_PATH,
     SQLITE_SOURCE_STATUS_TABLE,
     SQLITE_TABLE,
@@ -19,6 +22,9 @@ from config import (
     # Base columns
     COL_OPEN_INV_RAW,
     COL_CLOSE_INV_RAW,
+
+    # Free-text column
+    COL_BATCH,
 
     # Flow columns
     COL_BATCH_IN_RAW,
@@ -30,6 +36,10 @@ from config import (
     COL_ADJUSTMENTS,
     COL_GAIN_LOSS,
     COL_TRANSFERS,
+
+    # Additional inventory metrics
+    COL_AVAILABLE,
+    COL_INTRANSIT,
 
     # Capacity/threshold columns
     COL_TANK_CAPACITY,
@@ -48,7 +58,65 @@ from config import (
     COL_ADJUSTMENTS_FACT,
     COL_GAIN_LOSS_FACT,
     COL_TRANSFERS_FACT,
+
+    # Fact inventory metrics (optional UI display)
+    COL_AVAILABLE_FACT,
+    COL_INTRANSIT_FACT,
 )
+
+
+# ----------------------------------------------------------------------------
+# System file download support (Snowflake-only)
+# ----------------------------------------------------------------------------
+
+def generate_snowflake_signed_urls(file_paths: list[str], *, expiry_seconds: int = 3600) -> list[dict[str, str]]:
+    """Generate Snowflake signed URLs for a list of stage file paths.
+
+    This uses Snowflake's GET_PRESIGNED_URL against the configured stage.
+    Only works when DATA_SOURCE == "snowflake".
+
+    Returns a list of {"path": <original>, "url": <signed_url>}.
+    """
+
+    if not file_paths:
+        return []
+
+    if DATA_SOURCE != "snowflake":
+        # Feature explicitly not supported for SQLite/local.
+        return []
+
+    session = get_snowflake_session()
+    session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+
+    out: list[dict[str, str]] = []
+    for p in file_paths:
+        path = str(p or "").strip()
+        if not path:
+            continue
+
+        # Quote path + stage safely.
+        stage_sql = "'" + str(SNOWFLAKE_WORKBOOK_STAGE).replace("'", "''") + "'"
+        path_sql = "'" + path.replace("'", "''") + "'"
+        exp_sql = str(int(expiry_seconds))
+
+        q = f"SELECT GET_PRESIGNED_URL({stage_sql}, {path_sql}, {exp_sql}) AS URL"
+        rows = session.sql(q).collect()
+        if rows:
+            # Snowpark Row behaves like dict/attr; be defensive.
+            url = None
+            try:
+                url = rows[0]["URL"]
+            except Exception:
+                try:
+                    url = rows[0].URL
+                except Exception:
+                    url = None
+
+            if url:
+                out.append({"path": path, "url": str(url)})
+
+    return out
+
 
 NUMERIC_COLUMN_MAP = {
     COL_BATCH_IN_RAW: "RECEIPTS_BBL",
@@ -66,6 +134,10 @@ NUMERIC_COLUMN_MAP = {
     COL_SAFE_FILL_LIMIT: "SAFE_FILL_LIMIT_BBL",
     COL_AVAILABLE_SPACE: "AVAILABLE_SPACE_BBL",
 
+    # Additional inventory metrics
+    COL_AVAILABLE: "AVAILABLE_BBL",
+    COL_INTRANSIT: "INTRANSIT_BBL",
+
     # Fact columns (optional UI display)
     COL_OPEN_INV_FACT_RAW: "FACT_OPENING_INVENTORY_BBL",
     COL_CLOSE_INV_FACT_RAW: "FACT_CLOSING_INVENTORY_BBL",
@@ -78,6 +150,10 @@ NUMERIC_COLUMN_MAP = {
     COL_ADJUSTMENTS_FACT: "FACT_ADJUSTMENTS_BBL",
     COL_GAIN_LOSS_FACT: "FACT_GAIN_LOSS_BBL",
     COL_TRANSFERS_FACT: "FACT_TRANSFERS_BBL",
+
+    # Fact inventory metrics (optional UI display)
+    COL_AVAILABLE_FACT: "FACT_AVAILABLE_BBL",
+    COL_INTRANSIT_FACT: "FACT_INTRANSIT_BBL",
 }
 
 
@@ -96,6 +172,40 @@ def get_snowflake_session():
 
 def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(index=raw_df.index)
+
+    def _parse_file_locations(v) -> list[str]:
+        """Parse Snowflake VARIANT array (or its string form) into list[str]."""
+        try:
+            if v is None:
+                return []
+            if isinstance(v, float) and pd.isna(v):
+                return []
+
+            if isinstance(v, (list, tuple)):
+                return [str(x) for x in v if x is not None and str(x).strip()]
+
+            if isinstance(v, str):
+                s = v.strip()
+                if not s or s.lower() == "null":
+                    return []
+                if s.startswith("["):
+                    try:
+                        parsed = json.loads(s)
+                        if isinstance(parsed, list):
+                            return [str(x) for x in parsed if x is not None and str(x).strip()]
+                    except Exception:
+                        # fall through
+                        pass
+                # Treat as single path.
+                return [s]
+
+            # Some connectors may return a dict-like; best-effort.
+            if isinstance(v, dict) and "data" in v and isinstance(v.get("data"), list):
+                return [str(x) for x in v.get("data") if x is not None and str(x).strip()]
+
+            return [str(v)]
+        except Exception:
+            return []
 
     date_raw = _col(raw_df, "OPERATIONAL_DATE")
     if date_raw.isna().all():
@@ -119,8 +229,17 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["INVENTORY_KEY"] = _col(raw_df, "INVENTORY_KEY")
     df["SOURCE_FILE_ID"] = _col(raw_df, "SOURCE_FILE_ID")
     df["CREATED_AT"] = pd.to_datetime(_col(raw_df, "CREATED_AT"), errors="coerce")
+    df["SOURCE_TYPE"] = _col(raw_df, "SOURCE_TYPE", "").fillna("")
+
+    # VARIANT array of file paths used for Details -> "View File".
+    file_loc_raw = _col(raw_df, "FILE_LOCATION")
+    if file_loc_raw.isna().all():
+        file_loc_raw = _col(raw_df, "file_location")
+    df["FILE_LOCATION"] = file_loc_raw.map(_parse_file_locations)
 
     df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
+
+    df[COL_BATCH] = _col(raw_df, "BATCH", "").fillna("").astype(str)
 
     if "source" in raw_df.columns:
         df["source"] = _col(raw_df, "source", "system").fillna("system")
@@ -198,6 +317,7 @@ def insert_manual_product_today(
                     PRODUCT_CODE,
                     PRODUCT_DESCRIPTION,
                     DATA_SOURCE,
+                    SOURCE_TYPE,
                     OPENING_INVENTORY_BBL,
                     CLOSING_INVENTORY_BBL,
                     BATCH,
@@ -241,6 +361,7 @@ def insert_manual_product_today(
                     prod_code,
                     product_s,
                     "manual",
+                    "user",
                     float(opening_inventory_bbl or 0.0),
                     float(closing_inventory_bbl or 0.0),
                     0.0,  # BATCH
@@ -306,6 +427,7 @@ def insert_manual_product_today(
                 PRODUCT_CODE,
                 PRODUCT_DESCRIPTION,
                 DATA_SOURCE,
+                SOURCE_TYPE,
                 OPENING_INVENTORY_BBL,
                 CLOSING_INVENTORY_BBL,
                 BATCH,
@@ -337,6 +459,7 @@ def insert_manual_product_today(
                 {_sql_str(prod_code)},
                 {_sql_str(product_s)},
                 {_sql_str('manual')},
+                {_sql_str('user')},
                 {_sql_num(opening_inventory_bbl)},
                 {_sql_num(closing_inventory_bbl)},
                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -408,8 +531,10 @@ def persist_details_rows(
     NUM_MAP = {
         "Opening Inv": "OPENING_INVENTORY_BBL",
         "Close Inv": "CLOSING_INVENTORY_BBL",
-        "Batch In": "RECEIPTS_BBL",
-        "Batch Out": "DELIVERIES_BBL",
+        "Available": "AVAILABLE_BBL",
+        "Intransit": "INTRANSIT_BBL",
+        "Receipts": "RECEIPTS_BBL",
+        "Deliveries": "DELIVERIES_BBL",
         "Production": "PRODUCTION_BBL",
         "Rack/Lifting": "RACK_LIFTINGS_BBL",
         "Pipeline In": "PIPELINE_IN_BBL",
@@ -418,11 +543,14 @@ def persist_details_rows(
         "Adjustments": "ADJUSTMENTS_BBL",
         "Gain/Loss": "GAIN_LOSS_BBL",
     }
+
     FACT_MAP = {
         "Opening Inv Fact": "FACT_OPENING_INVENTORY_BBL",
         "Close Inv Fact": "FACT_CLOSING_INVENTORY_BBL",
-        "Batch In Fact": "FACT_RECEIPTS_BBL",
-        "Batch Out Fact": "FACT_DELIVERIES_BBL",
+        "Available Fact": "FACT_AVAILABLE_BBL",
+        "Intransit Fact": "FACT_INTRANSIT_BBL",
+        "Receipts Fact": "FACT_RECEIPTS_BBL",
+        "Deliveries Fact": "FACT_DELIVERIES_BBL",
         "Production Fact": "FACT_PRODUCTION_BBL",
         "Rack/Lifting Fact": "FACT_RACK_LIFTINGS_BBL",
         "Pipeline In Fact": "FACT_PIPELINE_IN_BBL",
@@ -464,10 +592,17 @@ def persist_details_rows(
             "PRODUCT_CODE": _product_code(prod_desc),
             "PRODUCT_DESCRIPTION": prod_desc,
             "DATA_SOURCE": src,
+            # When a user saves from the Details grid, they "own" the whole
+            # grid for that scope (we persist the full dataframe), so stamp all
+            # rows with SOURCE_TYPE='user'.
+            "SOURCE_TYPE": "user",
             "MANUAL_OVERRIDE_FLAG": int(_num(r.get("updated", 0)) or 0),
             "MANUAL_OVERRIDE_REASON": str(r.get("Notes") or ""),
             "MANUAL_OVERRIDE_USER": "streamlit_app",
         }
+
+        if COL_BATCH in df.columns:
+            d["BATCH"] = str(r.get(COL_BATCH) or "")
 
         if system_s:
             d["SOURCE_OPERATOR"] = system_s
@@ -520,8 +655,11 @@ def persist_details_rows(
                     "PRODUCT_CODE",
                     "PRODUCT_DESCRIPTION",
                     "DATA_SOURCE",
+                    "SOURCE_TYPE",
                     "OPENING_INVENTORY_BBL",
                     "CLOSING_INVENTORY_BBL",
+                    "AVAILABLE_BBL",
+                    "INTRANSIT_BBL",
                     "RECEIPTS_BBL",
                     "DELIVERIES_BBL",
                     "PRODUCTION_BBL",
@@ -533,6 +671,8 @@ def persist_details_rows(
                     "GAIN_LOSS_BBL",
                     "FACT_OPENING_INVENTORY_BBL",
                     "FACT_CLOSING_INVENTORY_BBL",
+                    "FACT_AVAILABLE_BBL",
+                    "FACT_INTRANSIT_BBL",
                     "FACT_RECEIPTS_BBL",
                     "FACT_DELIVERIES_BBL",
                     "FACT_PRODUCTION_BBL",
@@ -545,6 +685,7 @@ def persist_details_rows(
                     "MANUAL_OVERRIDE_FLAG",
                     "MANUAL_OVERRIDE_REASON",
                     "MANUAL_OVERRIDE_USER",
+                    "BATCH",
                 ]
 
                 if system_s:
@@ -711,11 +852,14 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         DATA_SOURCE,
+        CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,
         CAST(COALESCE(CLOSING_INVENTORY_BBL, 0) AS FLOAT) as CLOSING_INVENTORY_BBL,
         CAST(COALESCE(OPENING_INVENTORY_BBL, 0) AS FLOAT) as OPENING_INVENTORY_BBL,
+        CAST(COALESCE(AVAILABLE_BBL, 0) AS FLOAT) as AVAILABLE_BBL,
+        CAST(COALESCE(INTRANSIT_BBL, 0) AS FLOAT) as INTRANSIT_BBL,
         CAST(COALESCE(PRODUCTION_BBL, 0) AS FLOAT) as PRODUCTION_BBL,
         CAST(COALESCE(PIPELINE_IN_BBL, 0) AS FLOAT) as PIPELINE_IN_BBL,
         CAST(COALESCE(PIPELINE_OUT_BBL, 0) AS FLOAT) as PIPELINE_OUT_BBL,
@@ -724,6 +868,8 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(TRY_TO_DOUBLE(TRANSFERS_BBL), 0) AS FLOAT) as TRANSFERS_BBL,
         CAST(COALESCE(FACT_OPENING_INVENTORY_BBL, 0) AS FLOAT) as FACT_OPENING_INVENTORY_BBL,
         CAST(COALESCE(FACT_CLOSING_INVENTORY_BBL, 0) AS FLOAT) as FACT_CLOSING_INVENTORY_BBL,
+        CAST(COALESCE(FACT_AVAILABLE_BBL, 0) AS FLOAT) as FACT_AVAILABLE_BBL,
+        CAST(COALESCE(FACT_INTRANSIT_BBL, 0) AS FLOAT) as FACT_INTRANSIT_BBL,
         CAST(COALESCE(FACT_RECEIPTS_BBL, 0) AS FLOAT) as FACT_RECEIPTS_BBL,
         CAST(COALESCE(FACT_DELIVERIES_BBL, 0) AS FLOAT) as FACT_DELIVERIES_BBL,
         CAST(COALESCE(FACT_PRODUCTION_BBL, 0) AS FLOAT) as FACT_PRODUCTION_BBL,
@@ -738,6 +884,8 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
+        SOURCE_TYPE,
+        TO_JSON(FILE_LOCATION) AS FILE_LOCATION,
         CREATED_AT,
         MANUAL_OVERRIDE_REASON
     FROM {RAW_INVENTORY_TABLE}
@@ -771,8 +919,9 @@ def _normalize_source_status_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["LAST_UPDATED_AT"] = pd.NaT
 
-    # Human friendly name for cards
-    if "LOCATION" in df.columns:
+    if "APP_LOCATION_DESC" in df.columns:
+        df["DISPLAY_NAME"] = df["APP_LOCATION_DESC"].fillna("")
+    elif "LOCATION" in df.columns:
         df["DISPLAY_NAME"] = df["LOCATION"].fillna("")
     else:
         df["DISPLAY_NAME"] = ""
@@ -824,24 +973,27 @@ def _load_source_status_cached(source: str, sqlite_db_path: str) -> pd.DataFrame
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
     query = f"""
-    SELECT
-        CLASS,
-        LOCATION,
-        REGION,
-        SOURCE_OPERATOR,
-        SOURCE_SYSTEM,
-        SOURCE_TYPE,
-        FILE_ID,
-        INTEGRATION_JOB_ID,
-        FILE_NAME,
-        SOURCE_PATH,
-        PROCESSING_STATUS,
-        ERROR_MESSAGE,
-        WARNING_COLUMNS,
-        RECORD_COUNT,
-        RECEIVED_TIMESTAMP,
-        PROCESSED_AT
-    FROM {SNOWFLAKE_SOURCE_STATUS_TABLE}
+    SELECT DISTINCT
+        m.APP_LOCATION_DESC,
+        s.CLASS,
+        s.LOCATION,
+        s.REGION,
+        s.SOURCE_OPERATOR,
+        s.SOURCE_SYSTEM,
+        s.SOURCE_TYPE,
+        s.FILE_ID,
+        s.INTEGRATION_JOB_ID,
+        s.FILE_NAME,
+        s.SOURCE_PATH,
+        s.PROCESSING_STATUS,
+        s.ERROR_MESSAGE,
+        s.WARNING_COLUMNS,
+        s.RECORD_COUNT,
+        s.RECEIVED_TIMESTAMP,
+        s.PROCESSED_AT
+    FROM {SNOWFLAKE_LOCATION_MAPPING_TABLE} m
+    LEFT JOIN {SNOWFLAKE_SOURCE_STATUS_TABLE} s
+        ON m.CLASS_NAME = s.CLASS
     """
 
     raw_df = session.sql(query).to_pandas()
@@ -1182,11 +1334,14 @@ def _load_inventory_data_filtered_cached(
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         DATA_SOURCE,
+        CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,
         CAST(COALESCE(CLOSING_INVENTORY_BBL, 0) AS FLOAT) as CLOSING_INVENTORY_BBL,
         CAST(COALESCE(OPENING_INVENTORY_BBL, 0) AS FLOAT) as OPENING_INVENTORY_BBL,
+        CAST(COALESCE(AVAILABLE_BBL, 0) AS FLOAT) as AVAILABLE_BBL,
+        CAST(COALESCE(INTRANSIT_BBL, 0) AS FLOAT) as INTRANSIT_BBL,
         CAST(COALESCE(PRODUCTION_BBL, 0) AS FLOAT) as PRODUCTION_BBL,
         CAST(COALESCE(PIPELINE_IN_BBL, 0) AS FLOAT) as PIPELINE_IN_BBL,
         CAST(COALESCE(PIPELINE_OUT_BBL, 0) AS FLOAT) as PIPELINE_OUT_BBL,
@@ -1195,6 +1350,8 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(TRY_TO_DOUBLE(TRANSFERS_BBL), 0) AS FLOAT) as TRANSFERS_BBL,
         CAST(COALESCE(FACT_OPENING_INVENTORY_BBL, 0) AS FLOAT) as FACT_OPENING_INVENTORY_BBL,
         CAST(COALESCE(FACT_CLOSING_INVENTORY_BBL, 0) AS FLOAT) as FACT_CLOSING_INVENTORY_BBL,
+        CAST(COALESCE(FACT_AVAILABLE_BBL, 0) AS FLOAT) as FACT_AVAILABLE_BBL,
+        CAST(COALESCE(FACT_INTRANSIT_BBL, 0) AS FLOAT) as FACT_INTRANSIT_BBL,
         CAST(COALESCE(FACT_RECEIPTS_BBL, 0) AS FLOAT) as FACT_RECEIPTS_BBL,
         CAST(COALESCE(FACT_DELIVERIES_BBL, 0) AS FLOAT) as FACT_DELIVERIES_BBL,
         CAST(COALESCE(FACT_PRODUCTION_BBL, 0) AS FLOAT) as FACT_PRODUCTION_BBL,
@@ -1209,6 +1366,8 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
+        SOURCE_TYPE,
+        TO_JSON(FILE_LOCATION) AS FILE_LOCATION,
         CREATED_AT,
         MANUAL_OVERRIDE_REASON
     FROM {RAW_INVENTORY_TABLE}

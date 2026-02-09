@@ -99,12 +99,16 @@ def apply_custom_css():
         color: white !important;
         border-bottom: 3px solid {ACCENT_GREEN} !important;
     }}
-    div.stButton > button {{
+
+    div.stButton > button,
+    div[data-testid="stButton"] > button,
+    button[kind="primary"],
+    button[kind="secondary"] {{
         background: {PRIMARY_GREEN} !important;
-        color: white;
+        color: white !important;
         border-radius: 6px;
         font-weight: 600;
-        border: none;
+        border: none !important;
         transition: 0.3s;
     }}
 
@@ -113,7 +117,10 @@ def apply_custom_css():
         height: 1.6rem;
     }}
 
-    div.stButton > button:hover {{ opacity: 0.9; }}
+    div.stButton > button:hover,
+    div[data-testid="stButton"] > button:hover,
+    button[kind="primary"]:hover,
+    button[kind="secondary"]:hover {{ opacity: 0.9; }}
 
     [data-testid="stDataEditor"] [data-testid="stElementToolbar"],
     [data-testid="stDataEditor"] [data-testid="stToolbar"] {{
@@ -272,7 +279,11 @@ def display_data_freshness_cards(
 
     # Filter to the selected Location/System.
     if str(loc_col) == "Location":
-        if "LOCATION" in df.columns:
+        # Source status table may still have *old* location names in LOCATION,
+        # but we join the master mapping table to get the *current* name in APP_LOCATION_DESC.
+        if "APP_LOCATION_DESC" in df.columns:
+            df = df[df["APP_LOCATION_DESC"].astype(str) == selected_loc_s]
+        elif "LOCATION" in df.columns:
             df = df[df["LOCATION"].astype(str) == selected_loc_s]
     else:
         op = df["SOURCE_OPERATOR"] if "SOURCE_OPERATOR" in df.columns else ""

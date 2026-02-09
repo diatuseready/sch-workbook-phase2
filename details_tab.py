@@ -8,10 +8,13 @@ from datetime import timedelta
 from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
 from utils import dynamic_input_data_editor
 from data_loader import persist_details_rows
+from data_loader import generate_snowflake_signed_urls
 from app_logging import logged_button, log_audit, log_error
 from config import (
     COL_ADJUSTMENTS,
     COL_ADJUSTMENTS_FACT,
+    COL_AVAILABLE,
+    COL_AVAILABLE_FACT,
     COL_BATCH_IN,
     COL_BATCH_IN_RAW,
     COL_BATCH_IN_FACT_RAW,
@@ -22,6 +25,8 @@ from config import (
     COL_BATCH_OUT_FACT,
     COL_CLOSE_INV_RAW,
     COL_CLOSE_INV_FACT_RAW,
+    COL_INTRANSIT,
+    COL_INTRANSIT_FACT,
     COL_OPEN_INV_RAW,
     COL_OPEN_INV_FACT_RAW,
     COL_OPENING_INV,
@@ -42,8 +47,10 @@ from config import (
     COL_TRANSFERS_FACT,
     COL_GAIN_LOSS,
     COL_GAIN_LOSS_FACT,
+    COL_BATCH,
     COL_NOTES,
     DETAILS_RENAME_MAP,
+    DATA_SOURCE,
 )
 
 DETAILS_RENAME = DETAILS_RENAME_MAP
@@ -52,6 +59,8 @@ DETAILS_COLS = [
     COL_SOURCE,
     COL_PRODUCT,
     COL_OPENING_INV,
+    COL_AVAILABLE,
+    COL_INTRANSIT,
     COL_CLOSE_INV_RAW,
     COL_BATCH_IN,
     COL_BATCH_OUT,
@@ -62,8 +71,65 @@ DETAILS_COLS = [
     COL_TRANSFERS,
     COL_PRODUCTION,
     COL_ADJUSTMENTS,
+    COL_BATCH,
     COL_NOTES,
 ]
+
+# UI-only column (not persisted)
+COL_VIEW_FILE = "View File"
+
+
+@st.dialog("System Files")
+def _view_files_dialog(*, file_locations: list[str] | None, context: dict | None = None) -> None:
+    """Popup showing signed download links for system files for a given row/day."""
+
+    ctx = context or {}
+    date_label = ctx.get("date")
+    loc_label = ctx.get("location")
+    prod_label = ctx.get("product")
+
+    title_bits = [b for b in [date_label, loc_label, prod_label] if b]
+    if title_bits:
+        st.caption(" / ".join(str(b) for b in title_bits))
+
+    paths = file_locations or []
+    paths = [str(p).strip() for p in paths if p is not None and str(p).strip()]
+
+    if DATA_SOURCE != "snowflake":
+        st.info("File downloads are only available in Snowflake mode.")
+        return
+
+    if not paths:
+        st.info("No system files found for this row.")
+        return
+
+    with st.spinner("Generating signed URLs…"):
+        signed = generate_snowflake_signed_urls(paths, expiry_seconds=3600)
+
+    if not signed:
+        st.warning("No downloadable links could be generated.")
+        return
+
+    st.write("Click a file to download:")
+
+    def _short_label(name: str, *, max_len: int = 55) -> str:
+        s = str(name or "")
+        if len(s) <= max_len:
+            return s
+        # Keep start + end so users can still distinguish files.
+        head = max(10, (max_len - 1) // 2)
+        tail = max(10, max_len - 1 - head)
+        return s[:head].rstrip() + "…" + s[-tail:].lstrip()
+
+    for item in signed:
+        p = str(item.get("path") or "")
+        url = str(item.get("url") or "")
+        label = p.split("/")[-1] if "/" in p else p
+        if url:
+            st.link_button(label=_short_label(label), url=url)
+            # Full path (useful when truncated)
+            st.caption(p)
+
 
 FORECAST_FLOW_COLS = [
     COL_BATCH_IN_RAW,
@@ -118,6 +184,8 @@ LOCKED_BASE_COLS = [
 
 FACT_COL_MAP: dict[str, str] = {
     COL_OPENING_INV: COL_OPENING_INV_FACT,
+    COL_AVAILABLE: COL_AVAILABLE_FACT,
+    COL_INTRANSIT: COL_INTRANSIT_FACT,
     COL_CLOSE_INV_RAW: COL_CLOSE_INV_FACT_RAW,
     COL_BATCH_IN: COL_BATCH_IN_FACT,
     COL_BATCH_OUT: COL_BATCH_OUT_FACT,
@@ -305,13 +373,13 @@ def _save_result_dialog(*, result: dict) -> None:
 
 # Flow-column names *after* `DETAILS_RENAME` has been applied.
 DISPLAY_INFLOW_COLS = [
-    "Batch In",
+    "Receipts",
     "Pipeline In",
     "Production",
 ]
 
 DISPLAY_OUTFLOW_COLS = [
-    "Batch Out",
+    "Deliveries",
     "Rack/Lifting",
     "Pipeline Out",
 ]
@@ -323,23 +391,38 @@ DISPLAY_NET_COLS = [
 ]
 
 
-def _style_source_cells(df: pd.DataFrame, cols_to_color: list[str]) -> "pd.io.formats.style.Styler":
+def _style_source_cells(
+    df: pd.DataFrame,
+    cols_to_color: list[str],
+    *,
+    fact_reference: pd.DataFrame | None = None,
+) -> "pd.io.formats.style.Styler":
+
     cols = list(df.columns)
     cols_set = set(cols_to_color)
     fact_cols = {c for c in cols if str(c).endswith(" Fact")}
+
+    ref = fact_reference if isinstance(fact_reference, pd.DataFrame) else None
 
     def _is_system_inv_discrepancy(row: pd.Series) -> bool:
         src = str(row.get("source", "")).strip().lower()
         if src != "system":
             return False
 
-        pairs = [
-            ("Opening Inv", "Opening Inv Fact"),
-            ("Close Inv", "Close Inv Fact"),
-        ]
-        for base, fact in pairs:
-            if base in row.index and fact in row.index:
-                if abs(_to_float(row.get(base)) - _to_float(row.get(fact))) > SYSTEM_DISCREPANCY_THRESHOLD_BBL:
+        def _get_fact(idx, fact_col: str):
+            if fact_col in row.index:
+                return row.get(fact_col)
+            if ref is not None and fact_col in ref.columns and idx in ref.index:
+                return ref.at[idx, fact_col]
+            return None
+
+        # We only consider Close Inv for discrepancy highlighting.
+        base = "Close Inv"
+        fact = "Close Inv Fact"
+        if base in row.index:
+            fact_val = _get_fact(row.name, fact)
+            if fact_val is not None:
+                if abs(_to_float(row.get(base)) - _to_float(fact_val)) > SYSTEM_DISCREPANCY_THRESHOLD_BBL:
                     return True
         return False
 
@@ -399,13 +482,21 @@ def _sum_row(row: pd.Series, cols: list[str]) -> float:
     return float(sum(_to_float(row.get(c, 0.0)) for c in cols if c in row.index))
 
 
-def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFrame:
+def _recalculate_open_close_inv(
+    df: pd.DataFrame,
+    *,
+    id_col: str,
+    ensure_fact_cols: bool = True,
+) -> pd.DataFrame:
     if df is None or df.empty:
         return df
 
     out = df.copy()
 
-    if "source" in out.columns:
+    # Optional: ensure fact columns exist so we can compare system vs fact values.
+    # When rendering a UI *view* df (where fact cols might be intentionally omitted),
+    # set ensure_fact_cols=False to avoid re-adding hidden columns.
+    if ensure_fact_cols and "source" in out.columns:
         src = out["source"].astype(str).str.strip().str.lower()
         if "Opening Inv" in out.columns and "Opening Inv Fact" not in out.columns:
             out["Opening Inv Fact"] = np.where(src.eq("system"), out["Opening Inv"], np.nan)
@@ -418,6 +509,10 @@ def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFram
     numeric_candidates = [
         "Opening Inv",
         "Opening Inv Fact",
+        COL_AVAILABLE,
+        COL_AVAILABLE_FACT,
+        COL_INTRANSIT,
+        COL_INTRANSIT_FACT,
         "Close Inv",
         "Close Inv Fact",
         *DISPLAY_INFLOW_COLS,
@@ -510,6 +605,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
     locked = set(_locked_cols(id_col, cols))
     # Fact columns should always be read-only.
     locked.update({c for c in cols if str(c).endswith(" Fact")})
+    locked.add("SOURCE_TYPE")
     NUM_FMT = "accounting"
 
     cfg: dict[str, object] = {
@@ -523,7 +619,15 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         ),
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
+        "Batch": st.column_config.TextColumn("Batch"),
         "Notes": st.column_config.TextColumn("Notes"),
+        "SOURCE_TYPE": st.column_config.TextColumn("SOURCE_TYPE", disabled=True),
+        COL_VIEW_FILE: st.column_config.CheckboxColumn(
+            COL_VIEW_FILE,
+            default=False,
+            disabled=(DATA_SOURCE != "snowflake"),
+            help="Check to open a popup with downloadable system files for this row.",
+        ),
     }
 
     for c in cols:
@@ -559,6 +663,12 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     if "Close Inv" in df.columns:
         agg_map["Close Inv"] = "last"
 
+    # Additional inventory metrics (not flows)
+    if COL_AVAILABLE in df.columns:
+        agg_map[COL_AVAILABLE] = "last"
+    if COL_INTRANSIT in df.columns:
+        agg_map[COL_INTRANSIT] = "last"
+
     for c in _available_flow_cols(df):
         agg_map[c] = "sum"
 
@@ -569,7 +679,7 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         base_s = str(base_col)
         if base_s in {"Opening Inv", "Open Inv"}:
             agg_map[fact_col] = "first"
-        elif base_s == "Close Inv":
+        elif base_s in {"Close Inv", COL_AVAILABLE, COL_INTRANSIT}:
             agg_map[fact_col] = "last"
         else:
             agg_map[fact_col] = "sum"
@@ -578,8 +688,14 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         agg_map["source"] = "first"
     if "updated" in df.columns:
         agg_map["updated"] = "max"
+    if "Batch" in df.columns:
+        agg_map["Batch"] = "last"
     if "Notes" in df.columns:
         agg_map["Notes"] = "last"
+
+    # Keep file locations for the day (Snowflake-only; list column).
+    if "FILE_LOCATION" in df.columns:
+        agg_map["FILE_LOCATION"] = "last"
 
     return df.groupby(group_cols, as_index=False).agg(agg_map)
 
@@ -728,12 +844,119 @@ def _last_close_inv(group: pd.DataFrame) -> float:
     return float(val) if pd.notna(val) else 0.0
 
 
+def _fill_missing_internal_dates(
+    daily: pd.DataFrame,
+    *,
+    id_col: str,
+    start_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    By default we fill only the internal gaps between the first and last existing
+    date for each group.
+
+    Note: prepending normally changes the rolling inventory anchor (the first row
+    drives the whole series). To keep the series stable, we seed the prepended
+    rows' Open/Close Inv to the first observed Open Inv (so inventory stays flat
+    across the prepended window unless the user edits flows).
+    """
+
+    if daily is None or daily.empty or "Date" not in daily.columns:
+        return daily
+
+    out = daily.copy()
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+
+    group_cols = [id_col]
+    if "Product" in out.columns:
+        group_cols.append("Product")
+
+    # Identify which numeric columns should be zero-filled for inserted days.
+    flow_cols = _available_flow_cols(out)
+    zero_fill_cols = [
+        "Open Inv",
+        "Close Inv",
+        COL_AVAILABLE,
+        COL_INTRANSIT,
+        *flow_cols,
+    ]
+    # Also zero-fill any fact columns if present.
+    zero_fill_cols += [c for c in out.columns if str(c).endswith(" Fact")]
+    zero_fill_cols = [c for c in zero_fill_cols if c in out.columns]
+
+    filled_parts: list[pd.DataFrame] = []
+    for keys, g in out.groupby(group_cols, dropna=False, sort=False):
+        g = g.sort_values("Date", kind="mergesort").copy()
+        if g.empty:
+            filled_parts.append(g)
+            continue
+
+        min_d = pd.to_datetime(g["Date"].min(), errors="coerce")
+        max_d = pd.to_datetime(g["Date"].max(), errors="coerce")
+        if pd.isna(min_d) or pd.isna(max_d):
+            filled_parts.append(g)
+            continue
+
+        start_d = min_d
+        if start_date is not None:
+            sd = pd.to_datetime(start_date, errors="coerce")
+            if pd.notna(sd) and sd < start_d:
+                start_d = sd
+
+        full_idx = pd.date_range(start=start_d, end=max_d, freq="D")
+        g2 = g.set_index("Date").reindex(full_idx)
+
+        if start_date is not None and "Open Inv" in g2.columns:
+            try:
+                anchor_open = float(pd.to_numeric(g.loc[g["Date"] == min_d, "Open Inv"], errors="coerce").fillna(0.0).iloc[0])
+            except Exception:
+                anchor_open = 0.0
+            if "Close Inv" in g2.columns:
+                g2.loc[g2.index < min_d, ["Open Inv", "Close Inv"]] = anchor_open
+            else:
+                g2.loc[g2.index < min_d, ["Open Inv"]] = anchor_open
+
+        # Restore non-date group key columns.
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        for col, val in zip(group_cols, keys):
+            g2[col] = val
+
+        # Defaults for inserted rows.
+        if "source" in g2.columns:
+            g2["source"] = g2["source"].fillna("manual")
+        if "updated" in g2.columns:
+            g2["updated"] = pd.to_numeric(g2["updated"], errors="coerce").fillna(0).astype(int)
+        if "SOURCE_TYPE" in g2.columns:
+            g2["SOURCE_TYPE"] = g2["SOURCE_TYPE"].fillna("")
+
+        # Strings / misc columns.
+        if "Batch" in g2.columns:
+            g2["Batch"] = g2["Batch"].fillna("")
+        if "Notes" in g2.columns:
+            g2["Notes"] = g2["Notes"].fillna("")
+        if "FILE_LOCATION" in g2.columns:
+            # Only fill NaNs; keep existing lists.
+            g2["FILE_LOCATION"] = g2["FILE_LOCATION"].apply(
+                lambda v: ([] if (v is None or (isinstance(v, float) and pd.isna(v))) else v)
+            )
+
+        # Numeric columns: 0 for inserted days.
+        for c in zero_fill_cols:
+            g2[c] = pd.to_numeric(g2[c], errors="coerce").fillna(0.0)
+
+        g2 = g2.reset_index().rename(columns={"index": "Date"})
+        filled_parts.append(g2)
+
+    return pd.concat(filled_parts, ignore_index=True) if filled_parts else out
+
+
 def _extend_with_30d_forecast(
     df: pd.DataFrame,
     *,
     id_col: str,
     region: str | None,
     location: str | None,
+    history_start: pd.Timestamp | None = None,
     forecast_end: pd.Timestamp | None = None,
     default_days: int = 30,
 ) -> pd.DataFrame:
@@ -745,6 +968,8 @@ def _extend_with_30d_forecast(
         return daily
 
     daily = _ensure_lineage_cols(daily).sort_values("Date")
+    # Ensure the UI has a continuous day-by-day grid within the observed history
+    daily = _fill_missing_internal_dates(daily, id_col=id_col, start_date=history_start).sort_values("Date")
     flow_cols = _available_flow_cols(daily)
 
     forecast_flow_cols = [c for c in [COL_RACK_LIFTINGS_RAW] if c in flow_cols]
@@ -785,7 +1010,9 @@ def _extend_with_30d_forecast(
                 "Product": product,
                 "source": "forecast",
                 "updated": 0,
+                "Batch": "",
                 "Notes": "",
+                "FILE_LOCATION": [],
                 "Open Inv": opening,
                 "Close Inv": closing,
                 **flows,
@@ -838,19 +1065,23 @@ def _threshold_values(
     return b, s, n
 
 
-def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float | None, note: str | None = None):
-    """Render the SafeFill/Bottom/Note cards plus a hover tooltip for Close Inv formula."""
+def _render_threshold_cards(
+    *,
+    bottom: float | None,
+    safefill: float | None,
+    note: str | None = None,
+    c_safefill,
+    c_bottom,
+    c_note,
+    c_info,
+) -> None:
 
-    c0, c1, c2, c3, c4 = st.columns([5, 2, 2, 3, 0.6])
-
-    with c0:
-        st.markdown("")
-
-    with c1:
+    with c_safefill:
         v = "—" if safefill is None else f"{safefill:,.0f}"
         st.markdown(
             f"""
-            <div class="mini-card">
+            <div class="mini-card" style="margin-bottom:1rem
+            ;">
               <p class="label">SafeFill</p>
               <p class="value">{v}</p>
             </div>
@@ -858,11 +1089,11 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
             unsafe_allow_html=True,
         )
 
-    with c2:
+    with c_bottom:
         v = "—" if bottom is None else f"{bottom:,.0f}"
         st.markdown(
             f"""
-            <div class="mini-card">
+            <div class="mini-card" style="margin-bottom:1rem;">
               <p class="label">Bottom</p>
               <p class="value">{v}</p>
             </div>
@@ -870,48 +1101,13 @@ def _show_thresholds(*, region_label: str, bottom: float | None, safefill: float
             unsafe_allow_html=True,
         )
 
-    with c3:
+    with c_note:
         v = "—" if note in (None, "") else str(note)
         st.markdown(
             f"""
-            <div class="mini-card">
+            <div class="mini-card" style="margin-bottom:1rem;">
               <p class="label">Note</p>
               <p class="value" style="font-size:0.95rem; font-weight:700;">{v}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with c4:
-
-        tip_raw = "\n".join(
-            [
-                "Closing Inventory calculation",
-                "Standard: Close = Opening + (Batch In + Pipeline In + Production) - (Batch Out + Rack/Lifting + Pipeline Out) + (Adjustments + Gain/Loss + Transfers)",
-            ]
-        )
-        tip_attr = html.escape(tip_raw, quote=True).replace("\n", "&#10;")
-
-        st.markdown(
-            f"""
-            <div style="display:flex; justify-content:flex-end; align-items:center; height:100%;">
-              <span
-                title="{tip_attr}"
-                style="
-                  display:inline-flex;
-                  align-items:center;
-                  justify-content:center;
-                  width:32px;
-                  height:32px;
-                  border-radius:8px;
-                  background: #F7FAFC;
-                  border: 1px solid #E2E8F0;
-                  font-weight: 800;
-                  color: #2F855A;
-                  cursor: help;
-                  user-select: none;
-                "
-              >ℹ️</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -923,13 +1119,14 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
     extra = [
         "Production",
         "Adjustments",
-        "Batch In",
-        "Batch Out",
+        "Receipts",
+        "Deliveries",
         "Pipeline In",
         "Pipeline Out",
         "Gain/Loss",
         "Transfers",
         "Rack/Lifting",
+        "Batch",
     ]
 
     base = [
@@ -937,224 +1134,38 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         id_col,
         "source",
         "Product",
+        "SOURCE_TYPE",
         "updated",
+        "Batch",
         "Notes",
+        "FILE_LOCATION",
+        COL_VIEW_FILE,
         "Opening Inv",
         "Close Inv",
         "Opening Inv Fact",
         "Close Inv Fact",
     ]
+
+    fact_cols = [c for c in df_display.columns if str(c).endswith(" Fact")]
     desired = []
-    for c in base + ui_cols + extra:
-        if c in df_display.columns and c not in desired:
+    always_include = {"FILE_LOCATION", COL_VIEW_FILE}
+    for c in base + fact_cols + ui_cols + extra:
+        if c in desired:
+            continue
+        if c in always_include or c in df_display.columns:
             desired.append(c)
-    return df_display[desired].reset_index(drop=True)
 
+    out = df_display.copy()
+    # Ensure list column exists even in SQLite/forecast rows.
+    if "FILE_LOCATION" not in out.columns:
+        out["FILE_LOCATION"] = [[] for _ in range(len(out))]
+    # UI action column: checkbox that behaves like a button.
+    if COL_VIEW_FILE not in out.columns:
+        out[COL_VIEW_FILE] = False
+    else:
+        out[COL_VIEW_FILE] = out[COL_VIEW_FILE].fillna(False).astype(bool)
 
-def display_midcon_details(
-    df_filtered: pd.DataFrame,
-    active_region: str,
-    *,
-    start_ts: pd.Timestamp,
-    end_ts: pd.Timestamp,
-):
-    st.subheader("🧾 Group Daily Details")
-
-    if df_filtered.empty:
-        st.info("No data available for the selected filters.")
-        return
-
-    scope_sys = None
-    if df_filtered is not None and not df_filtered.empty and "System" in df_filtered.columns:
-        systems = sorted(df_filtered["System"].dropna().unique().tolist())
-        if len(systems) == 1:
-            scope_sys = systems[0]
-
-    df_all = _extend_with_30d_forecast(
-        df_filtered,
-        id_col="System",
-        region=active_region,
-        location=(str(scope_sys) if scope_sys is not None else None),
-        forecast_end=end_ts,
-    )
-
-    df_display, cols = build_details_view(df_all, id_col="System")
-
-    bottom, safefill, note = _threshold_values(
-        region=active_region,
-        location=str(scope_sys) if scope_sys is not None else None,
-        product=None,
-    )
-    _show_thresholds(region_label=active_region, bottom=bottom, safefill=safefill, note=note)
-
-    # Render overlay early if a save flow is active for this editor.
-    show_fact_curr = bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False))
-    base_key_overlay = (
-        f"{active_region}|{scope_sys or ''}|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
-        f"|fact={int(show_fact_curr)}_edit"
-    )
-    df_key_overlay = f"{base_key_overlay}__df"
-
-    overlay = st.session_state.get("details_save_overlay") or {}
-    if overlay.get("on") and overlay.get("df_key") == df_key_overlay:
-        _render_blocking_overlay(True, message="Saving…")
-
-    # If the success popup already closed, remove overlay in a follow-up rerun.
-    if (
-        st.session_state.get("details_save_stage") is None and
-        st.session_state.get("details_save_overlay_removal_pending") == df_key_overlay and
-        overlay.get("on")
-    ):
-        st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
-        st.session_state["details_save_overlay_removal_pending"] = None
-        st.rerun()
-
-    # Put Toggle + Save button on the same row.
-    c_toggle, c_save = st.columns([8, 2])
-    with c_toggle:
-        show_fact = st.toggle(
-            "Show Terminal Feed",
-            value=bool(st.session_state.get(f"details_show_fact|{active_region}|{scope_sys or ''}|midcon", False)),
-            key=f"details_show_fact|{active_region}|{scope_sys or ''}|midcon",
-            help="Show upstream system values next to the editable columns.",
-        )
-    with c_save:
-        # Button is enabled; confirmation + actual save happens via dialog.
-        save_clicked = logged_button(
-            "💾 Save Changes",
-            key=f"save_{active_region}",
-            disabled=False,
-            help="Save all rows shown in the grid.",
-            event="details_save_clicked",
-            metadata={"region": active_region, "scope": "system", "system": scope_sys},
-        )
-
-    visible = get_visible_columns(region=active_region, location=str(scope_sys) if scope_sys is not None else None)
-    must_have = ["Date", "System", "Product", "Opening Inv", "Close Inv"]
-    column_order = []
-    for c in must_have + visible:
-        if c in cols and c not in column_order and c != "source":
-            column_order.append(c)
-
-    column_order = _ensure_cols_after(
-        column_order,
-        required=["Production", "Adjustments"],
-        after="Transfers",
-        before="Notes",
-    )
-
-    column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
-
-    # Include fact columns for coloring if the base column is colored.
-    locked_cols = _locked_cols("System", cols)
-    if show_fact:
-        for base in list(locked_cols):
-            fact = FACT_COL_MAP.get(base)
-            if fact and fact in df_display.columns and fact not in locked_cols:
-                locked_cols.append(fact)
-
-    column_config = _column_config(df_display, column_order, "System")
-    column_config = {k: v for k, v in column_config.items() if k in column_order}
-
-    base_key = (
-        f"{active_region}|{scope_sys or ''}|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
-        f"|fact={int(bool(show_fact))}_edit"
-    )
-    df_key = f"{base_key}__df"
-    ver_key = f"{base_key}__ver"
-    widget_key = f"{base_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
-
-    editor_df = _build_editor_df(df_display, id_col="System", ui_cols=column_order)
-
-    if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
-        st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="System")
-
-    st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
-
-    styled = _style_source_cells(st.session_state[df_key], locked_cols)
-
-    edited = dynamic_input_data_editor(
-        styled,
-        num_rows="fixed",
-        width="stretch",
-        height=400,
-        hide_index=True,
-        column_order=column_order,
-        key=widget_key,
-        column_config=column_config,
-    )
-
-    recomputed = _recalculate_open_close_inv(edited, id_col="System").reset_index(drop=True)
-    st.session_state[df_key] = recomputed
-    if _needs_inventory_rerun(edited, recomputed):
-        st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
-        st.rerun()
-
-    # Save flow (after editor so we persist the latest recomputed values).
-    if save_clicked:
-        log_audit(
-            event="details_save_dialog_opened",
-            metadata={"region": active_region, "scope": "system", "system": scope_sys},
-        )
-        _confirm_save_dialog(
-            payload={
-                "df_key": df_key,
-                "region": active_region,
-                "location": None,
-                "system": scope_sys,
-                "product": None,
-                "scope_label": f"{active_region} / {scope_sys or 'All Systems'}",
-            }
-        )
-
-    # Execute save (after confirm dialog triggers a rerun and overlay is visible).
-    payload = st.session_state.get("details_save_payload") or {}
-    if st.session_state.get("details_save_stage") == "pre_save" and payload.get("df_key") == df_key:
-        try:
-            n = persist_details_rows(
-                st.session_state[df_key],
-                region=str(payload.get("region") or active_region),
-                location=payload.get("location"),
-                system=payload.get("system"),
-                product=payload.get("product"),
-            )
-            log_audit(
-                event="details_save_success",
-                metadata={
-                    "region": str(payload.get("region") or active_region),
-                    "location": payload.get("location"),
-                    "system": payload.get("system"),
-                    "product": payload.get("product"),
-                    "rows_saved": int(n),
-                },
-            )
-            st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
-        except Exception as e:
-            log_error(
-                error_code="DETAILS_SAVE_FAILED",
-                error_message=str(e),
-                stack_trace=__import__("traceback").format_exc(),
-                service_module="UI",
-            )
-            log_audit(
-                event="details_save_failed",
-                metadata={
-                    "region": str(payload.get("region") or active_region),
-                    "location": payload.get("location"),
-                    "system": payload.get("system"),
-                    "product": payload.get("product"),
-                    "error": str(e),
-                },
-            )
-            st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
-
-        st.session_state["details_save_stage"] = "result"
-        st.rerun()
-
-    # Show result popup (overlay stays until popup closes)
-    result = st.session_state.get("details_save_result")
-    if st.session_state.get("details_save_stage") == "result" and isinstance(result, dict) and result.get("df_key") == df_key:
-        _save_result_dialog(result=result)
+    return out[desired].reset_index(drop=True)
 
 
 def display_location_details(
@@ -1185,7 +1196,7 @@ def display_location_details(
         st.info("No products available for the selected location.")
         return
 
-    c_toggle, _ = st.columns([8, 2])
+    c_toggle, c_loc, _ = st.columns([3.5, 4.5, 2])
     with c_toggle:
         show_fact = st.toggle(
             "Show Terminal Feed",
@@ -1193,19 +1204,41 @@ def display_location_details(
             key=f"details_show_fact|{active_region}|{selected_loc}|location",
             help="Show upstream system values next to the editable columns.",
         )
+    with c_loc:
+        st.markdown(f"**{str(selected_loc)}**")
 
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
         with tab:
             # Compute keys early so we can render overlay/result properly.
-            base_key = (
+            state_key = (
                 f"{active_region}_{selected_loc}_{prod_name}"
                 f"|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
-                f"|fact={int(bool(show_fact))}_edit"
+                f"|edit"
             )
-            df_key = f"{base_key}__df"
-            ver_key = f"{base_key}__ver"
-            widget_key = f"{base_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
+
+            # Canonical df key MUST NOT depend on the fact-toggle; otherwise
+            # we'd end up with two independent session_state dfs and edits won't
+            # persist when toggling FACT columns on/off.
+            df_key = f"{state_key}__df"
+
+            # Widget state *can* depend on fact-toggle because the visible columns differ.
+            widget_scope_key = f"{state_key}|fact={int(bool(show_fact))}"
+            ver_key = f"{widget_scope_key}__ver"
+            widget_key = f"{widget_scope_key}__editor_v{int(st.session_state.get(ver_key, 0))}"
+
+            # If a prior rerun requested opening the View File dialog, do it now.
+            vf_payload = st.session_state.get("details_view_file_payload")
+            if isinstance(vf_payload, dict) and vf_payload.get("df_key") == df_key:
+                _view_files_dialog(
+                    file_locations=vf_payload.get("file_locations"),
+                    context={
+                        "date": vf_payload.get("date"),
+                        "location": vf_payload.get("location"),
+                        "product": vf_payload.get("product"),
+                    },
+                )
+                st.session_state["details_view_file_payload"] = None
 
             overlay = st.session_state.get("details_save_overlay") or {}
             if overlay.get("on") and overlay.get("df_key") == df_key:
@@ -1220,14 +1253,45 @@ def display_location_details(
                 st.session_state["details_save_overlay_removal_pending"] = None
                 st.rerun()
 
-            # Save button for active tab/product
-            c_spacer, c_save = st.columns([8, 2])
-            with c_spacer:
-                st.markdown("")
+            bottom, safefill, note = _threshold_values(
+                region=active_region,
+                location=str(selected_loc),
+                product=str(prod_name),
+            )
+
+            # Threshold cards + Enable-Save toggle + Save button on the same row.
+            c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([2, 2, 3, 0.7, 1.3, 2])
+            _render_threshold_cards(
+                bottom=bottom,
+                safefill=safefill,
+                note=note,
+                c_safefill=c_sf,
+                c_bottom=c_bt,
+                c_note=c_note,
+                c_info=c_info,
+            )
+
+            enable_key = f"details_enable_save|{active_region}|{selected_loc}|{prod_name}"
+            reset_enable_key = f"{enable_key}__reset_pending"
+
+            if st.session_state.get(reset_enable_key):
+                st.session_state.pop(enable_key, None)
+                st.session_state[reset_enable_key] = False
+
+            with c_enable:
+                enable_save = st.toggle(
+                    "Enable Save",
+                    value=bool(st.session_state.get(enable_key, False)),
+                    key=enable_key,
+                    help="Toggle ON before saving to ensure the last edited cell commits to the table.",
+                )
+
             with c_save:
                 save_clicked = logged_button(
                     f"Save {prod_name} Data",
                     key=f"save_{active_region}_{selected_loc}_{prod_name}",
+                    type="primary",
+                    disabled=(not bool(enable_save)),
                     help="Save all rows shown in the grid for this product.",
                     event="details_save_clicked",
                     metadata={
@@ -1246,30 +1310,42 @@ def display_location_details(
                 id_col="Location",
                 region=active_region,
                 location=str(selected_loc),
+                history_start=start_ts,
                 forecast_end=end_ts,
             )
             df_display, cols = build_details_view(df_all, id_col="Location")
 
-            bottom, safefill, note = _threshold_values(
-                region=active_region,
-                location=str(selected_loc),
-                product=str(prod_name),
-            )
-            _show_thresholds(region_label=str(selected_loc), bottom=bottom, safefill=safefill, note=note)
-
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
-            must_have = ["Date", "Location", "Product", "Opening Inv", "Close Inv"]
-            column_order = []
-            for c in must_have + visible:
-                if c in cols and c not in column_order and c != "source":
+            column_order: list[str] = []
+            for c in visible:
+                if c == "source":
+                    continue
+
+                if c == COL_VIEW_FILE:
+                    if c not in column_order:
+                        column_order.append(c)
+                    continue
+
+                if c in cols and c not in column_order:
                     column_order.append(c)
 
-            column_order = _ensure_cols_after(
-                column_order,
-                required=["Production", "Adjustments"],
-                after="Transfers",
-                before="Notes",
-            )
+            if "Close Inv" in column_order:
+                if COL_VIEW_FILE in column_order:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=[COL_VIEW_FILE],
+                        after="Close Inv",
+                        before=None,
+                    )
+
+                if "Batch" in column_order:
+                    anchor = COL_VIEW_FILE if COL_VIEW_FILE in column_order else "Close Inv"
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=["Batch"],
+                        after=anchor,
+                        before=None,
+                    )
 
             column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
 
@@ -1284,12 +1360,29 @@ def display_location_details(
             column_config = {k: v for k, v in column_config.items() if k in column_order}
 
             editor_df = _build_editor_df(df_display, id_col="Location", ui_cols=column_order)
+
+            # Initialize/refresh canonical df (schema should be stable across FACT toggle).
             if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
-                st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="Location")
+                st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="Location", ensure_fact_cols=True)
 
             st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
 
-            styled = _style_source_cells(st.session_state[df_key], locked_cols)
+            # Build the view df for the current FACT toggle (hide fact cols if toggle is off).
+            view_cols = [
+                c for c in st.session_state[df_key].columns
+                if (bool(show_fact) or (not str(c).endswith(" Fact")))
+            ]
+
+            view_df = st.session_state[df_key].loc[:, view_cols].copy()
+
+            styled = _style_source_cells(
+                view_df,
+                locked_cols,
+                fact_reference=(st.session_state[df_key] if not bool(show_fact) else None),
+            )
+
+            editor_column_order = [c for c in column_order if c in view_cols]
+            editor_column_config = {k: v for k, v in column_config.items() if k in editor_column_order}
 
             edited = dynamic_input_data_editor(
                 styled,
@@ -1297,19 +1390,68 @@ def display_location_details(
                 width="stretch",
                 height=DETAILS_EDITOR_HEIGHT_PX,
                 hide_index=True,
-                column_order=column_order,
+                column_order=editor_column_order,
                 key=widget_key,
-                column_config=column_config,
+                column_config=editor_column_config,
             )
 
-            recomputed = _recalculate_open_close_inv(edited, id_col="Location").reset_index(drop=True)
-            st.session_state[df_key] = recomputed
-            if _needs_inventory_rerun(edited, recomputed):
+            # Recompute inventory on the view df only (do not re-add hidden FACT columns).
+            recomputed_view = _recalculate_open_close_inv(
+                edited,
+                id_col="Location",
+                ensure_fact_cols=False,
+            ).reset_index(drop=True)
+
+            # Merge the edited view back into the canonical df so edits persist across toggle.
+            canonical = st.session_state[df_key].reset_index(drop=True)
+            if canonical.shape[0] != recomputed_view.shape[0]:
+                # Safety fallback: rebuild canonical if something changed the rowset.
+                canonical = _recalculate_open_close_inv(editor_df, id_col="Location", ensure_fact_cols=True).reset_index(drop=True)
+            else:
+                for c in recomputed_view.columns:
+                    if c in canonical.columns:
+                        canonical[c] = recomputed_view[c].values
+                    else:
+                        canonical[c] = recomputed_view[c].values
+
+            changed_key = f"{widget_key}__changed"
+            if bool(st.session_state.get(changed_key)):
+                canonical["SOURCE_TYPE"] = "user"
+
+            st.session_state[df_key] = canonical
+
+            # Use canonical df for downstream actions.
+            recomputed = st.session_state[df_key]
+
+            if COL_VIEW_FILE in recomputed.columns:
+                view_mask = recomputed[COL_VIEW_FILE].fillna(False).astype(bool)
+                if bool(view_mask.any()):
+                    idx = int(view_mask[view_mask].index[0])
+                    file_locations = recomputed.at[idx, "FILE_LOCATION"] if "FILE_LOCATION" in recomputed.columns else []
+
+                    # Clear the action cell so it behaves like a button.
+                    st.session_state[df_key].at[idx, COL_VIEW_FILE] = False
+
+                    st.session_state["details_view_file_payload"] = {
+                        "df_key": df_key,
+                        "row": idx,
+                        "date": str(recomputed.at[idx, "Date"]) if "Date" in recomputed.columns else None,
+                        "location": str(selected_loc) if selected_loc is not None else None,
+                        "product": str(prod_name) if prod_name is not None else None,
+                        "file_locations": file_locations,
+                    }
+                    # Force the editor to refresh so the selectbox resets.
+                    st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
+                    st.rerun()
+
+            if _needs_inventory_rerun(edited, recomputed_view):
                 st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
                 st.rerun()
 
             # Save flow (after editor so we persist the latest recomputed values).
             if save_clicked:
+                # Reset the enable toggle on the next rerun (can't touch widget state in this run).
+                st.session_state[reset_enable_key] = True
                 log_audit(
                     event="details_save_dialog_opened",
                     metadata={"region": active_region, "scope": "location", "location": selected_loc, "product": prod_name},
@@ -1410,7 +1552,8 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
         }
 
     loc_col = "Location"
-    filter_label = "Location"
+    region_norm = str(region or "").strip().lower()
+    filter_label = "System" if region_norm == "midcon" else "Location"
 
     meta = load_region_filter_metadata(region=region, loc_col=loc_col)
     locations = meta.get("locations", [])
