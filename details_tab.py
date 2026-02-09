@@ -1414,9 +1414,10 @@ def display_location_details(
                     else:
                         canonical[c] = recomputed_view[c].values
 
-            changed_key = f"{widget_key}__changed"
-            if bool(st.session_state.get(changed_key)):
-                canonical["SOURCE_TYPE"] = "user"
+            '----- BELOW LINES CAUSE DATA UNSAVE ISSUE -----'
+            # changed_key = f"{widget_key}__changed"
+            # if bool(st.session_state.get(changed_key)):
+            #     canonical["SOURCE_TYPE"] = "user"
 
             st.session_state[df_key] = canonical
 
