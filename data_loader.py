@@ -1242,16 +1242,12 @@ def load_filtered_inventory_data(filters: dict) -> pd.DataFrame:
 def load_region_inventory_data(*, region: str) -> pd.DataFrame:
     loc_col = "Location"
     meta = load_region_filter_metadata(region=region, loc_col=loc_col)
-    max_date = meta.get("max_date", pd.NaT)
-
-    window_days = 90
-
-    if pd.isna(max_date):
-        end_ts = pd.Timestamp.today().normalize()
-    else:
-        end_ts = pd.to_datetime(max_date)
-
-    start_ts = end_ts - pd.Timedelta(days=window_days)
+    
+    today = pd.Timestamp.today().normalize()
+    
+    # Include 60 days of historical data and 30 days of forecast
+    start_ts = today - pd.Timedelta(days=60)
+    end_ts = today + pd.Timedelta(days=30)
 
     df = _load_inventory_data_filtered_cached(
         DATA_SOURCE,
