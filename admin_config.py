@@ -45,6 +45,7 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Available",
     "Intransit",
     "Close Inv",
+    "Available Space",
     "View File",
     "Receipts",
     "Deliveries",
@@ -457,7 +458,11 @@ def get_visible_columns(*, region: str, location: str | None) -> list[str]:
             "Batch In Fact": "Receipts Fact",
             "Batch Out Fact": "Deliveries Fact",
         }
-        return [rename.get(str(c), str(c)) for c in cols]
+        out = [rename.get(str(c), str(c)) for c in cols]
+        if "Close Inv" in out and "Available Space" not in out:
+            out.insert(out.index("Close Inv") + 1, "Available Space")
+
+        return out
     return list(DEFAULT_VISIBLE_COLUMNS)
 
 

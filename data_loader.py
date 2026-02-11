@@ -560,6 +560,11 @@ def persist_details_rows(
         "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
     }
 
+    # UI-only calculated columns (never persisted)
+    UI_ONLY_COLS = {
+        "Available Space",
+    }
+
     def _num(v) -> float:
         try:
             if v is None:
@@ -610,6 +615,8 @@ def persist_details_rows(
 
         for ui_col, db_col in {**NUM_MAP, **FACT_MAP}.items():
             if ui_col in df.columns:
+                if ui_col in UI_ONLY_COLS:
+                    continue
                 d[db_col] = _num(r.get(ui_col))
 
         rows.append(d)

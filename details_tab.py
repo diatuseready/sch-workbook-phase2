@@ -49,6 +49,7 @@ from config import (
     COL_GAIN_LOSS_FACT,
     COL_BATCH,
     COL_NOTES,
+    COL_AVAILABLE_SPACE,
     DETAILS_RENAME_MAP,
     DATA_SOURCE,
 )
@@ -62,6 +63,8 @@ DETAILS_COLS = [
     COL_AVAILABLE,
     COL_INTRANSIT,
     COL_CLOSE_INV_RAW,
+    # UI-only calculated column: SafeFill - Close Inv
+    COL_AVAILABLE_SPACE,
     COL_BATCH_IN,
     COL_BATCH_OUT,
     COL_RACK_LIFTING,
@@ -179,8 +182,48 @@ LOCKED_BASE_COLS = [
     "source",
     "Product",
     "Close Inv",
+    COL_AVAILABLE_SPACE,
     "Opening Inv",
 ]
+
+
+def _recalculate_available_space(df: pd.DataFrame, *, safefill: float | None) -> pd.DataFrame:
+    """UI-only metric: Available Space = SafeFill - Close Inv.
+
+    If SafeFill is not configured for the scope, show NaN (blank-ish) rather than
+    an arbitrary number.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    if "Close Inv" not in out.columns:
+        return out
+
+    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
+    if safefill is None or (isinstance(safefill, float) and pd.isna(safefill)):
+        out[COL_AVAILABLE_SPACE] = np.nan
+    else:
+        out[COL_AVAILABLE_SPACE] = float(safefill) - close.astype(float)
+
+    # Keep tidy for display.
+    if COL_AVAILABLE_SPACE in out.columns and pd.api.types.is_numeric_dtype(out[COL_AVAILABLE_SPACE]):
+        out[COL_AVAILABLE_SPACE] = out[COL_AVAILABLE_SPACE].round(2)
+
+    return out
+
+
+def _recalculate_inventory_metrics(
+    df: pd.DataFrame,
+    *,
+    id_col: str,
+    safefill: float | None,
+    ensure_fact_cols: bool = True,
+) -> pd.DataFrame:
+    out = _recalculate_open_close_inv(df, id_col=id_col, ensure_fact_cols=ensure_fact_cols)
+    out = _recalculate_available_space(out, safefill=safefill)
+    return out
+
 
 FACT_COL_MAP: dict[str, str] = {
     COL_OPENING_INV: COL_OPENING_INV_FACT,
@@ -1272,17 +1315,14 @@ def display_location_details(
             )
 
             enable_key = f"details_enable_save|{active_region}|{selected_loc}|{prod_name}"
-            reset_enable_key = f"{enable_key}__reset_pending"
-
-            if st.session_state.get(reset_enable_key):
-                st.session_state.pop(enable_key, None)
-                st.session_state[reset_enable_key] = False
+            enable_ver_key = f"{enable_key}__ver"
+            enable_widget_key = f"{enable_key}__v{int(st.session_state.get(enable_ver_key, 0))}"
 
             with c_enable:
                 enable_save = st.toggle(
                     "Enable Save",
-                    value=bool(st.session_state.get(enable_key, False)),
-                    key=enable_key,
+                    value=bool(st.session_state.get(enable_widget_key, False)),
+                    key=enable_widget_key,
                     help="Toggle ON before saving to ensure the last edited cell commits to the table.",
                 )
 
@@ -1315,6 +1355,11 @@ def display_location_details(
             )
             df_display, cols = build_details_view(df_all, id_col="Location")
 
+            # Ensure UI-only "Available Space" exists even if the source table
+            # doesn't provide it (and override any stored value).
+            df_display = _recalculate_available_space(df_display, safefill=safefill)
+            cols = [c for c in (["Date", "Location"] + DETAILS_COLS) if c in df_display.columns]
+
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
             column_order: list[str] = []
             for c in visible:
@@ -1330,11 +1375,22 @@ def display_location_details(
                     column_order.append(c)
 
             if "Close Inv" in column_order:
+                # Always show the UI-only calculated metric immediately after Close Inv.
+                column_order = _ensure_cols_after(
+                    column_order,
+                    required=[COL_AVAILABLE_SPACE],
+                    after="Close Inv",
+                    before=None,
+                )
+
                 if COL_VIEW_FILE in column_order:
+                    # Keep View File after Available Space (so Available Space is
+                    # immediately after Close Inv).
+                    anchor = COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else "Close Inv"
                     column_order = _ensure_cols_after(
                         column_order,
                         required=[COL_VIEW_FILE],
-                        after="Close Inv",
+                        after=anchor,
                         before=None,
                     )
 
@@ -1363,7 +1419,12 @@ def display_location_details(
 
             # Initialize/refresh canonical df (schema should be stable across FACT toggle).
             if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
-                st.session_state[df_key] = _recalculate_open_close_inv(editor_df, id_col="Location", ensure_fact_cols=True)
+                st.session_state[df_key] = _recalculate_inventory_metrics(
+                    editor_df,
+                    id_col="Location",
+                    safefill=safefill,
+                    ensure_fact_cols=True,
+                )
 
             st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
 
@@ -1396,9 +1457,10 @@ def display_location_details(
             )
 
             # Recompute inventory on the view df only (do not re-add hidden FACT columns).
-            recomputed_view = _recalculate_open_close_inv(
+            recomputed_view = _recalculate_inventory_metrics(
                 edited,
                 id_col="Location",
+                safefill=safefill,
                 ensure_fact_cols=False,
             ).reset_index(drop=True)
 
@@ -1406,7 +1468,12 @@ def display_location_details(
             canonical = st.session_state[df_key].reset_index(drop=True)
             if canonical.shape[0] != recomputed_view.shape[0]:
                 # Safety fallback: rebuild canonical if something changed the rowset.
-                canonical = _recalculate_open_close_inv(editor_df, id_col="Location", ensure_fact_cols=True).reset_index(drop=True)
+                canonical = _recalculate_inventory_metrics(
+                    editor_df,
+                    id_col="Location",
+                    safefill=safefill,
+                    ensure_fact_cols=True,
+                ).reset_index(drop=True)
             else:
                 for c in recomputed_view.columns:
                     if c in canonical.columns:
@@ -1446,8 +1513,6 @@ def display_location_details(
 
             # Save flow (after editor so we persist the latest recomputed values).
             if save_clicked:
-                # Reset the enable toggle on the next rerun (can't touch widget state in this run).
-                st.session_state[reset_enable_key] = True
                 log_audit(
                     event="details_save_dialog_opened",
                     metadata={"region": active_region, "scope": "location", "location": selected_loc, "product": prod_name},
@@ -1503,6 +1568,9 @@ def display_location_details(
                         },
                     )
                     st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
+
+                st.session_state[enable_ver_key] = int(st.session_state.get(enable_ver_key, 0)) + 1
+                st.session_state.pop(enable_widget_key, None)
 
                 st.session_state["details_save_stage"] = "result"
                 st.rerun()
@@ -1612,6 +1680,12 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
             event="details_filters_submit",
             metadata={"region": region, "selected_loc": selected_loc},
         )
+
+    if bool(submitted):
+        # Reset FACT toggle(s)
+        for k in list(st.session_state.keys()):
+            if str(k).startswith("details_show_fact|"):
+                st.session_state[k] = False
 
     start_ts = pd.to_datetime(start_date)
     end_ts = pd.to_datetime(end_date)
