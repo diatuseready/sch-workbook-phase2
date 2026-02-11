@@ -585,6 +585,8 @@ def persist_details_rows(
         if src not in {"system", "manual", "forecast"}:
             src = "system"
 
+        source_type = "system" if src == "forecast" else "user"
+
         date_val = r.get("Date")
         date_s = None if pd.isna(date_val) else str(date_val)
 
@@ -597,10 +599,7 @@ def persist_details_rows(
             "PRODUCT_CODE": _product_code(prod_desc),
             "PRODUCT_DESCRIPTION": prod_desc,
             "DATA_SOURCE": src,
-            # When a user saves from the Details grid, they "own" the whole
-            # grid for that scope (we persist the full dataframe), so stamp all
-            # rows with SOURCE_TYPE='user'.
-            "SOURCE_TYPE": "user",
+            "SOURCE_TYPE": source_type,
             "MANUAL_OVERRIDE_FLAG": int(_num(r.get("updated", 0)) or 0),
             "MANUAL_OVERRIDE_REASON": str(r.get("Notes") or ""),
             "MANUAL_OVERRIDE_USER": "streamlit_app",
@@ -1407,10 +1406,8 @@ def load_filtered_inventory_data(filters: dict) -> pd.DataFrame:
 
 def load_region_inventory_data(*, region: str) -> pd.DataFrame:
     loc_col = "Location"
-    meta = load_region_filter_metadata(region=region, loc_col=loc_col)
-    
     today = pd.Timestamp.today().normalize()
-    
+
     # Include 60 days of historical data and 30 days of forecast
     start_ts = today - pd.Timedelta(days=60)
     end_ts = today + pd.Timedelta(days=30)
