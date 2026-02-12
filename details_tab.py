@@ -50,6 +50,7 @@ from config import (
     COL_BATCH,
     COL_NOTES,
     COL_AVAILABLE_SPACE,
+    COL_TOTAL_CLOSING_INV,
     DETAILS_RENAME_MAP,
     DATA_SOURCE,
 )
@@ -63,6 +64,8 @@ DETAILS_COLS = [
     COL_AVAILABLE,
     COL_INTRANSIT,
     COL_CLOSE_INV_RAW,
+    # UI-only calculated column: Close Inv + Intransit
+    COL_TOTAL_CLOSING_INV,
     # UI-only calculated column: SafeFill - Close Inv
     COL_AVAILABLE_SPACE,
     COL_BATCH_IN,
@@ -182,6 +185,7 @@ LOCKED_BASE_COLS = [
     "source",
     "Product",
     "Close Inv",
+    COL_TOTAL_CLOSING_INV,
     COL_AVAILABLE_SPACE,
     "Opening Inv",
 ]
@@ -213,6 +217,21 @@ def _recalculate_available_space(df: pd.DataFrame, *, safefill: float | None) ->
     return out
 
 
+def _recalculate_total_closing_inv(df: pd.DataFrame) -> pd.DataFrame:
+    """UI-only metric: Total Closing Inv = Close Inv + Intransit."""
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    if "Close Inv" not in out.columns or COL_INTRANSIT not in out.columns:
+        return out
+
+    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
+    intransit = _to_numeric_series(out[COL_INTRANSIT]).fillna(0.0)
+    out[COL_TOTAL_CLOSING_INV] = (close.astype(float) + intransit.astype(float)).round(2)
+    return out
+
+
 def _recalculate_inventory_metrics(
     df: pd.DataFrame,
     *,
@@ -221,6 +240,7 @@ def _recalculate_inventory_metrics(
     ensure_fact_cols: bool = True,
 ) -> pd.DataFrame:
     out = _recalculate_open_close_inv(df, id_col=id_col, ensure_fact_cols=ensure_fact_cols)
+    out = _recalculate_total_closing_inv(out)
     out = _recalculate_available_space(out, safefill=safefill)
     return out
 
@@ -1357,6 +1377,7 @@ def display_location_details(
 
             # Ensure UI-only "Available Space" exists even if the source table
             # doesn't provide it (and override any stored value).
+            df_display = _recalculate_total_closing_inv(df_display)
             df_display = _recalculate_available_space(df_display, safefill=safefill)
             cols = [c for c in (["Date", "Location"] + DETAILS_COLS) if c in df_display.columns]
 
@@ -1378,8 +1399,15 @@ def display_location_details(
                 # Always show the UI-only calculated metric immediately after Close Inv.
                 column_order = _ensure_cols_after(
                     column_order,
-                    required=[COL_AVAILABLE_SPACE],
+                    required=[COL_TOTAL_CLOSING_INV, COL_AVAILABLE_SPACE],
                     after="Close Inv",
+                    before=None,
+                )
+
+                column_order = _ensure_cols_after(
+                    column_order,
+                    required=[COL_AVAILABLE_SPACE],
+                    after=COL_TOTAL_CLOSING_INV if COL_TOTAL_CLOSING_INV in column_order else "Close Inv",
                     before=None,
                 )
 

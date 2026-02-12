@@ -122,6 +122,9 @@ COL_TANK_CAPACITY = "Tank Capacity"
 COL_SAFE_FILL_LIMIT = "Safe Fill Limit"
 COL_AVAILABLE_SPACE = "Available Space"
 
+# UI-only / derived inventory metrics (not persisted)
+COL_TOTAL_CLOSING_INV = "Total Closing Inv"
+
 
 # Convenience groups
 SUMMARY_AGG_COLS = (

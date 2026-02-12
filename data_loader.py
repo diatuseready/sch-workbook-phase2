@@ -563,6 +563,7 @@ def persist_details_rows(
     # UI-only calculated columns (never persisted)
     UI_ONLY_COLS = {
         "Available Space",
+        "Total Closing Inv",
     }
 
     def _num(v) -> float:
