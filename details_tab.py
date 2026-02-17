@@ -1259,7 +1259,7 @@ def display_location_details(
         st.info("No products available for the selected location.")
         return
 
-    c_toggle, c_loc, _ = st.columns([3.5, 4.5, 2])
+    c_toggle, c_loc, _ = st.columns([5, 5, 1])
     with c_toggle:
         show_fact = st.toggle(
             "Show Terminal Feed",
@@ -1268,7 +1268,10 @@ def display_location_details(
             help="Show upstream system values next to the editable columns.",
         )
     with c_loc:
-        st.markdown(f"**{str(selected_loc)}**")
+        st.markdown(
+            f"<h1 style='color: green; font-weight: 700; font-size: 1.2rem'>{selected_loc}</h1>",
+            unsafe_allow_html=True
+        )
 
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
