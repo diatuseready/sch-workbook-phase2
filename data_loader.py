@@ -567,7 +567,7 @@ def persist_details_rows(
             prod_desc = "Unknown"
 
         source_type = str(r.get("SOURCE_TYPE") or "").strip().lower()
-        if source_type not in {"system", "user"}:
+        if source_type not in {"system", "user", "forecast"}:
             source_type = "user"
 
         date_val = r.get("Date")

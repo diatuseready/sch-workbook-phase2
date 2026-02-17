@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import html
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 
 from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
 from utils import dynamic_input_data_editor
@@ -173,6 +173,11 @@ SOURCE_BG = {
 SYSTEM_DISCREPANCY_BG = "#fff2cc"
 
 SYSTEM_DISCREPANCY_THRESHOLD_BBL = 5.0
+
+# Row coloring by date
+TODAY_BG = "#cce5ff"        # blue highlight for today's row
+MATCH_BG = "#d9f2d9"        # green – Close Inv matches Close Inv Fact
+MISMATCH_BG = "#fff2cc"     # yellow – Close Inv does NOT match Close Inv Fact
 
 # Visual cue for read-only fact columns
 FACT_BG = "#eeeeee"
@@ -458,46 +463,67 @@ def _style_source_cells(
     fact_reference: pd.DataFrame | None = None,
 ) -> "pd.io.formats.style.Styler":
 
+    today = date.today()
     cols = list(df.columns)
-    cols_set = set(cols_to_color)
     fact_cols = {c for c in cols if str(c).endswith(" Fact")}
-
     ref = fact_reference if isinstance(fact_reference, pd.DataFrame) else None
 
-    def _is_system_inv_discrepancy(row: pd.Series) -> bool:
+    def _get_fact_value(row: pd.Series, fact_col: str):
+        if fact_col in row.index:
+            return row.get(fact_col)
+        if ref is not None and fact_col in ref.columns and row.name in ref.index:
+            return ref.at[row.name, fact_col]
+        return None
 
-        def _get_fact(idx, fact_col: str):
-            if fact_col in row.index:
-                return row.get(fact_col)
-            if ref is not None and fact_col in ref.columns and idx in ref.index:
-                return ref.at[idx, fact_col]
+    def _close_inv_matches(row: pd.Series) -> bool:
+        """Return True when Close Inv and Close Inv Fact are within threshold."""
+        base_val = _to_float(row.get("Close Inv")) if "Close Inv" in row.index else 0.0
+        fact_val = _get_fact_value(row, "Close Inv Fact")
+        if fact_val is None:
+            return True  # no fact to compare → treat as match
+        return abs(base_val - _to_float(fact_val)) <= SYSTEM_DISCREPANCY_THRESHOLD_BBL
+
+    def _to_date(v):
+        """Normalise whatever the Date cell holds to a datetime.date."""
+        if v is None:
+            return None
+        if isinstance(v, date):
+            return v
+        try:
+            return pd.Timestamp(v).date()
+        except Exception:
             return None
 
-        # We only consider Close Inv for discrepancy highlighting.
-        base = "Close Inv"
-        fact = "Close Inv Fact"
-        if base in row.index:
-            fact_val = _get_fact(row.name, fact)
-            if fact_val is not None:
-                if abs(_to_float(row.get(base)) - _to_float(fact_val)) > SYSTEM_DISCREPANCY_THRESHOLD_BBL:
-                    return True
-        return False
-
     def _row_style(row: pd.Series) -> list[str]:
+        # Determine row background colour
         bg = ""
-        if _is_system_inv_discrepancy(row):
-            bg = SYSTEM_DISCREPANCY_BG
+
+        row_date = _to_date(row.get("Date") if "Date" in row.index else None)
+
+        # Today is ALWAYS blue, regardless of source
+        if row_date == today:
+            bg = TODAY_BG
+        else:
+            source_type = str(row.get("SOURCE_TYPE") if "SOURCE_TYPE" in row.index else "").strip().lower()
+            is_from_db = source_type in ("system", "user")
+
+            if not is_from_db:
+                # Row added by us (gap-fill / forecast) → no colour
+                bg = ""
+            elif row_date is not None and row_date < today:
+                bg = MATCH_BG if _close_inv_matches(row) else MISMATCH_BG
+            # else: future date → no colour
+
         base_style = f"background-color: {bg};" if bg else ""
 
         styles: list[str] = []
         for c in cols:
-            # Fact columns: always grey (read-only indicator), regardless of source.
             if c in fact_cols:
                 styles.append(f"background-color: {FACT_BG};")
-                continue
-
-            # Regular source-based coloring.
-            styles.append(base_style if (c in cols_set and base_style) else "")
+            elif bg:
+                styles.append(base_style)
+            else:
+                styles.append("")
         return styles
 
     return df.style.apply(_row_style, axis=1).hide(axis="index")
@@ -547,7 +573,6 @@ def _recalculate_open_close_inv(
         return df
 
     out = df.copy()
-
 
     # Work with datetimes internally for stable sorting; convert back to date at end.
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
@@ -730,6 +755,8 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         agg_map["Batch"] = "last"
     if "Notes" in df.columns:
         agg_map["Notes"] = "last"
+    if "SOURCE_TYPE" in df.columns:
+        agg_map["SOURCE_TYPE"] = "first"
 
     # Keep file locations for the day (Snowflake-only; list column).
     if "FILE_LOCATION" in df.columns:
@@ -1039,6 +1066,7 @@ def _extend_with_30d_forecast(
                 "Date": d,
                 id_col: id_val,
                 "Product": product,
+                "SOURCE_TYPE": "forecast",
                 "updated": 0,
                 "Batch": "",
                 "Notes": "",
