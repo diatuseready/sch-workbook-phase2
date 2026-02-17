@@ -241,24 +241,12 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
 
     df[COL_BATCH] = _col(raw_df, "BATCH", "").fillna("").astype(str)
 
-    if "source" in raw_df.columns:
-        df["source"] = _col(raw_df, "source", "system").fillna("system")
-    else:
-        ds = _col(raw_df, "DATA_SOURCE", "").fillna("").astype(str).str.strip().str.lower()
-
-        def _map_source(v: str) -> str:
-            if v in {"manual", "forecast", "system"}:
-                return v
-            return "system"
-
-        df["source"] = ds.map(_map_source)
-
     if "updated" in raw_df.columns:
         df["updated"] = pd.to_numeric(_col(raw_df, "updated", 0), errors="coerce").fillna(0).astype(int)
     elif "MANUAL_OVERRIDE_FLAG" in raw_df.columns:
         df["updated"] = pd.to_numeric(_col(raw_df, "MANUAL_OVERRIDE_FLAG", 0), errors="coerce").fillna(0).astype(int)
     else:
-        df["updated"] = (df["source"].astype(str).str.strip().str.lower().eq("manual")).astype(int)
+        df["updated"] = df["SOURCE_TYPE"].astype(str).str.strip().str.lower().eq("user").astype(int)
 
     # No region-specific overrides.
 
@@ -316,7 +304,6 @@ def insert_manual_product_today(
                     LOCATION_CODE,
                     PRODUCT_CODE,
                     PRODUCT_DESCRIPTION,
-                    DATA_SOURCE,
                     SOURCE_TYPE,
                     OPENING_INVENTORY_BBL,
                     CLOSING_INVENTORY_BBL,
@@ -345,7 +332,7 @@ def insert_manual_product_today(
                     UPDATED_AT
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?,
@@ -360,7 +347,6 @@ def insert_manual_product_today(
                     location_s,
                     prod_code,
                     product_s,
-                    "manual",
                     "user",
                     float(opening_inventory_bbl or 0.0),
                     float(closing_inventory_bbl or 0.0),
@@ -426,7 +412,6 @@ def insert_manual_product_today(
                 LOCATION_CODE,
                 PRODUCT_CODE,
                 PRODUCT_DESCRIPTION,
-                DATA_SOURCE,
                 SOURCE_TYPE,
                 OPENING_INVENTORY_BBL,
                 CLOSING_INVENTORY_BBL,
@@ -458,7 +443,6 @@ def insert_manual_product_today(
                 {_sql_str(location_s)},
                 {_sql_str(prod_code)},
                 {_sql_str(product_s)},
-                {_sql_str('manual')},
                 {_sql_str('user')},
                 {_sql_num(opening_inventory_bbl)},
                 {_sql_num(closing_inventory_bbl)},
@@ -582,11 +566,9 @@ def persist_details_rows(
             # Details UI always has Product, but don't hard-crash if missing.
             prod_desc = "Unknown"
 
-        src = str(r.get("source") or "system").strip().lower() or "system"
-        if src not in {"system", "manual", "forecast"}:
-            src = "system"
-
-        source_type = "system" if src == "forecast" else "user"
+        source_type = str(r.get("SOURCE_TYPE") or "").strip().lower()
+        if source_type not in {"system", "user"}:
+            source_type = "user"
 
         date_val = r.get("Date")
         date_s = None if pd.isna(date_val) else str(date_val)
@@ -599,7 +581,6 @@ def persist_details_rows(
             "LOCATION_CODE": location_s,
             "PRODUCT_CODE": _product_code(prod_desc),
             "PRODUCT_DESCRIPTION": prod_desc,
-            "DATA_SOURCE": src,
             "SOURCE_TYPE": source_type,
             "MANUAL_OVERRIDE_FLAG": int(_num(r.get("updated", 0)) or 0),
             "MANUAL_OVERRIDE_REASON": str(r.get("Notes") or ""),
@@ -661,7 +642,6 @@ def persist_details_rows(
                     "LOCATION_CODE",
                     "PRODUCT_CODE",
                     "PRODUCT_DESCRIPTION",
-                    "DATA_SOURCE",
                     "SOURCE_TYPE",
                     "OPENING_INVENTORY_BBL",
                     "CLOSING_INVENTORY_BBL",
@@ -858,7 +838,6 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         PRODUCT_DESCRIPTION,
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
-        DATA_SOURCE,
         CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
@@ -1340,7 +1319,6 @@ def _load_inventory_data_filtered_cached(
         PRODUCT_DESCRIPTION,
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
-        DATA_SOURCE,
         CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,

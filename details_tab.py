@@ -42,7 +42,6 @@ from config import (
     COL_RACK_LIFTINGS_RAW,
     COL_RACK_LIFTINGS_FACT_RAW,
     COL_RACK_LIFTING_FACT,
-    COL_SOURCE,
     COL_TRANSFERS,
     COL_TRANSFERS_FACT,
     COL_GAIN_LOSS,
@@ -58,7 +57,6 @@ from config import (
 DETAILS_RENAME = DETAILS_RENAME_MAP
 
 DETAILS_COLS = [
-    COL_SOURCE,
     COL_PRODUCT,
     COL_OPENING_INV,
     COL_AVAILABLE,
@@ -182,7 +180,6 @@ FACT_BG = "#eeeeee"
 LOCKED_BASE_COLS = [
     "Date",
     "{id_col}",
-    "source",
     "Product",
     "Close Inv",
     COL_TOTAL_CLOSING_INV,
@@ -468,9 +465,6 @@ def _style_source_cells(
     ref = fact_reference if isinstance(fact_reference, pd.DataFrame) else None
 
     def _is_system_inv_discrepancy(row: pd.Series) -> bool:
-        src = str(row.get("source", "")).strip().lower()
-        if src != "system":
-            return False
 
         def _get_fact(idx, fact_col: str):
             if fact_col in row.index:
@@ -490,10 +484,8 @@ def _style_source_cells(
         return False
 
     def _row_style(row: pd.Series) -> list[str]:
-        src = str(row.get("source", "")).strip().lower()
-
-        bg = SOURCE_BG.get(src, "")
-        if src == "system" and _is_system_inv_discrepancy(row):
+        bg = ""
+        if _is_system_inv_discrepancy(row):
             bg = SYSTEM_DISCREPANCY_BG
         base_style = f"background-color: {bg};" if bg else ""
 
@@ -556,15 +548,6 @@ def _recalculate_open_close_inv(
 
     out = df.copy()
 
-    # Optional: ensure fact columns exist so we can compare system vs fact values.
-    # When rendering a UI *view* df (where fact cols might be intentionally omitted),
-    # set ensure_fact_cols=False to avoid re-adding hidden columns.
-    if ensure_fact_cols and "source" in out.columns:
-        src = out["source"].astype(str).str.strip().str.lower()
-        if "Opening Inv" in out.columns and "Opening Inv Fact" not in out.columns:
-            out["Opening Inv Fact"] = np.where(src.eq("system"), out["Opening Inv"], np.nan)
-        if "Close Inv" in out.columns and "Close Inv Fact" not in out.columns:
-            out["Close Inv Fact"] = np.where(src.eq("system"), out["Close Inv"], np.nan)
 
     # Work with datetimes internally for stable sorting; convert back to date at end.
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
@@ -674,12 +657,6 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
     cfg: dict[str, object] = {
         "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD"),
         id_col: st.column_config.TextColumn(id_col, disabled=True),
-        "source": st.column_config.SelectboxColumn(
-            "Source",
-            options=["system", "forecast", "manual"],
-            required=True,
-            disabled=True,
-        ),
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
@@ -700,7 +677,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
             cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format=NUM_FMT)
 
     for c in locked:
-        if c in {"Date", id_col, "source", "Product"}:
+        if c in {"Date", id_col, "Product"}:
             continue
         if c in cols and c not in cfg:
             if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
@@ -747,8 +724,6 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         else:
             agg_map[fact_col] = "sum"
 
-    if "source" in df.columns:
-        agg_map["source"] = "first"
     if "updated" in df.columns:
         agg_map["updated"] = "max"
     if "Batch" in df.columns:
@@ -769,11 +744,6 @@ def _available_flow_cols(df: pd.DataFrame) -> list[str]:
 
 def _ensure_lineage_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-
-    if "source" not in out.columns:
-        out["source"] = "system"
-    else:
-        out["source"] = out["source"].fillna("system")
 
     if "updated" not in out.columns:
         out["updated"] = 0
@@ -985,8 +955,6 @@ def _fill_missing_internal_dates(
             g2[col] = val
 
         # Defaults for inserted rows.
-        if "source" in g2.columns:
-            g2["source"] = g2["source"].fillna("manual")
         if "updated" in g2.columns:
             g2["updated"] = pd.to_numeric(g2["updated"], errors="coerce").fillna(0).astype(int)
         if "SOURCE_TYPE" in g2.columns:
@@ -1071,7 +1039,6 @@ def _extend_with_30d_forecast(
                 "Date": d,
                 id_col: id_val,
                 "Product": product,
-                "source": "forecast",
                 "updated": 0,
                 "Batch": "",
                 "Notes": "",
@@ -1102,7 +1069,7 @@ def build_details_view(df: pd.DataFrame, id_col: str):
     cols = [c for c in cols if c in df.columns]
 
     for c in cols:
-        if c in {"Date", id_col, "source", "Product", "Notes", "updated"}:
+        if c in {"Date", id_col, "Product", "Notes", "updated"}:
             continue
         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
             df[c] = df[c].round(2)
@@ -1195,7 +1162,6 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
     base = [
         "Date",
         id_col,
-        "source",
         "Product",
         "SOURCE_TYPE",
         "updated",
@@ -1378,8 +1344,6 @@ def display_location_details(
             )
             df_display, cols = build_details_view(df_all, id_col="Location")
 
-            # Ensure UI-only "Available Space" exists even if the source table
-            # doesn't provide it (and override any stored value).
             df_display = _recalculate_total_closing_inv(df_display)
             df_display = _recalculate_available_space(df_display, safefill=safefill)
             cols = [c for c in (["Date", "Location"] + DETAILS_COLS) if c in df_display.columns]
@@ -1387,9 +1351,6 @@ def display_location_details(
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
             column_order: list[str] = []
             for c in visible:
-                if c == "source":
-                    continue
-
                 if c == COL_VIEW_FILE:
                     if c not in column_order:
                         column_order.append(c)
@@ -1415,8 +1376,6 @@ def display_location_details(
                 )
 
                 if COL_VIEW_FILE in column_order:
-                    # Keep View File after Available Space (so Available Space is
-                    # immediately after Close Inv).
                     anchor = COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else "Close Inv"
                     column_order = _ensure_cols_after(
                         column_order,
