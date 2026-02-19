@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import html
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 
 from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
 from utils import dynamic_input_data_editor
@@ -42,7 +42,6 @@ from config import (
     COL_RACK_LIFTINGS_RAW,
     COL_RACK_LIFTINGS_FACT_RAW,
     COL_RACK_LIFTING_FACT,
-    COL_SOURCE,
     COL_TRANSFERS,
     COL_TRANSFERS_FACT,
     COL_GAIN_LOSS,
@@ -59,7 +58,6 @@ from config import (
 DETAILS_RENAME = DETAILS_RENAME_MAP
 
 DETAILS_COLS = [
-    COL_SOURCE,
     COL_PRODUCT,
     COL_OPENING_INV,
     COL_AVAILABLE,
@@ -179,13 +177,17 @@ SYSTEM_DISCREPANCY_BG = "#fff2cc"
 
 SYSTEM_DISCREPANCY_THRESHOLD_BBL = 5.0
 
+# Row coloring by date
+TODAY_BG = "#cce5ff"        # blue highlight for today's row
+MATCH_BG = "#d9f2d9"        # green – Close Inv matches Close Inv Fact
+MISMATCH_BG = "#fff2cc"     # yellow – Close Inv does NOT match Close Inv Fact
+
 # Visual cue for read-only fact columns
 FACT_BG = "#eeeeee"
 
 LOCKED_BASE_COLS = [
     "Date",
     "{id_col}",
-    "source",
     "Product",
     "Close Inv",
     COL_TOTAL_CLOSING_INV,
@@ -492,51 +494,67 @@ def _style_source_cells(
     fact_reference: pd.DataFrame | None = None,
 ) -> "pd.io.formats.style.Styler":
 
+    today = date.today()
     cols = list(df.columns)
-    cols_set = set(cols_to_color)
     fact_cols = {c for c in cols if str(c).endswith(" Fact")}
-
     ref = fact_reference if isinstance(fact_reference, pd.DataFrame) else None
 
-    def _is_system_inv_discrepancy(row: pd.Series) -> bool:
-        src = str(row.get("source", "")).strip().lower()
-        if src != "system":
-            return False
+    def _get_fact_value(row: pd.Series, fact_col: str):
+        if fact_col in row.index:
+            return row.get(fact_col)
+        if ref is not None and fact_col in ref.columns and row.name in ref.index:
+            return ref.at[row.name, fact_col]
+        return None
 
-        def _get_fact(idx, fact_col: str):
-            if fact_col in row.index:
-                return row.get(fact_col)
-            if ref is not None and fact_col in ref.columns and idx in ref.index:
-                return ref.at[idx, fact_col]
+    def _close_inv_matches(row: pd.Series) -> bool:
+        """Return True when Close Inv and Close Inv Fact are within threshold."""
+        base_val = _to_float(row.get("Close Inv")) if "Close Inv" in row.index else 0.0
+        fact_val = _get_fact_value(row, "Close Inv Fact")
+        if fact_val is None:
+            return True  # no fact to compare → treat as match
+        return abs(base_val - _to_float(fact_val)) <= SYSTEM_DISCREPANCY_THRESHOLD_BBL
+
+    def _to_date(v):
+        """Normalise whatever the Date cell holds to a datetime.date."""
+        if v is None:
+            return None
+        if isinstance(v, date):
+            return v
+        try:
+            return pd.Timestamp(v).date()
+        except Exception:
             return None
 
-        # We only consider Close Inv for discrepancy highlighting.
-        base = "Close Inv"
-        fact = "Close Inv Fact"
-        if base in row.index:
-            fact_val = _get_fact(row.name, fact)
-            if fact_val is not None:
-                if abs(_to_float(row.get(base)) - _to_float(fact_val)) > SYSTEM_DISCREPANCY_THRESHOLD_BBL:
-                    return True
-        return False
-
     def _row_style(row: pd.Series) -> list[str]:
-        src = str(row.get("source", "")).strip().lower()
+        # Determine row background colour
+        bg = ""
 
-        bg = SOURCE_BG.get(src, "")
-        if src == "system" and _is_system_inv_discrepancy(row):
-            bg = SYSTEM_DISCREPANCY_BG
+        row_date = _to_date(row.get("Date") if "Date" in row.index else None)
+
+        # Today is ALWAYS blue, regardless of source
+        if row_date == today:
+            bg = TODAY_BG
+        else:
+            source_type = str(row.get("SOURCE_TYPE") if "SOURCE_TYPE" in row.index else "").strip().lower()
+            is_from_db = source_type in ("system", "user")
+
+            if not is_from_db:
+                # Row added by us (gap-fill / forecast) → no colour
+                bg = ""
+            elif row_date is not None and row_date < today:
+                bg = MATCH_BG if _close_inv_matches(row) else MISMATCH_BG
+            # else: future date → no colour
+
         base_style = f"background-color: {bg};" if bg else ""
 
         styles: list[str] = []
         for c in cols:
-            # Fact columns: always grey (read-only indicator), regardless of source.
             if c in fact_cols:
                 styles.append(f"background-color: {FACT_BG};")
-                continue
-
-            # Regular source-based coloring.
-            styles.append(base_style if (c in cols_set and base_style) else "")
+            elif bg:
+                styles.append(base_style)
+            else:
+                styles.append("")
         return styles
 
     return df.style.apply(_row_style, axis=1).hide(axis="index")
@@ -586,16 +604,6 @@ def _recalculate_open_close_inv(
         return df
 
     out = df.copy()
-
-    # Optional: ensure fact columns exist so we can compare system vs fact values.
-    # When rendering a UI *view* df (where fact cols might be intentionally omitted),
-    # set ensure_fact_cols=False to avoid re-adding hidden columns.
-    if ensure_fact_cols and "source" in out.columns:
-        src = out["source"].astype(str).str.strip().str.lower()
-        if "Opening Inv" in out.columns and "Opening Inv Fact" not in out.columns:
-            out["Opening Inv Fact"] = np.where(src.eq("system"), out["Opening Inv"], np.nan)
-        if "Close Inv" in out.columns and "Close Inv Fact" not in out.columns:
-            out["Close Inv Fact"] = np.where(src.eq("system"), out["Close Inv"], np.nan)
 
     # Work with datetimes internally for stable sorting; convert back to date at end.
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
@@ -705,12 +713,6 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
     cfg: dict[str, object] = {
         "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD"),
         id_col: st.column_config.TextColumn(id_col, disabled=True),
-        "source": st.column_config.SelectboxColumn(
-            "Source",
-            options=["system", "forecast", "manual"],
-            required=True,
-            disabled=True,
-        ),
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
@@ -731,7 +733,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
             cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format=NUM_FMT)
 
     for c in locked:
-        if c in {"Date", id_col, "source", "Product"}:
+        if c in {"Date", id_col, "Product"}:
             continue
         if c in cols and c not in cfg:
             if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
@@ -778,14 +780,14 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         else:
             agg_map[fact_col] = "sum"
 
-    if "source" in df.columns:
-        agg_map["source"] = "first"
     if "updated" in df.columns:
         agg_map["updated"] = "max"
     if "Batch" in df.columns:
         agg_map["Batch"] = "last"
     if "Notes" in df.columns:
         agg_map["Notes"] = "last"
+    if "SOURCE_TYPE" in df.columns:
+        agg_map["SOURCE_TYPE"] = "first"
 
     # Keep file locations for the day (Snowflake-only; list column).
     if "FILE_LOCATION" in df.columns:
@@ -800,11 +802,6 @@ def _available_flow_cols(df: pd.DataFrame) -> list[str]:
 
 def _ensure_lineage_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-
-    if "source" not in out.columns:
-        out["source"] = "system"
-    else:
-        out["source"] = out["source"].fillna("system")
 
     if "updated" not in out.columns:
         out["updated"] = 0
@@ -1016,8 +1013,6 @@ def _fill_missing_internal_dates(
             g2[col] = val
 
         # Defaults for inserted rows.
-        if "source" in g2.columns:
-            g2["source"] = g2["source"].fillna("manual")
         if "updated" in g2.columns:
             g2["updated"] = pd.to_numeric(g2["updated"], errors="coerce").fillna(0).astype(int)
         if "SOURCE_TYPE" in g2.columns:
@@ -1102,7 +1097,7 @@ def _extend_with_30d_forecast(
                 "Date": d,
                 id_col: id_val,
                 "Product": product,
-                "source": "forecast",
+                "SOURCE_TYPE": "forecast",
                 "updated": 0,
                 "Batch": "",
                 "Notes": "",
@@ -1133,7 +1128,7 @@ def build_details_view(df: pd.DataFrame, id_col: str):
     cols = [c for c in cols if c in df.columns]
 
     for c in cols:
-        if c in {"Date", id_col, "source", "Product", "Notes", "updated"}:
+        if c in {"Date", id_col, "Product", "Notes", "updated"}:
             continue
         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
             df[c] = df[c].round(2)
@@ -1226,7 +1221,6 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
     base = [
         "Date",
         id_col,
-        "source",
         "Product",
         "SOURCE_TYPE",
         "updated",
@@ -1290,7 +1284,7 @@ def display_location_details(
         st.info("No products available for the selected location.")
         return
 
-    c_toggle, c_loc, _ = st.columns([3.5, 4.5, 2])
+    c_toggle, c_loc, _ = st.columns([5, 5, 1])
     with c_toggle:
         show_fact = st.toggle(
             "Show Terminal Feed",
@@ -1299,7 +1293,10 @@ def display_location_details(
             help="Show upstream system values next to the editable columns.",
         )
     with c_loc:
-        st.markdown(f"**{str(selected_loc)}**")
+        st.markdown(
+            f"<h1 style='color: green; font-weight: 700; font-size: 1.2rem'>{selected_loc}</h1>",
+            unsafe_allow_html=True
+        )
 
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
@@ -1406,8 +1403,6 @@ def display_location_details(
             )
             df_display, cols = build_details_view(df_all, id_col="Location")
 
-            # Ensure UI-only "Available Space" and "Loadable" exist even if the source table
-            # doesn't provide them (and override any stored value).
             df_display = _recalculate_total_closing_inv(df_display)
             df_display = _recalculate_available_space(df_display, safefill=safefill)
             df_display = _recalculate_loadable(df_display, bottom=bottom)
@@ -1416,9 +1411,6 @@ def display_location_details(
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
             column_order: list[str] = []
             for c in visible:
-                if c == "source":
-                    continue
-
                 if c == COL_VIEW_FILE:
                     if c not in column_order:
                         column_order.append(c)
