@@ -51,6 +51,7 @@ from config import (
     COL_NOTES,
     COL_AVAILABLE_SPACE,
     COL_TOTAL_CLOSING_INV,
+    COL_LOADABLE,
     DETAILS_RENAME_MAP,
     DATA_SOURCE,
 )
@@ -68,6 +69,8 @@ DETAILS_COLS = [
     COL_TOTAL_CLOSING_INV,
     # UI-only calculated column: SafeFill - Close Inv
     COL_AVAILABLE_SPACE,
+    # UI-only calculated column: Close Inv - Bottoms
+    COL_LOADABLE,
     COL_BATCH_IN,
     COL_BATCH_OUT,
     COL_RACK_LIFTING,
@@ -187,6 +190,7 @@ LOCKED_BASE_COLS = [
     "Close Inv",
     COL_TOTAL_CLOSING_INV,
     COL_AVAILABLE_SPACE,
+    COL_LOADABLE,
     "Opening Inv",
 ]
 
@@ -232,16 +236,43 @@ def _recalculate_total_closing_inv(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _recalculate_loadable(df: pd.DataFrame, *, bottom: float | None) -> pd.DataFrame:
+    """UI-only metric: Loadable = Close Inv - Bottoms.
+
+    If Bottoms is not configured for the scope, show NaN (blank-ish) rather than
+    an arbitrary number.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    if "Close Inv" not in out.columns:
+        return out
+
+    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
+    if bottom is None or (isinstance(bottom, float) and pd.isna(bottom)):
+        out[COL_LOADABLE] = np.nan
+    else:
+        out[COL_LOADABLE] = close.astype(float) - float(bottom)
+
+    if COL_LOADABLE in out.columns and pd.api.types.is_numeric_dtype(out[COL_LOADABLE]):
+        out[COL_LOADABLE] = out[COL_LOADABLE].round(2)
+
+    return out
+
+
 def _recalculate_inventory_metrics(
     df: pd.DataFrame,
     *,
     id_col: str,
     safefill: float | None,
+    bottom: float | None = None,
     ensure_fact_cols: bool = True,
 ) -> pd.DataFrame:
     out = _recalculate_open_close_inv(df, id_col=id_col, ensure_fact_cols=ensure_fact_cols)
     out = _recalculate_total_closing_inv(out)
     out = _recalculate_available_space(out, safefill=safefill)
+    out = _recalculate_loadable(out, bottom=bottom)
     return out
 
 
@@ -1375,10 +1406,11 @@ def display_location_details(
             )
             df_display, cols = build_details_view(df_all, id_col="Location")
 
-            # Ensure UI-only "Available Space" exists even if the source table
-            # doesn't provide it (and override any stored value).
+            # Ensure UI-only "Available Space" and "Loadable" exist even if the source table
+            # doesn't provide them (and override any stored value).
             df_display = _recalculate_total_closing_inv(df_display)
             df_display = _recalculate_available_space(df_display, safefill=safefill)
+            df_display = _recalculate_loadable(df_display, bottom=bottom)
             cols = [c for c in (["Date", "Location"] + DETAILS_COLS) if c in df_display.columns]
 
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
@@ -1396,7 +1428,7 @@ def display_location_details(
                     column_order.append(c)
 
             if "Close Inv" in column_order:
-                # Always show the UI-only calculated metric immediately after Close Inv.
+                # Always show the UI-only calculated metrics immediately after Close Inv.
                 column_order = _ensure_cols_after(
                     column_order,
                     required=[COL_TOTAL_CLOSING_INV, COL_AVAILABLE_SPACE],
@@ -1411,10 +1443,16 @@ def display_location_details(
                     before=None,
                 )
 
+                column_order = _ensure_cols_after(
+                    column_order,
+                    required=[COL_LOADABLE],
+                    after=COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else "Close Inv",
+                    before=None,
+                )
+
                 if COL_VIEW_FILE in column_order:
-                    # Keep View File after Available Space (so Available Space is
-                    # immediately after Close Inv).
-                    anchor = COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else "Close Inv"
+                    # Keep View File after Loadable (so Loadable is immediately after Available Space).
+                    anchor = COL_LOADABLE if COL_LOADABLE in column_order else COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else "Close Inv"
                     column_order = _ensure_cols_after(
                         column_order,
                         required=[COL_VIEW_FILE],
@@ -1451,6 +1489,7 @@ def display_location_details(
                     editor_df,
                     id_col="Location",
                     safefill=safefill,
+                    bottom=bottom,
                     ensure_fact_cols=True,
                 )
 
@@ -1489,6 +1528,7 @@ def display_location_details(
                 edited,
                 id_col="Location",
                 safefill=safefill,
+                bottom=bottom,
                 ensure_fact_cols=False,
             ).reset_index(drop=True)
 
@@ -1500,6 +1540,7 @@ def display_location_details(
                     editor_df,
                     id_col="Location",
                     safefill=safefill,
+                    bottom=bottom,
                     ensure_fact_cols=True,
                 ).reset_index(drop=True)
             else:

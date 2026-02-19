@@ -47,6 +47,7 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Close Inv",
     "Total Closing Inv",
     "Available Space",
+    "Loadable",
     "View File",
     "Receipts",
     "Deliveries",

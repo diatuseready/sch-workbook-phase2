@@ -124,6 +124,7 @@ COL_AVAILABLE_SPACE = "Available Space"
 
 # UI-only / derived inventory metrics (not persisted)
 COL_TOTAL_CLOSING_INV = "Total Closing Inv"
+COL_LOADABLE = "Loadable"  # Close Inv - Bottoms
 
 
 # Convenience groups

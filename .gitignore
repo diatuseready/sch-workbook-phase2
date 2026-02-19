@@ -2,3 +2,24 @@
 venv
 __pycache__
 old_files
+df_raw_debug.xlsx
+diagnose_midcon.py
+magellan.py
+magellan_calculated_20260107_120547.xlsx
+magellan_calculated_20260107_162417.xlsx
+
+inventory.db
+CALCULATIONS_DOCUMENTATION.md
+FORECAST_ANALYSIS_REPORT.md
+New Text Document.txt
+TEST_VALIDATION_RESULTS.md
+add_test_forecast_data.py
+diagnose_forecast.py
+forecast_analysis_HEP.csv
+forecast_analysis_Midcon.csv
+forecast_analysis_Navajo_Southwest.csv
+forecast_analysis_PSR.csv
+forecast_analysis_Rockies.csv
+forecast_analysis_X.csv
+simulate_forecast_table.py
+verify_test_data.py
