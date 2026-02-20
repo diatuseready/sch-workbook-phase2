@@ -178,12 +178,21 @@ SYSTEM_DISCREPANCY_BG = "#fff2cc"
 SYSTEM_DISCREPANCY_THRESHOLD_BBL = 5.0
 
 # Row coloring by date
-TODAY_BG = "#cce5ff"        # blue highlight for today's row
-MATCH_BG = "#d9f2d9"        # green – Close Inv matches Close Inv Fact
-MISMATCH_BG = "#fff2cc"     # yellow – Close Inv does NOT match Close Inv Fact
+TODAY_BG = "#cce5ff"        # blue highlight for today's row  – today's Date cell only
+MATCH_BG = "#d9f2d9"        # green – Close Inv matches Close Inv Fact – (retained but no longer used for past rows)
+MISMATCH_BG = "#fff2cc"     # yellow – Close Inv does NOT match Close Inv Fact  (retained but no longer used for past rows)
+
+# Yesterday: lighter yellow applied to Date / Opening Inv / Close Inv cells only
+YESTERDAY_HIGHLIGHT_BG = "#fffbe6"
+# Columns that receive the yesterday highlight (exact display-column names)
+YESTERDAY_HIGHLIGHT_COLS = {"Date", "Opening Inv", "Close Inv"}
 
 # Visual cue for read-only fact columns
 FACT_BG = "#eeeeee"
+
+# Closing Inv threshold coloring (cell-level overrides)
+CLOSE_INV_ABOVE_SAFEFILL_BG = "#ffb3b3"   # red   – Close Inv > SafeFill (overfill risk)
+CLOSE_INV_BELOW_BOTTOM_BG   = "#ffe0b2"   # orange – Close Inv < Bottom  (below minimum)
 
 LOCKED_BASE_COLS = [
     "Date",
@@ -492,9 +501,31 @@ def _style_source_cells(
     cols_to_color: list[str],
     *,
     fact_reference: pd.DataFrame | None = None,
+    safefill: float | None = None,
+    bottom: float | None = None,
 ) -> "pd.io.formats.style.Styler":
+    """Apply cell-level background styles.
+
+    Today (row_date == today):
+      • Only the "Date" cell is highlighted blue (TODAY_BG).
+      • All other cells in the row are uncolored.
+
+    Yesterday (row_date == today − 1):
+      • "Date", "Opening Inv", "Close Inv" cells → lighter yellow (YESTERDAY_HIGHLIGHT_BG).
+      • All other cells (Total Closing Inv, Available Space, Loadable, View File, …) → no color.
+
+    Older rows (row_date < today − 1):
+      • No row-level color at all.
+
+    Fact columns always get the FACT_BG grey regardless of date.
+
+    Close Inv threshold override (applied last, wins over all row colors):
+      • Red   (CLOSE_INV_ABOVE_SAFEFILL_BG) when Close Inv > SafeFill
+      • Orange (CLOSE_INV_BELOW_BOTTOM_BG)  when Close Inv < Bottom
+    """
 
     today = date.today()
+    yesterday = today - timedelta(days=1)
     cols = list(df.columns)
     fact_cols = {c for c in cols if str(c).endswith(" Fact")}
     ref = fact_reference if isinstance(fact_reference, pd.DataFrame) else None
@@ -526,35 +557,43 @@ def _style_source_cells(
             return None
 
     def _row_style(row: pd.Series) -> list[str]:
-        # Determine row background colour
-        bg = ""
-
         row_date = _to_date(row.get("Date") if "Date" in row.index else None)
 
-        # Today is ALWAYS blue, regardless of source
-        if row_date == today:
-            bg = TODAY_BG
-        else:
-            source_type = str(row.get("SOURCE_TYPE") if "SOURCE_TYPE" in row.index else "").strip().lower()
-            is_from_db = source_type in ("system", "user")
-
-            if not is_from_db:
-                # Row added by us (gap-fill / forecast) → no colour
-                bg = ""
-            elif row_date is not None and row_date < today:
-                bg = MATCH_BG if _close_inv_matches(row) else MISMATCH_BG
-            # else: future date → no colour
-
-        base_style = f"background-color: {bg};" if bg else ""
-
         styles: list[str] = []
+
         for c in cols:
             if c in fact_cols:
+                # Fact columns always get grey
                 styles.append(f"background-color: {FACT_BG};")
-            elif bg:
-                styles.append(base_style)
+            elif row_date == today:
+                # Today: only the Date cell gets blue
+                styles.append(f"background-color: {TODAY_BG};" if c == "Date" else "")
+            elif row_date == yesterday:
+                # Yesterday: Date / Opening Inv / Close Inv get lighter yellow
+                styles.append(
+                    f"background-color: {YESTERDAY_HIGHLIGHT_BG};"
+                    if c in YESTERDAY_HIGHLIGHT_COLS
+                    else ""
+                )
             else:
+                # All other rows (past or future): no row-level color
                 styles.append("")
+
+        # --- Cell-level override: Close Inv threshold coloring ---
+        # Applies to any row with a future date (strictly after today),
+        # regardless of SOURCE_TYPE — this covers both system-feed records
+        # with future dates AND app-generated forecast rows.
+        # Runs last so it wins over every row-level color.
+        is_future = row_date is not None and row_date > today
+        if is_future and "Close Inv" in cols:
+            ci_idx = cols.index("Close Inv")
+            raw_val = row.get("Close Inv") if "Close Inv" in row.index else None
+            if raw_val is not None and not (isinstance(raw_val, float) and pd.isna(raw_val)):
+                close_val = _to_float(raw_val)
+                if safefill is not None and close_val > safefill:
+                    styles[ci_idx] = f"background-color: {CLOSE_INV_ABOVE_SAFEFILL_BG};"
+                elif bottom is not None and close_val < bottom:
+                    styles[ci_idx] = f"background-color: {CLOSE_INV_BELOW_BOTTOM_BG};"
         return styles
 
     return df.style.apply(_row_style, axis=1).hide(axis="index")
@@ -1202,6 +1241,25 @@ def _render_threshold_cards(
             unsafe_allow_html=True,
         )
 
+    with c_info:
+        st.markdown(
+            """
+            <div style="font-size:0.72rem; line-height:1.55; margin-top:0.25rem;">
+              <span style="
+                display:inline-block; width:10px; height:10px;
+                background:#ffb3b3; border:1px solid #ccc;
+                border-radius:2px; margin-right:4px;
+              "></span>Above SafeFill<br>
+              <span style="
+                display:inline-block; width:10px; height:10px;
+                background:#ffe0b2; border:1px solid #ccc;
+                border-radius:2px; margin-right:4px;
+              "></span>Below Bottom
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 
 def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str]) -> pd.DataFrame:
     # Keep any flow columns that might exist, even if not currently visible.
@@ -1499,6 +1557,8 @@ def display_location_details(
                 view_df,
                 locked_cols,
                 fact_reference=(st.session_state[df_key] if not bool(show_fact) else None),
+                safefill=safefill,
+                bottom=bottom,
             )
 
             editor_column_order = [c for c in column_order if c in view_cols]
