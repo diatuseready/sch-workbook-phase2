@@ -171,14 +171,28 @@ def get_snowflake_session():
     return get_active_session()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def get_user_role() -> str:
-    """Return the active Snowflake role. Falls back to ROLE_POWER in SQLite/dev mode."""
-    if DATA_SOURCE != "snowflake":
-        return ROLE_POWER
-    session = get_snowflake_session()
-    rows = session.sql("SELECT CURRENT_ROLE()").collect()
-    return str(rows[0][0]) if rows else ROLE_POWER
+    if "user_role" not in st.session_state:
+        if DATA_SOURCE != "snowflake":
+            st.session_state["user_role"] = ROLE_POWER
+        else:
+            from snowflake.snowpark.context import get_active_session  # type: ignore
+            from config import ROLE_CHANGE, ROLE_DISPLAY  # avoid circular import at module level
+            session = get_active_session()
+            result = session.sql("SELECT CURRENT_AVAILABLE_ROLES() AS roles").collect()
+            available = json.loads(result[0]["ROLES"]) if result else []
+            available_set = set(available)
+
+            if ROLE_POWER in available_set:
+                st.session_state["user_role"] = ROLE_POWER
+            elif ROLE_CHANGE in available_set:
+                st.session_state["user_role"] = ROLE_CHANGE
+            elif ROLE_DISPLAY in available_set:
+                st.session_state["user_role"] = ROLE_DISPLAY
+            else:
+                st.session_state["user_role"] = ROLE_POWER  # fallback
+
+    return st.session_state["user_role"]
 
 
 def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
