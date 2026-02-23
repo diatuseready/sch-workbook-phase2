@@ -759,6 +759,17 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             _add_new_product_dialog(default_region=region, region_options=regions)
 
     if save_clicked:
+        # Validate Bottom and SafeFill before saving.
+        if product is not None:
+            bottom_val = _to_float_or_none(bottom)
+            safefill_val = _to_float_or_none(safefill)
+            bottom_invalid = bottom.strip() != "" and bottom_val is None
+            safefill_invalid = safefill.strip() != "" and safefill_val is None
+            if bottom_invalid or safefill_invalid:
+                bad = [f for f, flag in [("Bottom", bottom_invalid), ("SafeFill", safefill_invalid)] if flag]
+                st.error(f"Invalid value(s) for: {', '.join(bad)}. Please enter numbers only (commas are allowed, e.g. 1,200).")
+                st.stop()
+
         updates = {
             # Only persist these fields at Region/Location scope.
             "VISIBLE_COLUMNS_JSON": (
