@@ -182,8 +182,8 @@ TODAY_BG = "#cce5ff"        # blue highlight for today's row  – today's Date c
 MATCH_BG = "#d9f2d9"        # green – Close Inv matches Close Inv Fact – (retained but no longer used for past rows)
 MISMATCH_BG = "#fff2cc"     # yellow – Close Inv does NOT match Close Inv Fact  (retained but no longer used for past rows)
 
-# Yesterday: lighter yellow applied to Date / Opening Inv / Close Inv cells only
-YESTERDAY_HIGHLIGHT_BG = "#fffbe6"
+# Yesterday: green/yellow applied to Date / Opening Inv / Close Inv cells only
+# (green = Close Inv matches Fact, yellow = mismatch)
 # Columns that receive the yesterday highlight (exact display-column names)
 YESTERDAY_HIGHLIGHT_COLS = {"Date", "Opening Inv", "Close Inv"}
 
@@ -561,6 +561,12 @@ def _style_source_cells(
 
         styles: list[str] = []
 
+        # Determine yesterday's highlight colour once per row (avoids recalculating per cell).
+        if row_date == yesterday:
+            yesterday_bg = MATCH_BG if _close_inv_matches(row) else MISMATCH_BG
+        else:
+            yesterday_bg = ""
+
         for c in cols:
             if c in fact_cols:
                 # Fact columns always get grey
@@ -569,9 +575,10 @@ def _style_source_cells(
                 # Today: only the Date cell gets blue
                 styles.append(f"background-color: {TODAY_BG};" if c == "Date" else "")
             elif row_date == yesterday:
-                # Yesterday: Date / Opening Inv / Close Inv get lighter yellow
+                # Yesterday: Date / Opening Inv / Close Inv get green (match) or yellow (mismatch).
+                # All other cells (Total Closing Inv, Available Space, Loadable, etc.) → no color.
                 styles.append(
-                    f"background-color: {YESTERDAY_HIGHLIGHT_BG};"
+                    f"background-color: {yesterday_bg};"
                     if c in YESTERDAY_HIGHLIGHT_COLS
                     else ""
                 )
