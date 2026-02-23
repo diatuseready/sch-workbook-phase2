@@ -162,3 +162,8 @@ RACK_LIFTING_FORECAST_METHODS: tuple[str, ...] = (
     "7_day_avg",
     "mtd_avg",
 )
+
+# Snowflake role names that control feature access
+ROLE_POWER = "SCHEDULER_WORKBOOK_POWER_FR"    # full access
+ROLE_CHANGE = "SCHEDULER_WORKBOOK_CHANGE_FR"  # Admin Config disabled
+ROLE_DISPLAY = "SCHEDULER_WORKBOOK_DISPLAY_FR"  # Admin Config + Enable Save disabled

@@ -18,6 +18,7 @@ from config import (
     SQLITE_DB_PATH,
     SQLITE_SOURCE_STATUS_TABLE,
     SQLITE_TABLE,
+    ROLE_POWER,
 
     # Base columns
     COL_OPEN_INV_RAW,
@@ -168,6 +169,16 @@ def get_snowflake_session():
     from snowflake.snowpark.context import get_active_session  # type: ignore
 
     return get_active_session()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_user_role() -> str:
+    """Return the active Snowflake role. Falls back to ROLE_POWER in SQLite/dev mode."""
+    if DATA_SOURCE != "snowflake":
+        return ROLE_POWER
+    session = get_snowflake_session()
+    rows = session.sql("SELECT CURRENT_ROLE()").collect()
+    return str(rows[0][0]) if rows else ROLE_POWER
 
 
 def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:

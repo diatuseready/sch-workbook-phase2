@@ -7,8 +7,8 @@ from datetime import date, timedelta
 
 from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
 from utils import dynamic_input_data_editor
-from data_loader import persist_details_rows
-from data_loader import generate_snowflake_signed_urls
+from data_loader import persist_details_rows, generate_snowflake_signed_urls, get_user_role
+from config import ROLE_DISPLAY
 from app_logging import logged_button, log_audit, log_error
 from config import (
     COL_ADJUSTMENTS,
@@ -192,7 +192,7 @@ FACT_BG = "#eeeeee"
 
 # Closing Inv threshold coloring (cell-level overrides)
 CLOSE_INV_ABOVE_SAFEFILL_BG = "#ffb3b3"   # red   – Close Inv > SafeFill (overfill risk)
-CLOSE_INV_BELOW_BOTTOM_BG   = "#ffe0b2"   # orange – Close Inv < Bottom  (below minimum)
+CLOSE_INV_BELOW_BOTTOM_BG = "#ffb3b3"   # orange – Close Inv < Bottom  (below minimum)
 
 LOCKED_BASE_COLS = [
     "Date",
@@ -1429,6 +1429,7 @@ def display_location_details(
                     "Enable Save",
                     value=bool(st.session_state.get(enable_widget_key, False)),
                     key=enable_widget_key,
+                    disabled=(get_user_role() == ROLE_DISPLAY),
                     help="Toggle ON before saving to ensure the last edited cell commits to the table.",
                 )
 
