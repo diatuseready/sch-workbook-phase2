@@ -48,6 +48,7 @@ from config import (
     COL_GAIN_LOSS_FACT,
     COL_BATCH,
     COL_NOTES,
+    COL_BATCH_BREAKDOWN,
     COL_AVAILABLE_SPACE,
     COL_TOTAL_CLOSING_INV,
     COL_LOADABLE,
@@ -80,6 +81,7 @@ DETAILS_COLS = [
     COL_ADJUSTMENTS,
     COL_BATCH,
     COL_NOTES,
+    COL_BATCH_BREAKDOWN,
 ]
 
 # UI-only column (not persisted)
@@ -186,6 +188,10 @@ MISMATCH_BG = "#fff2cc"     # yellow – Close Inv does NOT match Close Inv Fact
 # (green = Close Inv matches Fact, yellow = mismatch)
 # Columns that receive the yesterday highlight (exact display-column names)
 YESTERDAY_HIGHLIGHT_COLS = {"Date", "Opening Inv", "Close Inv"}
+
+# Older days: light grey applied to the same key columns only
+OLDER_DAY_HIGHLIGHT_COLS = {"Date", "Opening Inv", "Close Inv"}
+OLDER_DAY_BG = "#e8e8e8"   # light grey for rows older than yesterday
 
 # Visual cue for read-only fact columns
 FACT_BG = "#eeeeee"
@@ -582,8 +588,15 @@ def _style_source_cells(
                     if c in YESTERDAY_HIGHLIGHT_COLS
                     else ""
                 )
+            elif row_date is not None and row_date < yesterday:
+                # Older rows: light grey on Date / Opening Inv / Close Inv only
+                styles.append(
+                    f"background-color: {OLDER_DAY_BG};"
+                    if c in OLDER_DAY_HIGHLIGHT_COLS
+                    else ""
+                )
             else:
-                # All other rows (past or future): no row-level color
+                # Future rows (or unknown date): no row-level color
                 styles.append("")
 
         # --- Cell-level override: Close Inv threshold coloring ---
@@ -763,6 +776,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
         "Notes": st.column_config.TextColumn("Notes"),
+        COL_BATCH_BREAKDOWN: st.column_config.TextColumn(COL_BATCH_BREAKDOWN),
         "SOURCE_TYPE": st.column_config.TextColumn("SOURCE_TYPE", disabled=True),
         COL_VIEW_FILE: st.column_config.CheckboxColumn(
             COL_VIEW_FILE,
@@ -832,6 +846,8 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         agg_map["Batch"] = "last"
     if "Notes" in df.columns:
         agg_map["Notes"] = "last"
+    if COL_BATCH_BREAKDOWN in df.columns:
+        agg_map[COL_BATCH_BREAKDOWN] = "last"
     if "SOURCE_TYPE" in df.columns:
         agg_map["SOURCE_TYPE"] = "first"
 
@@ -1069,6 +1085,8 @@ def _fill_missing_internal_dates(
             g2["Batch"] = g2["Batch"].fillna("")
         if "Notes" in g2.columns:
             g2["Notes"] = g2["Notes"].fillna("")
+        if COL_BATCH_BREAKDOWN in g2.columns:
+            g2[COL_BATCH_BREAKDOWN] = g2[COL_BATCH_BREAKDOWN].fillna("")
         if "FILE_LOCATION" in g2.columns:
             # Only fill NaNs; keep existing lists.
             g2["FILE_LOCATION"] = g2["FILE_LOCATION"].apply(
@@ -1147,6 +1165,7 @@ def _extend_with_30d_forecast(
                 "updated": 0,
                 "Batch": "",
                 "Notes": "",
+                COL_BATCH_BREAKDOWN: "",
                 "FILE_LOCATION": [],
                 "Open Inv": opening,
                 "Close Inv": closing,
@@ -1249,23 +1268,24 @@ def _render_threshold_cards(
         )
 
     with c_info:
-        st.markdown(
-            """
-            <div style="font-size:0.72rem; line-height:1.55; margin-top:0.25rem;">
-              <span style="
-                display:inline-block; width:10px; height:10px;
-                background:#ffb3b3; border:1px solid #ccc;
-                border-radius:2px; margin-right:4px;
-              "></span>Above SafeFill<br>
-              <span style="
-                display:inline-block; width:10px; height:10px;
-                background:#ffe0b2; border:1px solid #ccc;
-                border-radius:2px; margin-right:4px;
-              "></span>Below Bottom
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        pass
+        # st.markdown(
+        #     """
+        #     <div style="font-size:0.72rem; line-height:1.55; margin-top:0.25rem;">
+        #       <span style="
+        #         display:inline-block; width:10px; height:10px;
+        #         background:#ffb3b3; border:1px solid #ccc;
+        #         border-radius:2px; margin-right:4px;
+        #       "></span>Above SafeFill<br>
+        #       <span style="
+        #         display:inline-block; width:10px; height:10px;
+        #         background:#ffe0b2; border:1px solid #ccc;
+        #         border-radius:2px; margin-right:4px;
+        #       "></span>Below Bottom
+        #     </div>
+        #     """,
+        #     unsafe_allow_html=True,
+        # )
 
 
 def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str]) -> pd.DataFrame:
@@ -1486,20 +1506,23 @@ def display_location_details(
                     column_order.append(c)
 
             if "Close Inv" in column_order:
-                # Always show the UI-only calculated metrics immediately after Close Inv.
-                column_order = _ensure_cols_after(
-                    column_order,
-                    required=[COL_TOTAL_CLOSING_INV, COL_AVAILABLE_SPACE],
-                    after="Close Inv",
-                    before=None,
-                )
+                # Insert UI-only calculated metrics after Close Inv only if they are in the visible list.
+                ui_cols_to_insert = [c for c in [COL_TOTAL_CLOSING_INV, COL_AVAILABLE_SPACE] if c in visible]
+                if ui_cols_to_insert:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=ui_cols_to_insert,
+                        after="Close Inv",
+                        before=None,
+                    )
 
-                column_order = _ensure_cols_after(
-                    column_order,
-                    required=[COL_AVAILABLE_SPACE],
-                    after=COL_TOTAL_CLOSING_INV if COL_TOTAL_CLOSING_INV in column_order else "Close Inv",
-                    before=None,
-                )
+                if COL_AVAILABLE_SPACE in visible:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=[COL_AVAILABLE_SPACE],
+                        after=COL_TOTAL_CLOSING_INV if COL_TOTAL_CLOSING_INV in column_order else "Close Inv",
+                        before=None,
+                    )
 
                 column_order = _ensure_cols_after(
                     column_order,

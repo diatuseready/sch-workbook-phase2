@@ -21,7 +21,11 @@ from data_loader import get_snowflake_session, load_region_location_pairs
 
 
 def _to_float_or_none(x):
-    """Best-effort parse to float; return None if blank/invalid."""
+    """Best-effort parse to float; return None if blank/invalid.
+    Strips comma thousands-separators (e.g. '1,200' → 1200.0).
+    """
+    if isinstance(x, str):
+        x = x.replace(",", "").strip()
     v = pd.to_numeric(pd.Series([x]), errors="coerce").iloc[0]
     return None if pd.isna(v) else float(v)
 
@@ -60,6 +64,7 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Adjustments",
     "Batch",
     "Notes",
+    "Batch Breakdown",
 ]
 
 
@@ -461,9 +466,6 @@ def get_visible_columns(*, region: str, location: str | None) -> list[str]:
             "Batch Out Fact": "Deliveries Fact",
         }
         out = [rename.get(str(c), str(c)) for c in cols]
-
-        if "Close Inv" in out and "Total Closing Inv" not in out:
-            out.insert(out.index("Close Inv") + 1, "Total Closing Inv")
 
         if "Close Inv" in out and "Available Space" not in out:
             anchor = "Total Closing Inv" if "Total Closing Inv" in out else "Close Inv"

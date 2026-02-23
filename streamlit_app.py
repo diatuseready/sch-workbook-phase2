@@ -65,7 +65,7 @@ def main():
                     st.session_state.admin_view = True
 
                 user_role = get_user_role()
-                st.caption(f"Role: `{user_role}`")
+                # st.caption(f"Role: `{user_role}`")
                 st.button(
                     "Admin Config",
                     key="admin_open",

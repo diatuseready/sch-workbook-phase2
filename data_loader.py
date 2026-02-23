@@ -24,8 +24,9 @@ from config import (
     COL_OPEN_INV_RAW,
     COL_CLOSE_INV_RAW,
 
-    # Free-text column
+    # Free-text columns
     COL_BATCH,
+    COL_BATCH_BREAKDOWN,
 
     # Flow columns
     COL_BATCH_IN_RAW,
@@ -265,6 +266,7 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
 
     df[COL_BATCH] = _col(raw_df, "BATCH", "").fillna("").astype(str)
+    df[COL_BATCH_BREAKDOWN] = _col(raw_df, "BATCH_BREAKDOWN", "").fillna("").astype(str)
 
     if "updated" in raw_df.columns:
         df["updated"] = pd.to_numeric(_col(raw_df, "updated", 0), errors="coerce").fillna(0).astype(int)
@@ -615,6 +617,9 @@ def persist_details_rows(
         if COL_BATCH in df.columns:
             d["BATCH"] = str(r.get(COL_BATCH) or "")
 
+        if COL_BATCH_BREAKDOWN in df.columns:
+            d["BATCH_BREAKDOWN"] = str(r.get(COL_BATCH_BREAKDOWN) or "")
+
         if system_s:
             d["SOURCE_OPERATOR"] = system_s
             d["SOURCE_SYSTEM"] = system_s
@@ -698,6 +703,7 @@ def persist_details_rows(
                     "MANUAL_OVERRIDE_REASON",
                     "MANUAL_OVERRIDE_USER",
                     "BATCH",
+                    "BATCH_BREAKDOWN",
                 ]
 
                 if system_s:
@@ -864,6 +870,7 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
+        CAST(COALESCE(BATCH_BREAKDOWN, '') AS STRING) as BATCH_BREAKDOWN,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,
@@ -1345,6 +1352,7 @@ def _load_inventory_data_filtered_cached(
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
+        CAST(COALESCE(BATCH_BREAKDOWN, '') AS STRING) as BATCH_BREAKDOWN,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,
