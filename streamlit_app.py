@@ -9,10 +9,12 @@ from data_loader import (
     load_filtered_inventory_data,
     load_region_inventory_data,
     require_selected_location,
+    get_user_role,
 )
 from summary_tab import display_regional_summary, display_forecast_table
 from details_tab import display_details_tab, render_details_filters
 from admin_config import display_super_admin_panel
+from config import ROLE_CHANGE, ROLE_DISPLAY
 
 
 def main():
@@ -62,9 +64,12 @@ def main():
                     st.session_state["collapse_expandables"] = True
                     st.session_state.admin_view = True
 
+                user_role = get_user_role()
+                # st.caption(f"Role: `{user_role}`")
                 st.button(
                     "Admin Config",
                     key="admin_open",
+                    disabled=(user_role in (ROLE_CHANGE, ROLE_DISPLAY)),
                     on_click=logged_callback(
                         _open_admin_config,
                         event="nav_admin_open",

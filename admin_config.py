@@ -21,7 +21,11 @@ from data_loader import get_snowflake_session, load_region_location_pairs
 
 
 def _to_float_or_none(x):
-    """Best-effort parse to float; return None if blank/invalid."""
+    """Best-effort parse to float; return None if blank/invalid.
+    Strips comma thousands-separators (e.g. '1,200' → 1200.0).
+    """
+    if isinstance(x, str):
+        x = x.replace(",", "").strip()
     v = pd.to_numeric(pd.Series([x]), errors="coerce").iloc[0]
     return None if pd.isna(v) else float(v)
 
@@ -71,6 +75,7 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Batch Breakdown",
     "Batch",
     "Notes",
+    "Batch Breakdown",
 ]
 
 
@@ -473,9 +478,6 @@ def get_visible_columns(*, region: str, location: str | None) -> list[str]:
         }
         out = [rename.get(str(c), str(c)) for c in cols]
 
-        if "Close Inv" in out and "Total Closing Inv" not in out:
-            out.insert(out.index("Close Inv") + 1, "Total Closing Inv")
-
         if "Close Inv" in out and "Available Space" not in out:
             anchor = "Total Closing Inv" if "Total Closing Inv" in out else "Close Inv"
             out.insert(out.index(anchor) + 1, "Available Space")
@@ -768,6 +770,17 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             _add_new_product_dialog(default_region=region, region_options=regions)
 
     if save_clicked:
+        # Validate Bottom and SafeFill before saving.
+        if product is not None:
+            bottom_val = _to_float_or_none(bottom)
+            safefill_val = _to_float_or_none(safefill)
+            bottom_invalid = bottom.strip() != "" and bottom_val is None
+            safefill_invalid = safefill.strip() != "" and safefill_val is None
+            if bottom_invalid or safefill_invalid:
+                bad = [f for f, flag in [("Bottom", bottom_invalid), ("SafeFill", safefill_invalid)] if flag]
+                st.error(f"Invalid value(s) for: {', '.join(bad)}. Please enter numbers only (commas are allowed, e.g. 1,200).")
+                st.stop()
+
         updates = {
             # Only persist these fields at Region/Location scope.
             "VISIBLE_COLUMNS_JSON": (
