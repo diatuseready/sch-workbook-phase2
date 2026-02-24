@@ -41,6 +41,14 @@ from config import (
     COL_AVAILABLE,
     COL_INTRANSIT,
 
+    # User-editable persisted columns (phase-2)
+    COL_STORAGE,
+    COL_TULSA,
+    COL_EL_DORADO,
+    COL_OTHER,
+    COL_ARGENTINE,
+    COL_FROM_327_RECEIPT,
+
     # Capacity/threshold columns
     COL_TANK_CAPACITY,
     COL_SAFE_FILL_LIMIT,
@@ -137,6 +145,14 @@ NUMERIC_COLUMN_MAP = {
     # Additional inventory metrics
     COL_AVAILABLE: "AVAILABLE_BBL",
     COL_INTRANSIT: "INTRANSIT_BBL",
+
+    # User-editable persisted columns (phase-2 sub-breakdowns)
+    COL_STORAGE: "STORAGE_BBL",
+    COL_TULSA: "TULSA_BBL",
+    COL_EL_DORADO: "EL_DORADO_BBL",
+    COL_OTHER: "OTHER_BBL",
+    COL_ARGENTINE: "ARGENTINE_BBL",
+    COL_FROM_327_RECEIPT: "FROM_327_RECEIPT_BBL",
 
     # Fact columns (optional UI display)
     COL_OPEN_INV_FACT_RAW: "FACT_OPENING_INVENTORY_BBL",
@@ -526,8 +542,19 @@ def persist_details_rows(
         "Transfers": "TRANSFERS_BBL",
         "Adjustments": "ADJUSTMENTS_BBL",
         "Gain/Loss": "GAIN_LOSS_BBL",
+            # Phase-2 user-editable persisted columns
+            "Storage": "STORAGE_BBL",
+            "Tulsa": "TULSA_BBL",
+            "El Dorado": "EL_DORADO_BBL",
+            "Other": "OTHER_BBL",
+            "Argentine": "ARGENTINE_BBL",
+            "From 327 Receipt": "FROM_327_RECEIPT_BBL",
+        "Adjustments Fact": "FACT_ADJUSTMENTS_BBL",
+        "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
     }
 
+    # Fact (terminal-feed) columns — display name → DB column name.
+    # "Adjustments Fact" and "Gain/Loss Fact" are already covered in NUM_MAP above.
     FACT_MAP = {
         "Opening Inv Fact": "FACT_OPENING_INVENTORY_BBL",
         "Close Inv Fact": "FACT_CLOSING_INVENTORY_BBL",
@@ -535,19 +562,23 @@ def persist_details_rows(
         "Intransit Fact": "FACT_INTRANSIT_BBL",
         "Receipts Fact": "FACT_RECEIPTS_BBL",
         "Deliveries Fact": "FACT_DELIVERIES_BBL",
-        "Production Fact": "FACT_PRODUCTION_BBL",
         "Rack/Lifting Fact": "FACT_RACK_LIFTINGS_BBL",
         "Pipeline In Fact": "FACT_PIPELINE_IN_BBL",
         "Pipeline Out Fact": "FACT_PIPELINE_OUT_BBL",
+        "Production Fact": "FACT_PRODUCTION_BBL",
         "Transfers Fact": "FACT_TRANSFERS_BBL",
-        "Adjustments Fact": "FACT_ADJUSTMENTS_BBL",
-        "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
     }
 
     # UI-only calculated columns (never persisted)
     UI_ONLY_COLS = {
         "Available Space",
         "Total Closing Inv",
+        # Purely derived display columns
+        "Total Inventory",       # Close Inv + Bottoms threshold
+        "Accounting Inventory",  # Close Inv - Storage
+        "7 Day Avg",             # 7-day rolling avg of Rack/Lifting
+        "MTD Avg",               # Month-to-date avg of Rack/Lifting
+        # NOTE: "Storage" is intentionally NOT in this set — it is now persisted as STORAGE_BBL
     }
 
     def _num(v) -> float:
@@ -656,6 +687,12 @@ def persist_details_rows(
                     "TRANSFERS_BBL",
                     "ADJUSTMENTS_BBL",
                     "GAIN_LOSS_BBL",
+                    "STORAGE_BBL",
+                    "TULSA_BBL",
+                    "EL_DORADO_BBL",
+                    "OTHER_BBL",
+                    "ARGENTINE_BBL",
+                    "FROM_327_RECEIPT_BBL",
                     "FACT_OPENING_INVENTORY_BBL",
                     "FACT_CLOSING_INVENTORY_BBL",
                     "FACT_AVAILABLE_BBL",
@@ -678,6 +715,16 @@ def persist_details_rows(
                 if system_s:
                     write_cols.insert(4, "SOURCE_OPERATOR")
                     write_cols.insert(5, "SOURCE_SYSTEM")
+
+                # Auto-migrate: add new columns to SQLite if they don't exist yet.
+                _new_bbl_cols = [
+                    "STORAGE_BBL", "TULSA_BBL", "EL_DORADO_BBL", "OTHER_BBL",
+                    "ARGENTINE_BBL", "FROM_327_RECEIPT_BBL",
+                ]
+                _existing_cols = {r[1] for r in cur.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
+                for _c in _new_bbl_cols:
+                    if _c not in _existing_cols:
+                        cur.execute(f"ALTER TABLE {SQLITE_TABLE} ADD COLUMN {_c} REAL DEFAULT 0")
 
                 for c in write_cols:
                     row.setdefault(c, 0.0 if c.endswith("_BBL") else None)
@@ -708,6 +755,21 @@ def persist_details_rows(
     else:
         session = get_snowflake_session()
         session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+
+        # # Auto-migrate: add new columns to Snowflake table if they don't exist yet.
+        # _new_sf_cols = [
+        #     ("STORAGE_BBL", "FLOAT"),
+        #     ("TULSA_BBL", "FLOAT"),
+        #     ("EL_DORADO_BBL", "FLOAT"),
+        #     ("OTHER_BBL", "FLOAT"),
+        #     ("ARGENTINE_BBL", "FLOAT"),
+        #     ("FROM_327_RECEIPT_BBL", "FLOAT"),
+        # ]
+        # for _sf_col, _sf_type in _new_sf_cols:
+        #     try:
+        #         session.sql(f"ALTER TABLE {RAW_INVENTORY_TABLE} ADD COLUMN IF NOT EXISTS {_sf_col} {_sf_type}").collect()
+        #     except Exception:
+        #         pass  # Column already exists or DDL not supported; continue
 
         stage = pd.DataFrame(rows)
 
@@ -868,6 +930,12 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(TANK_CAPACITY_BBL, 0) AS FLOAT) as TANK_CAPACITY_BBL,
         CAST(COALESCE(SAFE_FILL_LIMIT_BBL, 0) AS FLOAT) as SAFE_FILL_LIMIT_BBL,
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
+        CAST(COALESCE(STORAGE_BBL, 0) AS FLOAT) as STORAGE_BBL,
+        CAST(COALESCE(TULSA_BBL, 0) AS FLOAT) as TULSA_BBL,
+        CAST(COALESCE(EL_DORADO_BBL, 0) AS FLOAT) as EL_DORADO_BBL,
+        CAST(COALESCE(OTHER_BBL, 0) AS FLOAT) as OTHER_BBL,
+        CAST(COALESCE(ARGENTINE_BBL, 0) AS FLOAT) as ARGENTINE_BBL,
+        CAST(COALESCE(FROM_327_RECEIPT_BBL, 0) AS FLOAT) as FROM_327_RECEIPT_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
         SOURCE_TYPE,
@@ -1349,6 +1417,12 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(TANK_CAPACITY_BBL, 0) AS FLOAT) as TANK_CAPACITY_BBL,
         CAST(COALESCE(SAFE_FILL_LIMIT_BBL, 0) AS FLOAT) as SAFE_FILL_LIMIT_BBL,
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
+        CAST(COALESCE(STORAGE_BBL, 0) AS FLOAT) as STORAGE_BBL,
+        CAST(COALESCE(TULSA_BBL, 0) AS FLOAT) as TULSA_BBL,
+        CAST(COALESCE(EL_DORADO_BBL, 0) AS FLOAT) as EL_DORADO_BBL,
+        CAST(COALESCE(OTHER_BBL, 0) AS FLOAT) as OTHER_BBL,
+        CAST(COALESCE(ARGENTINE_BBL, 0) AS FLOAT) as ARGENTINE_BBL,
+        CAST(COALESCE(FROM_327_RECEIPT_BBL, 0) AS FLOAT) as FROM_327_RECEIPT_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
         SOURCE_TYPE,

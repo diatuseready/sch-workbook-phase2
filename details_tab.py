@@ -51,6 +51,18 @@ from config import (
     COL_AVAILABLE_SPACE,
     COL_TOTAL_CLOSING_INV,
     COL_LOADABLE,
+    # Phase-2 new UI-only display columns
+    COL_TOTAL_INVENTORY,
+    COL_ACCOUNTING_INV,
+    COL_7DAY_AVG_RACK,
+    COL_MTD_AVG_RACK,
+    # Phase-2 user-editable persisted columns
+    COL_STORAGE,
+    COL_TULSA,
+    COL_EL_DORADO,
+    COL_OTHER,
+    COL_ARGENTINE,
+    COL_FROM_327_RECEIPT,
     DETAILS_RENAME_MAP,
     DATA_SOURCE,
 )
@@ -69,15 +81,30 @@ DETAILS_COLS = [
     COL_AVAILABLE_SPACE,
     # UI-only calculated column: Close Inv - Bottoms
     COL_LOADABLE,
+    # UI-only calculated column: Close Inv + Bottoms (threshold)
+    COL_TOTAL_INVENTORY,
+    # UI-only calculated column: Close Inv - Storage (Storage is now persisted; see sub-breakdown group below)
+    COL_ACCOUNTING_INV,
     COL_BATCH_IN,
     COL_BATCH_OUT,
     COL_RACK_LIFTING,
+    # UI-only: 7-day rolling average of Rack/Lifting (historical, excl. zeros)
+    COL_7DAY_AVG_RACK,
+    # UI-only: month-to-date average of Rack/Lifting (current calendar month, excl. zeros)
+    COL_MTD_AVG_RACK,
     COL_PIPELINE_IN,
     COL_PIPELINE_OUT,
     COL_GAIN_LOSS,
     COL_TRANSFERS,
     COL_PRODUCTION,
     COL_ADJUSTMENTS,
+    # Sub-breakdown columns: user-editable and persisted to DB
+    COL_TULSA,
+    COL_EL_DORADO,
+    COL_OTHER,
+    COL_ARGENTINE,
+    COL_FROM_327_RECEIPT,
+    COL_STORAGE,
     COL_BATCH,
     COL_NOTES,
 ]
@@ -202,6 +229,11 @@ LOCKED_BASE_COLS = [
     COL_TOTAL_CLOSING_INV,
     COL_AVAILABLE_SPACE,
     COL_LOADABLE,
+    # Phase-2 calculated columns — always read-only (Storage is excluded: it is editable)
+    COL_TOTAL_INVENTORY,
+    COL_ACCOUNTING_INV,
+    COL_7DAY_AVG_RACK,
+    COL_MTD_AVG_RACK,
     "Opening Inv",
 ]
 
@@ -272,6 +304,182 @@ def _recalculate_loadable(df: pd.DataFrame, *, bottom: float | None) -> pd.DataF
     return out
 
 
+def _recalculate_total_inventory(df: pd.DataFrame, *, bottom: float | None) -> pd.DataFrame:
+    """UI-only metric: Total Inventory = Close Inv + Bottoms (threshold).
+
+    Represents the total physical inventory including the unusable "dead stock"
+    (bottom / minimum inventory level).  Mirrors the symmetry with Loadable
+    (Close Inv - Bottoms) but adds the bottom back in.
+
+    Why read-only: the formula is purely derived; changing it would be
+    meaningless without changing the underlying Close Inv or Bottom threshold.
+
+    Shows NaN when no Bottom is configured (consistent with Loadable / Available
+    Space behaviour – we never fabricate a number from NaN thresholds).
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    if "Close Inv" not in out.columns:
+        return out
+
+    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
+    if bottom is None or (isinstance(bottom, float) and pd.isna(bottom)):
+        out[COL_TOTAL_INVENTORY] = np.nan
+    else:
+        out[COL_TOTAL_INVENTORY] = (close.astype(float) + float(bottom)).round(2)
+
+    return out
+
+
+def _recalculate_accounting_inv(df: pd.DataFrame) -> pd.DataFrame:
+    """UI-only metric: Accounting Inventory = Close Inv - Storage.
+
+    Storage is a manual, session-only numeric field the user fills in per row.
+    It represents inventory that is physically present but "tied up" (e.g. held
+    in storage, nominated, or otherwise unavailable for dispatch) and thus
+    excluded from the operationally-available closing figure.
+
+    Why this column is computed (not editable): its value is *always* derived
+    from two other columns; making it directly editable would create an
+    inconsistency with the formula.
+
+    Why Storage does NOT feed into Close Inv: Storage is a deduction for
+    *accounting* purposes only and does not represent a physical movement.
+    The inventory balance chain (Open Inv + Inflows - Outflows = Close Inv)
+    is physical; accounting adjustments are tracked separately here.
+
+    Initialises Storage to 0 if not yet present so that Accounting Inventory
+    equals Close Inv until the user starts entering Storage values.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    if "Close Inv" not in out.columns:
+        return out
+
+    # Initialise Storage if this is the first time we see the df (e.g. freshly
+    # loaded from DB where the column does not exist yet).
+    if COL_STORAGE not in out.columns:
+        out[COL_STORAGE] = np.nan
+
+    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
+    storage = _to_numeric_series(out[COL_STORAGE]).fillna(0.0)
+    out[COL_ACCOUNTING_INV] = (close.astype(float) - storage.astype(float)).round(2)
+    return out
+
+
+def _fill_rack_averages(
+    df: pd.DataFrame,
+    *,
+    avg_7day: float | None,
+    avg_mtd: float | None,
+) -> pd.DataFrame:
+    """Scalar fallback: broadcast pre-computed rack averages to every row.
+
+    Kept for compatibility; prefer _fill_rack_averages_per_row for display
+    so each row reflects its own date-contextual average.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    out[COL_7DAY_AVG_RACK] = round(float(avg_7day), 2) if avg_7day is not None else np.nan
+    out[COL_MTD_AVG_RACK] = round(float(avg_mtd), 2) if avg_mtd is not None else np.nan
+    return out
+
+
+def _fill_rack_averages_per_row(
+    df: pd.DataFrame,
+    df_hist: pd.DataFrame,
+) -> pd.DataFrame:
+    """UI-only metrics: per-row 7-day and MTD rack averages keyed on each row's date.
+
+    For each row in ``df`` at date D:
+
+    • 7 Day Avg  – non-zero mean of the 7 most recent *historical* rows
+      (SOURCE_TYPE != 'forecast') whose date is ≤ D.  Gives a rolling
+      current-week reference rate that advances as dates move forward.
+
+    • MTD Avg    – non-zero mean of *historical* rows whose date falls within
+      [1st of D's month, D].  Each row reflects its own month-to-date period
+      rather than a single today-anchored constant.
+
+    Both averages exclude zeros and NaNs.  Forecast rows in ``df_hist`` are
+    stripped so projected values never contaminate the statistics.
+    Shows NaN when there is insufficient history for a given date.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+
+    # Resolve rack column (raw or renamed form).
+    rack_col: str | None = None
+    for candidate in (COL_RACK_LIFTINGS_RAW, COL_RACK_LIFTING):
+        if candidate in df_hist.columns:
+            rack_col = candidate
+            break
+
+    if rack_col is None:
+        out[COL_7DAY_AVG_RACK] = np.nan
+        out[COL_MTD_AVG_RACK] = np.nan
+        return out
+
+    # Build clean historical base (no forecast rows, sorted by date).
+    hist = df_hist.copy()
+    hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
+    if "SOURCE_TYPE" in hist.columns:
+        hist = hist[hist["SOURCE_TYPE"].astype(str).str.lower() != "forecast"]
+    hist = hist.dropna(subset=["Date"])
+    hist[rack_col] = pd.to_numeric(hist[rack_col], errors="coerce")
+    # Aggregate sub-entries: multiple DB rows for the same date (e.g. 284 + 142 on Feb 10)
+    # are summed into a single daily total (426) so that each calendar day counts as
+    # exactly ONE data point in both the 7-day window and the MTD window.
+    # Without this, a date with 2 sub-entries occupies 2 slots in tail(7), causing
+    # heavily-split days to be over-represented and producing a lower/distorted average.
+    hist = hist.groupby("Date", as_index=False)[rack_col].sum()
+    hist = hist.sort_values("Date").reset_index(drop=True)
+
+    dates = pd.to_datetime(out["Date"], errors="coerce")
+    today = pd.Timestamp.today().normalize()
+
+    avg_7day_list: list = []
+    avg_mtd_list: list = []
+
+    for row_date in dates:
+        if pd.isna(row_date):
+            avg_7day_list.append(np.nan)
+            avg_mtd_list.append(np.nan)
+            continue
+
+        # Only compute averages for rows up to and including today.
+        # Future (forecast) rows show None for both metrics.
+        if row_date > today:
+            avg_7day_list.append(np.nan)
+            avg_mtd_list.append(np.nan)
+            continue
+
+        h_upto = hist[hist["Date"] <= row_date]
+
+        # 7-day: last 7 historical rows up to this date, non-zero mean.
+        last7 = h_upto.tail(7)
+        v7 = _nonzero_mean(last7[rack_col]) if not last7.empty else None
+        avg_7day_list.append(round(float(v7), 2) if v7 else np.nan)
+
+        # MTD: rows in [1st of row_date's month, row_date], non-zero mean.
+        month_start = row_date.replace(day=1)
+        mtd = h_upto[h_upto["Date"] >= month_start]
+        vm = _nonzero_mean(mtd[rack_col]) if not mtd.empty else None
+        avg_mtd_list.append(round(float(vm), 2) if vm else np.nan)
+
+    out[COL_7DAY_AVG_RACK] = avg_7day_list
+    out[COL_MTD_AVG_RACK] = avg_mtd_list
+    return out
+
+
 def _recalculate_inventory_metrics(
     df: pd.DataFrame,
     *,
@@ -279,11 +487,21 @@ def _recalculate_inventory_metrics(
     safefill: float | None,
     bottom: float | None = None,
     ensure_fact_cols: bool = True,
+    rack_7day_avg: float | None = None,
+    rack_mtd_avg: float | None = None,
+    df_hist: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     out = _recalculate_open_close_inv(df, id_col=id_col, ensure_fact_cols=ensure_fact_cols)
     out = _recalculate_total_closing_inv(out)
     out = _recalculate_available_space(out, safefill=safefill)
     out = _recalculate_loadable(out, bottom=bottom)
+    # Phase-2 derived columns
+    out = _recalculate_total_inventory(out, bottom=bottom)
+    out = _recalculate_accounting_inv(out)
+    if df_hist is not None:
+        out = _fill_rack_averages_per_row(out, df_hist)
+    else:
+        out = _fill_rack_averages(out, avg_7day=rack_7day_avg, avg_mtd=rack_mtd_avg)
     return out
 
 
@@ -763,6 +981,19 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
         "Notes": st.column_config.TextColumn("Notes"),
+        # Storage: user-editable numeric field persisted to DB as STORAGE_BBL.
+        # Intentionally NOT disabled so operators can type in a value.
+        # Does NOT flow into Close Inv; it drives the Accounting Inventory derived column only.
+        COL_STORAGE: st.column_config.NumberColumn(
+            COL_STORAGE,
+            disabled=False,
+            format=NUM_FMT,
+            help=(
+                "Manual entry only. Enter the volume held in storage. "
+                "This value does NOT affect Closing Inventory. "
+                "It is used to compute Accounting Inventory (Close Inv − Storage)."
+            ),
+        ),
         "SOURCE_TYPE": st.column_config.TextColumn("SOURCE_TYPE", disabled=True),
         COL_VIEW_FILE: st.column_config.CheckboxColumn(
             COL_VIEW_FILE,
@@ -835,6 +1066,14 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     if "SOURCE_TYPE" in df.columns:
         agg_map["SOURCE_TYPE"] = "first"
 
+    # Sub-breakdown columns (phase-2): sum like flow columns.
+    for _sub_col in [COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_ARGENTINE, COL_FROM_327_RECEIPT]:
+        if _sub_col in df.columns:
+            agg_map[_sub_col] = "sum"
+    # Storage is inventory-level: keep the last value of the day.
+    if COL_STORAGE in df.columns:
+        agg_map[COL_STORAGE] = "last"
+
     # Keep file locations for the day (Snowflake-only; list column).
     if "FILE_LOCATION" in df.columns:
         agg_map["FILE_LOCATION"] = "last"
@@ -897,6 +1136,80 @@ def _nonzero_mean(s: pd.Series) -> float:
     vals = pd.to_numeric(s, errors="coerce").fillna(0.0)
     vals = vals[vals != 0]
     return float(vals.mean()) if len(vals) else 0.0
+
+
+def _compute_rack_averages(df_prod: pd.DataFrame) -> tuple[float | None, float | None]:
+    """Compute 7-day and MTD averages for Rack/Liftings from historical rows.
+
+    Parameters
+    ----------
+    df_prod : pd.DataFrame
+        The per-product slice *before* forecast rows are appended.  Columns
+        are still in their raw/pre-rename form (e.g. "Rack/Liftings", not
+        "Rack/Lifting").
+
+    Returns
+    -------
+    (avg_7day, avg_mtd) : tuple[float | None, float | None]
+        Both values exclude zeros and NaNs (via _nonzero_mean).
+        Returns None for an average when there is insufficient data.
+
+    Design notes
+    ------------
+    • We consume the RAW column name (COL_RACK_LIFTINGS_RAW = "Rack/Liftings")
+      because this function is called before build_details_view applies the
+      DETAILS_RENAME_MAP that turns "Rack/Liftings" → "Rack/Lifting".
+
+    • Forecast rows are excluded: only SOURCE_TYPE != 'forecast' contributes,
+      so projected future values never inflate these averages.
+
+    • 7 Day Avg  : last 7 calendar rows (sorted by date), zeros excluded.
+      Gives a current-week reference for rack throughput.
+
+    • MTD Avg    : rows from the 1st of the *current calendar month* up to
+      today (UTC date), zeros excluded.  Aligns with standard MTD reporting
+      periods (i.e. the current billing/settlement month).
+    """
+    if df_prod is None or df_prod.empty:
+        return None, None
+
+    # Accept both raw ("Rack/Liftings") and renamed ("Rack/Lifting") columns.
+    rack_col: str | None = None
+    for candidate in (COL_RACK_LIFTINGS_RAW, COL_RACK_LIFTING):
+        if candidate in df_prod.columns:
+            rack_col = candidate
+            break
+
+    if rack_col is None:
+        return None, None
+
+    hist = df_prod.copy()
+    hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
+
+    # Strip forecast-only rows so future projections don't distort the averages.
+    if "SOURCE_TYPE" in hist.columns:
+        hist = hist[hist["SOURCE_TYPE"].astype(str).str.lower() != "forecast"]
+
+    hist = hist.dropna(subset=["Date"]).sort_values("Date")
+    if hist.empty:
+        return None, None
+
+    # --- 7 Day Avg: last 7 historical rows, zeros excluded ---
+    last7 = hist.tail(7)
+    avg_7day_val = _nonzero_mean(last7[rack_col])
+    avg_7day = avg_7day_val if avg_7day_val != 0.0 else None
+
+    # --- MTD Avg: current calendar month to today, zeros excluded ---
+    today_ts = pd.Timestamp.today().normalize()
+    month_start = today_ts.replace(day=1)
+    mtd = hist[(hist["Date"] >= month_start) & (hist["Date"] <= today_ts)]
+    if mtd.empty:
+        avg_mtd = None
+    else:
+        avg_mtd_val = _nonzero_mean(mtd[rack_col])
+        avg_mtd = avg_mtd_val if avg_mtd_val != 0.0 else None
+
+    return avg_7day, avg_mtd
 
 
 def _constant_means_excluding_zeros(
@@ -1291,6 +1604,8 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "updated",
         "Batch",
         "Notes",
+        # Storage: user-editable field persisted to DB as STORAGE_BBL; initialised to 0 if not present
+        COL_STORAGE,
         "FILE_LOCATION",
         COL_VIEW_FILE,
         "Opening Inv",
@@ -1307,6 +1622,9 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
             continue
         if c in always_include or c in df_display.columns:
             desired.append(c)
+        # COL_STORAGE may not exist in df_display yet; always include it
+        elif c == COL_STORAGE:
+            desired.append(c)
 
     out = df_display.copy()
     # Ensure list column exists even in SQLite/forecast rows.
@@ -1317,6 +1635,9 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         out[COL_VIEW_FILE] = False
     else:
         out[COL_VIEW_FILE] = out[COL_VIEW_FILE].fillna(False).astype(bool)
+    # Storage: initialise to NaN for rows where the user has not entered a value.
+    if COL_STORAGE not in out.columns:
+        out[COL_STORAGE] = np.nan
 
     return out[desired].reset_index(drop=True)
 
@@ -1457,6 +1778,11 @@ def display_location_details(
 
             df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
 
+            # Compute rack averages from *historical* rows before forecast rows are
+            # appended.  This prevents future projected values from contaminating
+            # the 7-day and MTD statistics shown in the grid.
+            rack_7day_avg, rack_mtd_avg = _compute_rack_averages(df_prod)
+
             # Forecast should be bounded by the user-selected date range.
             df_all = _extend_with_30d_forecast(
                 df_prod,
@@ -1471,6 +1797,12 @@ def display_location_details(
             df_display = _recalculate_total_closing_inv(df_display)
             df_display = _recalculate_available_space(df_display, safefill=safefill)
             df_display = _recalculate_loadable(df_display, bottom=bottom)
+            # Phase-2 derived columns: computed every render pass so they always
+            # reflect the current Bottom threshold, Storage entries, and historical
+            # rack data without requiring a separate save/reload cycle.
+            df_display = _recalculate_total_inventory(df_display, bottom=bottom)
+            df_display = _recalculate_accounting_inv(df_display)
+            df_display = _fill_rack_averages_per_row(df_display, df_prod)
             cols = [c for c in (["Date", "Location"] + DETAILS_COLS) if c in df_display.columns]
 
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
@@ -1507,9 +1839,50 @@ def display_location_details(
                     before=None,
                 )
 
+                # Phase-2: Total Inventory, Storage, and Accounting Inventory
+                # are grouped immediately after Loadable so the operator sees all
+                # inventory-level metrics in one contiguous block before the flow
+                # columns begin.
+                #
+                # Ordering rationale:
+                #   Loadable  →  Total Inventory  →  Storage  →  Accounting Inv
+                #
+                # Total Inventory (Close + Bottoms) sits next to Loadable
+                # (Close - Bottoms) for easy comparison of usable vs. total stock.
+                # Storage is editable and placed before Accounting Inv so users
+                # can see the immediate impact of their entry on Accounting Inv.
+                anchor_after_loadable = (
+                    COL_LOADABLE if COL_LOADABLE in column_order else
+                    COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else
+                    "Close Inv"
+                )
+                column_order = _ensure_cols_after(
+                    column_order,
+                    required=[COL_TOTAL_INVENTORY],
+                    after=anchor_after_loadable,
+                    before=None,
+                )
+                column_order = _ensure_cols_after(
+                    column_order,
+                    required=[COL_STORAGE],
+                    after=COL_TOTAL_INVENTORY if COL_TOTAL_INVENTORY in column_order else anchor_after_loadable,
+                    before=None,
+                )
+                column_order = _ensure_cols_after(
+                    column_order,
+                    required=[COL_ACCOUNTING_INV],
+                    after=COL_STORAGE if COL_STORAGE in column_order else anchor_after_loadable,
+                    before=None,
+                )
+
                 if COL_VIEW_FILE in column_order:
-                    # Keep View File after Loadable (so Loadable is immediately after Available Space).
-                    anchor = COL_LOADABLE if COL_LOADABLE in column_order else COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else "Close Inv"
+                    # Keep View File after the last Close-Inv-group column.
+                    anchor = (
+                        COL_ACCOUNTING_INV if COL_ACCOUNTING_INV in column_order else
+                        COL_LOADABLE if COL_LOADABLE in column_order else
+                        COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else
+                        "Close Inv"
+                    )
                     column_order = _ensure_cols_after(
                         column_order,
                         required=[COL_VIEW_FILE],
@@ -1525,6 +1898,39 @@ def display_location_details(
                         after=anchor,
                         before=None,
                     )
+
+            # Phase-2: 7 Day Avg and MTD Avg are placed immediately after
+            # Rack/Lifting so operators can compare the actual lifting against
+            # the recent average in a single glance.
+            if COL_RACK_LIFTING in column_order:
+                column_order = _ensure_cols_after(
+                    column_order,
+                    required=[COL_7DAY_AVG_RACK, COL_MTD_AVG_RACK],
+                    after=COL_RACK_LIFTING,
+                    before=None,
+                )
+
+            # Phase-2: Sub-breakdown columns placed after Adjustments.
+            # Force-inserted so they appear even when loading an old stored
+            # column config that pre-dates these columns being added.
+            _sub_breakdown_cols = [
+                COL_TULSA, COL_EL_DORADO, COL_OTHER,
+                COL_ARGENTINE, COL_FROM_327_RECEIPT,
+            ]
+            _sub_anchor = (
+                COL_ADJUSTMENTS if COL_ADJUSTMENTS in column_order else
+                "Adjustments" if "Adjustments" in column_order else
+                COL_PRODUCTION if COL_PRODUCTION in column_order else
+                "Production"
+            )
+            _sub_available = [c for c in _sub_breakdown_cols if c in cols]
+            if _sub_available and _sub_anchor in column_order:
+                column_order = _ensure_cols_after(
+                    column_order,
+                    required=_sub_available,
+                    after=_sub_anchor,
+                    before=None,
+                )
 
             column_order = _insert_fact_columns(column_order, df_cols=list(df_display.columns), show_fact=show_fact)
 
@@ -1548,6 +1954,9 @@ def display_location_details(
                     safefill=safefill,
                     bottom=bottom,
                     ensure_fact_cols=True,
+                    rack_7day_avg=rack_7day_avg,
+                    rack_mtd_avg=rack_mtd_avg,
+                    df_hist=df_prod,
                 )
 
             st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
@@ -1583,12 +1992,16 @@ def display_location_details(
             )
 
             # Recompute inventory on the view df only (do not re-add hidden FACT columns).
+            # Pass the pre-computed rack averages so they stay in sync even after edits.
             recomputed_view = _recalculate_inventory_metrics(
                 edited,
                 id_col="Location",
                 safefill=safefill,
                 bottom=bottom,
                 ensure_fact_cols=False,
+                rack_7day_avg=rack_7day_avg,
+                rack_mtd_avg=rack_mtd_avg,
+                df_hist=df_prod,
             ).reset_index(drop=True)
 
             # Merge the edited view back into the canonical df so edits persist across toggle.
@@ -1601,6 +2014,9 @@ def display_location_details(
                     safefill=safefill,
                     bottom=bottom,
                     ensure_fact_cols=True,
+                    rack_7day_avg=rack_7day_avg,
+                    rack_mtd_avg=rack_mtd_avg,
+                    df_hist=df_prod,
                 ).reset_index(drop=True)
             else:
                 for c in recomputed_view.columns:
