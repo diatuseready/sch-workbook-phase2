@@ -209,10 +209,12 @@ def log_audit(
             SELECT {uid_sql}, {app_sql}, {sid_sql}, PARSE_JSON('{meta_sql}')
             """
         ).collect()
-    except Exception:
+    except Exception as e:
         # Logging must never break the app
-        _remember_logging_error(Exception(traceback.format_exc()))
-        return
+        # _remember_logging_error(Exception(traceback.format_exc()))
+        # return
+        st.error(f"LOGGING FAILED: {str(e)}")
+        raise
 
 
 def log_error(
