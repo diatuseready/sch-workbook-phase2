@@ -395,6 +395,63 @@ def _fill_rack_averages(
     return out
 
 
+def _overlay_rack_edits(
+    df_prod_raw: pd.DataFrame,
+    edited_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return df_prod_raw with Rack/Liftings values overridden by any user edits.
+
+    Used as the ``df_hist`` when computing per-row 7 Day / MTD averages so that:
+
+    1. The DATE FILTER does NOT affect averages.  The DB query always loads
+       at least 90 days of history into ``df_prod_raw`` regardless of the
+       user's display start date; ``edited_df`` only contains the visible
+       (date-filtered) rows so it must NOT be used as the sole history source.
+
+    2. RACK/LIFTING EDITS still propagate live.  For any date present in
+       ``edited_df``, the user's in-session value overwrites the DB value in
+       the history slice that feeds the rolling averages.
+
+    Column-name note: ``df_prod_raw`` uses the raw DB name "Rack/Liftings"
+    (COL_RACK_LIFTINGS_RAW) while ``edited_df`` uses the renamed UI name
+    "Rack/Lifting" (COL_RACK_LIFTING).  Both forms are resolved here so
+    ``_fill_rack_averages_per_row`` always receives the raw-name variant.
+    """
+    if df_prod_raw is None or df_prod_raw.empty:
+        return df_prod_raw
+
+    rack_raw = COL_RACK_LIFTINGS_RAW   # "Rack/Liftings"  (in df_prod_raw)
+    rack_ui  = COL_RACK_LIFTING         # "Rack/Lifting"   (in edited_df)
+
+    hist = df_prod_raw.copy()
+
+    # If the edited df doesn't carry the rack column, nothing to overlay.
+    if edited_df is None or edited_df.empty or rack_ui not in edited_df.columns:
+        return hist
+    if rack_raw not in hist.columns:
+        return hist
+
+    hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
+
+    ev = edited_df[["Date", rack_ui]].copy()
+    ev["Date"] = pd.to_datetime(ev["Date"], errors="coerce")
+    ev = ev.dropna(subset=["Date"])
+    ev[rack_ui] = pd.to_numeric(ev[rack_ui], errors="coerce")
+    # One edited value per date (last row wins if multiple sub-entries on same day).
+    # Build a plain DataFrame {Date, __rack_edit} explicitly so type checkers are happy.
+    _grouped = ev.groupby("Date")[rack_ui].last()   # Series keyed by Date
+    ev_for_merge = pd.DataFrame({"Date": _grouped.index, "__rack_edit": _grouped.values})
+    ev_for_merge["Date"] = pd.to_datetime(ev_for_merge["Date"], errors="coerce")
+
+    # Left-join so only dates already present in df_prod_raw are updated.
+    hist = hist.merge(ev_for_merge, on="Date", how="left")
+    has_edit = hist["__rack_edit"].notna()
+    hist.loc[has_edit, rack_raw] = hist.loc[has_edit, "__rack_edit"]
+    hist = hist.drop(columns=["__rack_edit"])
+
+    return hist
+
+
 def _fill_rack_averages_per_row(
     df: pd.DataFrame,
     df_hist: pd.DataFrame,
@@ -2124,20 +2181,25 @@ def display_location_details(
                 column_config=editor_column_config,
             )
 
-            # Recompute inventory using `edited` as the historical reference so that any
-            # Rack/Lifting edits the user makes to historical rows are immediately reflected
-            # in the 7 Day Avg and MTD Avg columns.  Previously df_prod (original DB data)
-            # was passed, which meant those averages never updated in-session.
-            # _fill_rack_averages_per_row already strips SOURCE_TYPE='forecast' rows and
-            # handles both the raw ("Rack/Liftings") and renamed ("Rack/Lifting") column name,
-            # so passing `edited` here is safe.
+            # Build a merged history for the rack averages:
+            #   • Base  = df_prod  (full 90-day history from the DB, date-filter-independent)
+            #   • Edits = any Rack/Lifting values the user changed in the visible grid
+            # This satisfies two requirements simultaneously:
+            #   1. Changing the date filter (display start date) does NOT shift the averages,
+            #      because df_prod is always loaded with at least 90 days regardless of the
+            #      filter.  Earlier code passed df_hist=edited which only contained the
+            #      displayed rows, so narrowing the filter erased pre-filter history.
+            #   2. Editing a Rack/Lifting cell still propagates live to 7 Day / MTD Avg,
+            #      because _overlay_rack_edits overwrites the matching DB dates with the
+            #      user's in-session values before the averages are recomputed.
+            df_hist_for_avg = _overlay_rack_edits(df_prod, edited)
             recomputed_view = _recalculate_inventory_metrics(
                 edited,
                 id_col="Location",
                 safefill=safefill,
                 bottom=bottom,
                 ensure_fact_cols=False,
-                df_hist=edited,  # use live edited data → averages reflect user's rack edits
+                df_hist=df_hist_for_avg,  # full history + live rack edits → stable & accurate
             ).reset_index(drop=True)
 
             # Merge the edited view back into the canonical df so edits persist across toggle.
