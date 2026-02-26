@@ -48,7 +48,6 @@ from config import (
     COL_GAIN_LOSS_FACT,
     COL_BATCH,
     COL_NOTES,
-    COL_BATCH_BREAKDOWN,
     COL_AVAILABLE_SPACE,
     COL_TOTAL_CLOSING_INV,
     COL_LOADABLE,
@@ -108,7 +107,6 @@ DETAILS_COLS = [
     COL_STORAGE,
     COL_BATCH,
     COL_NOTES,
-    COL_BATCH_BREAKDOWN,
 ]
 
 # UI-only column (not persisted)
@@ -405,16 +403,17 @@ def _fill_rack_averages_per_row(
 
     For each row in ``df`` at date D:
 
-    • 7 Day Avg  – non-zero mean of the 7 most recent *historical* rows
+    • 7 Day Avg  – mean of the 7 most recent *historical* rows
       (SOURCE_TYPE != 'forecast') whose date is ≤ D.  Gives a rolling
       current-week reference rate that advances as dates move forward.
 
-    • MTD Avg    – non-zero mean of *historical* rows whose date falls within
+    • MTD Avg    – mean of *historical* rows whose date falls within
       [1st of D's month, D].  Each row reflects its own month-to-date period
       rather than a single today-anchored constant.
 
-    Both averages exclude zeros and NaNs.  Forecast rows in ``df_hist`` are
-    stripped so projected values never contaminate the statistics.
+    Zeros are included in the averages; only NaN/null values are ignored.
+    Forecast rows in ``df_hist`` are stripped so projected values never
+    contaminate the statistics.
     Shows NaN when there is insufficient history for a given date.
     """
     if df is None or df.empty:
@@ -441,6 +440,16 @@ def _fill_rack_averages_per_row(
         hist = hist[hist["SOURCE_TYPE"].astype(str).str.lower() != "forecast"]
     hist = hist.dropna(subset=["Date"])
     hist[rack_col] = pd.to_numeric(hist[rack_col], errors="coerce")
+
+    # ── KEY: clip to today before aggregating ────────────────────────────────
+    # Many upstream feeds pre-load future-dated rows with SOURCE_TYPE='system'.
+    # These must be removed BEFORE the groupby.sum() so they don't inflate
+    # daily totals for dates near the boundary (e.g. a real row + a stub row
+    # on the same date would otherwise be summed together).
+    today = pd.Timestamp.today().normalize()
+    hist = hist[hist["Date"] <= today]
+    # ─────────────────────────────────────────────────────────────────────────
+
     # Aggregate sub-entries: multiple DB rows for the same date (e.g. 284 + 142 on Feb 10)
     # are summed into a single daily total (426) so that each calendar day counts as
     # exactly ONE data point in both the 7-day window and the MTD window.
@@ -450,7 +459,6 @@ def _fill_rack_averages_per_row(
     hist = hist.sort_values("Date").reset_index(drop=True)
 
     dates = pd.to_datetime(out["Date"], errors="coerce")
-    today = pd.Timestamp.today().normalize()
 
     avg_7day_list: list = []
     avg_mtd_list: list = []
@@ -470,16 +478,22 @@ def _fill_rack_averages_per_row(
 
         h_upto = hist[hist["Date"] <= row_date]
 
-        # 7-day: last 7 historical rows up to this date, non-zero mean.
+        # 7-day: last 7 historical rows up to this date, zeros included.
         last7 = h_upto.tail(7)
-        v7 = _nonzero_mean(last7[rack_col]) if not last7.empty else None
-        avg_7day_list.append(round(float(v7), 2) if v7 else np.nan)
+        if not last7.empty:
+            v7 = last7[rack_col].mean()
+            avg_7day_list.append(round(float(v7), 2) if pd.notna(v7) else np.nan)
+        else:
+            avg_7day_list.append(np.nan)
 
-        # MTD: rows in [1st of row_date's month, row_date], non-zero mean.
+        # MTD: rows in [1st of row_date's month, row_date], zeros included.
         month_start = row_date.replace(day=1)
         mtd = h_upto[h_upto["Date"] >= month_start]
-        vm = _nonzero_mean(mtd[rack_col]) if not mtd.empty else None
-        avg_mtd_list.append(round(float(vm), 2) if vm else np.nan)
+        if not mtd.empty:
+            vm = mtd[rack_col].mean()
+            avg_mtd_list.append(round(float(vm), 2) if pd.notna(vm) else np.nan)
+        else:
+            avg_mtd_list.append(np.nan)
 
     out[COL_7DAY_AVG_RACK] = avg_7day_list
     out[COL_MTD_AVG_RACK] = avg_mtd_list
@@ -958,13 +972,20 @@ def _recalculate_open_close_inv(
 
 
 def _needs_inventory_rerun(before: pd.DataFrame, after: pd.DataFrame) -> bool:
-    """Return True if Opening/Close differ between two dfs (shape-safe)."""
+    """Return True if any displayed-calculated column differs between two dfs (shape-safe).
+
+    Checks:
+    - Opening Inv / Close Inv  – change whenever any flow column (incl. Rack/Lifting) is edited
+    - Accounting Inv           – changes when Storage is edited (Storage does NOT feed Close Inv,
+                                 so without this check a Storage edit would never trigger a rerun)
+    """
     if before is None or after is None:
         return False
     if before.shape[0] != after.shape[0]:
         return True
 
-    for c in ["Opening Inv", "Close Inv"]:
+    watch_cols = ["Opening Inv", "Close Inv", COL_ACCOUNTING_INV]
+    for c in watch_cols:
         if c not in before.columns or c not in after.columns:
             continue
         # The editor may return strings with commas; normalize them before compare.
@@ -1007,7 +1028,6 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str):
                 "It is used to compute Accounting Inventory (Close Inv − Storage)."
             ),
         ),
-        COL_BATCH_BREAKDOWN: st.column_config.TextColumn(COL_BATCH_BREAKDOWN),
         "SOURCE_TYPE": st.column_config.TextColumn("SOURCE_TYPE", disabled=True),
         COL_VIEW_FILE: st.column_config.CheckboxColumn(
             COL_VIEW_FILE,
@@ -1077,8 +1097,6 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         agg_map["Batch"] = "last"
     if "Notes" in df.columns:
         agg_map["Notes"] = "last"
-    if COL_BATCH_BREAKDOWN in df.columns:
-        agg_map[COL_BATCH_BREAKDOWN] = "last"
     if "SOURCE_TYPE" in df.columns:
         agg_map["SOURCE_TYPE"] = "first"
 
@@ -1167,7 +1185,7 @@ def _compute_rack_averages(df_prod: pd.DataFrame) -> tuple[float | None, float |
     Returns
     -------
     (avg_7day, avg_mtd) : tuple[float | None, float | None]
-        Both values exclude zeros and NaNs (via _nonzero_mean).
+        Both values include zeros (NaN/null values are excluded via pandas mean).
         Returns None for an average when there is insufficient data.
 
     Design notes
@@ -1179,11 +1197,19 @@ def _compute_rack_averages(df_prod: pd.DataFrame) -> tuple[float | None, float |
     • Forecast rows are excluded: only SOURCE_TYPE != 'forecast' contributes,
       so projected future values never inflate these averages.
 
-    • 7 Day Avg  : last 7 calendar rows (sorted by date), zeros excluded.
+    • Dates are aggregated (summed) BEFORE sliding windows are applied.
+      A date with multiple sub-entries (e.g. two delivery legs on the same day)
+      counts as exactly ONE data point – matching the behaviour of
+      _fill_rack_averages_per_row and the forecast estimator in
+      _extend_with_30d_forecast.  Without this aggregation, tail(7) could
+      consume multi-entry dates as separate slots and produce a distorted (low)
+      average that no longer matches the "7 Day Avg" column visible in the grid.
+
+    • 7 Day Avg  : last 7 aggregated calendar days (≤ today), zeros included.
       Gives a current-week reference for rack throughput.
 
-    • MTD Avg    : rows from the 1st of the *current calendar month* up to
-      today (UTC date), zeros excluded.  Aligns with standard MTD reporting
+    • MTD Avg    : aggregated rows from the 1st of the *current calendar month*
+      up to today, zeros included.  Aligns with standard MTD reporting
       periods (i.e. the current billing/settlement month).
     """
     if df_prod is None or df_prod.empty:
@@ -1210,20 +1236,36 @@ def _compute_rack_averages(df_prod: pd.DataFrame) -> tuple[float | None, float |
     if hist.empty:
         return None, None
 
-    # --- 7 Day Avg: last 7 historical rows, zeros excluded ---
-    last7 = hist.tail(7)
-    avg_7day_val = _nonzero_mean(last7[rack_col])
-    avg_7day = avg_7day_val if avg_7day_val != 0.0 else None
-
-    # --- MTD Avg: current calendar month to today, zeros excluded ---
+    # Clip to today: upstream feeds may pre-load future-dated system rows.
+    # Without this, tail(7) could land entirely on future stubs.
     today_ts = pd.Timestamp.today().normalize()
+    hist = hist[hist["Date"] <= today_ts]
+    if hist.empty:
+        return None, None
+
+    # ── Aggregate by date ────────────────────────────────────────────────────
+    # Multiple DB rows for the same date (e.g. two sub-entries on Feb 20) are
+    # summed into a single daily total so that each calendar day occupies
+    # exactly ONE slot in the tail(7) window and the MTD window.
+    # This mirrors _fill_rack_averages_per_row and the forecast estimator.
+    hist[rack_col] = pd.to_numeric(hist[rack_col], errors="coerce")
+    hist = hist.groupby("Date", as_index=False)[rack_col].sum()
+    hist = hist.sort_values("Date").reset_index(drop=True)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # --- 7 Day Avg: last 7 aggregated daily rows (≤ today), zeros included ---
+    last7 = hist.tail(7)
+    avg_7day_val = last7[rack_col].mean()
+    avg_7day = float(avg_7day_val) if pd.notna(avg_7day_val) else None
+
+    # --- MTD Avg: current calendar month to today, zeros included ---
     month_start = today_ts.replace(day=1)
     mtd = hist[(hist["Date"] >= month_start) & (hist["Date"] <= today_ts)]
     if mtd.empty:
         avg_mtd = None
     else:
-        avg_mtd_val = _nonzero_mean(mtd[rack_col])
-        avg_mtd = avg_mtd_val if avg_mtd_val != 0.0 else None
+        avg_mtd_val = mtd[rack_col].mean()
+        avg_mtd = float(avg_mtd_val) if pd.notna(avg_mtd_val) else None
 
     return avg_7day, avg_mtd
 
@@ -1238,7 +1280,7 @@ def _constant_means_excluding_zeros(
 
     Rules:
     - Optionally restrict to last N rows (by Date)
-    - Exclude 0-valued days from the mean
+    - Include zeros in the mean (only NaN/null values are excluded)
     """
     if hist is None or hist.empty or not flow_cols:
         return {c: 0.0 for c in (flow_cols or [])}
@@ -1252,7 +1294,8 @@ def _constant_means_excluding_zeros(
         if c not in h.columns:
             out[c] = 0.0
             continue
-        out[c] = _nonzero_mean(h[c])
+        vals = pd.to_numeric(h[c], errors="coerce")
+        out[c] = float(vals.mean()) if vals.notna().any() else 0.0
     return out
 
 
@@ -1270,7 +1313,21 @@ def _make_forecast_flow_estimator(
         return lambda d: dict(const)
 
     if m == "mtd_avg":
-        const = _constant_means_excluding_zeros(hist, flow_cols, tail_n=None)
+        # Filter to current calendar month only (Feb 1 – today), matching
+        # what the "MTD Avg" display column shows. Without this filter, the
+        # forecast was using ALL historical rows (all months), which produced
+        # a different number than the MTD Avg column visible in the grid.
+        _today_ts = pd.Timestamp.today().normalize()
+        _month_start = _today_ts.replace(day=1)
+        _hist_mtd = hist.copy()
+        _hist_mtd["Date"] = pd.to_datetime(_hist_mtd["Date"], errors="coerce")
+        _hist_mtd = _hist_mtd[
+            (_hist_mtd["Date"] >= _month_start) & (_hist_mtd["Date"] <= _today_ts)
+        ]
+        # Fall back to all history if current month has no data yet.
+        if _hist_mtd.empty:
+            _hist_mtd = hist
+        const = _constant_means_excluding_zeros(_hist_mtd, flow_cols, tail_n=None)
         return lambda d: dict(const)
 
     means = _weekday_weighted_means(hist, flow_cols=flow_cols)
@@ -1398,8 +1455,6 @@ def _fill_missing_internal_dates(
             g2["Batch"] = g2["Batch"].fillna("")
         if "Notes" in g2.columns:
             g2["Notes"] = g2["Notes"].fillna("")
-        if COL_BATCH_BREAKDOWN in g2.columns:
-            g2[COL_BATCH_BREAKDOWN] = g2[COL_BATCH_BREAKDOWN].fillna("")
         if "FILE_LOCATION" in g2.columns:
             # Only fill NaNs; keep existing lists.
             g2["FILE_LOCATION"] = g2["FILE_LOCATION"].apply(
@@ -1438,6 +1493,28 @@ def _extend_with_30d_forecast(
     daily = _fill_missing_internal_dates(daily, id_col=id_col, start_date=history_start).sort_values("Date")
     flow_cols = _available_flow_cols(daily)
 
+    # ── HISTORY / FORECAST SPLIT ─────────────────────────────────────────────
+    # Many upstream feeds pre-load future-dated rows with SOURCE_TYPE='system'
+    # (blank SOURCE_OPERATOR, constant scheduled values). These are NOT real
+    # historical measurements. If we include them:
+    #   (a) average calculations (MTD, 7-day) are polluted by future stubs
+    #   (b) last_date lands far in the future → app forecast never fires
+    #
+    # Split daily into:
+    #   • hist_daily    – dates STRICTLY BEFORE today.  today is excluded so
+    #                     the first forecast date becomes TODAY, giving users a
+    #                     rack-lifting estimate for the current day instead of 0.
+    #   • forecast rows – appended from today onwards, replacing any upstream
+    #                     stub rows for today/future with app-computed estimates.
+    # ─────────────────────────────────────────────────────────────────────────
+    _today = pd.Timestamp.today().normalize()
+    daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce")
+    # Use strictly-before-today as the historical window so that today's date is
+    # the FIRST forecast day.  This ensures the rack-lifting estimate (7-day avg,
+    # MTD avg, or weekday-weighted) is shown for today instead of 0
+    # (which is what the upstream system feed typically carries for the current day).
+    hist_daily = daily[daily["Date"] < _today].copy()
+
     forecast_flow_cols = [c for c in [COL_RACK_LIFTINGS_RAW] if c in flow_cols]
 
     if forecast_end is not None:
@@ -1447,7 +1524,12 @@ def _extend_with_30d_forecast(
 
     forecast_method = get_rack_lifting_forecast_method(region=str(region or "Unknown"), location=location)
 
-    for (id_val, product), group in daily.groupby([id_col, "Product"], dropna=False):
+    # Iterate over HISTORICAL groups only (dates < today).
+    # This ensures:
+    #   • last_date = yesterday (or earlier) → _forecast_dates starts at TODAY
+    #   • the estimator trains on confirmed history, not today's stub row
+    #   • prev_close comes from the last real closing inventory
+    for (id_val, product), group in hist_daily.groupby([id_col, "Product"], dropna=False):
         group = group.sort_values("Date")
         last_date = pd.Timestamp(group["Date"].max())
 
@@ -1478,7 +1560,6 @@ def _extend_with_30d_forecast(
                 "updated": 0,
                 "Batch": "",
                 "Notes": "",
-                COL_BATCH_BREAKDOWN: "",
                 "FILE_LOCATION": [],
                 "Open Inv": opening,
                 "Close Inv": closing,
@@ -1487,9 +1568,13 @@ def _extend_with_30d_forecast(
             forecast_rows.append(row)
 
     if not forecast_rows:
-        return daily
+        # No new app-forecast rows needed; return historical data only.
+        return hist_daily
 
-    combined = pd.concat([daily, pd.DataFrame(forecast_rows)], ignore_index=True)
+    # Combine historical rows with app-generated forecast rows.
+    # Future-dated system/feed rows (dates > today) are intentionally dropped
+    # here — the app's computed forecast rows replace them.
+    combined = pd.concat([hist_daily, pd.DataFrame(forecast_rows)], ignore_index=True)
     for c in ["Open Inv", "Close Inv"] + flow_cols:
         if c in combined.columns:
             combined[c] = pd.to_numeric(combined[c]).fillna(0.0)
@@ -1632,6 +1717,11 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "Close Inv",
         "Opening Inv Fact",
         "Close Inv Fact",
+        # Always carry Intransit so _recalculate_total_closing_inv can run even
+        # when "In-Transit" is not in the admin-config visible columns list.
+        # (Total Closing Inv = Close Inv + Intransit; without Intransit the
+        # recalculation guard short-circuits and the column never updates live.)
+        COL_INTRANSIT,
     ]
 
     fact_cols = [c for c in df_display.columns if str(c).endswith(" Fact")]
@@ -1704,13 +1794,23 @@ def display_location_details(
             unsafe_allow_html=True
         )
 
+    # Fetch the forecast method ONCE per location render (same for all products at a location).
+    # This is included in the state_key / df_key so that a change in Admin Config
+    # (e.g. 7_day_avg → mtd_avg) immediately invalidates the cached session-state
+    # dataframe and forces a full rebuild with the new method's values.
+    _forecast_method_for_key = get_rack_lifting_forecast_method(
+        region=active_region, location=str(selected_loc)
+    )
+
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
         with tab:
             # Compute keys early so we can render overlay/result properly.
+            # NOTE: forecast method is embedded so admin-config changes bust the cache.
             state_key = (
                 f"{active_region}_{selected_loc}_{prod_name}"
                 f"|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
+                f"|m={_forecast_method_for_key}"
                 f"|edit"
             )
 
@@ -1814,6 +1914,15 @@ def display_location_details(
                 forecast_end=end_ts,
             )
             df_display, cols = build_details_view(df_all, id_col="Location")
+
+            # Trim the display grid to the user's chosen start date.
+            # The DB query fetches extra history (90 days back) so that
+            # training averages are always complete; that extra history
+            # must not be shown in the grid.
+            _display_start = pd.Timestamp(start_ts).normalize().date()
+            df_display = df_display[
+                df_display["Date"] >= _display_start
+            ].reset_index(drop=True)
 
             df_display = _recalculate_total_closing_inv(df_display)
             df_display = _recalculate_available_space(df_display, safefill=safefill)
@@ -2015,17 +2124,20 @@ def display_location_details(
                 column_config=editor_column_config,
             )
 
-            # Recompute inventory on the view df only (do not re-add hidden FACT columns).
-            # Pass the pre-computed rack averages so they stay in sync even after edits.
+            # Recompute inventory using `edited` as the historical reference so that any
+            # Rack/Lifting edits the user makes to historical rows are immediately reflected
+            # in the 7 Day Avg and MTD Avg columns.  Previously df_prod (original DB data)
+            # was passed, which meant those averages never updated in-session.
+            # _fill_rack_averages_per_row already strips SOURCE_TYPE='forecast' rows and
+            # handles both the raw ("Rack/Liftings") and renamed ("Rack/Lifting") column name,
+            # so passing `edited` here is safe.
             recomputed_view = _recalculate_inventory_metrics(
                 edited,
                 id_col="Location",
                 safefill=safefill,
                 bottom=bottom,
                 ensure_fact_cols=False,
-                rack_7day_avg=rack_7day_avg,
-                rack_mtd_avg=rack_mtd_avg,
-                df_hist=df_prod,
+                df_hist=edited,  # use live edited data → averages reflect user's rack edits
             ).reset_index(drop=True)
 
             # Merge the edited view back into the canonical df so edits persist across toggle.
@@ -2040,7 +2152,7 @@ def display_location_details(
                     ensure_fact_cols=True,
                     rack_7day_avg=rack_7day_avg,
                     rack_mtd_avg=rack_mtd_avg,
-                    df_hist=df_prod,
+                    df_hist=df_prod,  # fresh from DB on fallback rebuild
                 ).reset_index(drop=True)
             else:
                 for c in recomputed_view.columns:

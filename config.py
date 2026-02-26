@@ -62,7 +62,6 @@ COL_PRODUCT = "Product"
 COL_UPDATED = "updated"
 COL_NOTES = "Notes"
 COL_BATCH = "Batch"
-COL_BATCH_BREAKDOWN = "Batch Breakdown"
 
 # Inventory columns
 COL_OPEN_INV_RAW = "Open Inv"

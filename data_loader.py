@@ -26,7 +26,6 @@ from config import (
 
     # Free-text columns
     COL_BATCH,
-    COL_BATCH_BREAKDOWN,
 
     # Flow columns
     COL_BATCH_IN_RAW,
@@ -282,7 +281,6 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
 
     df[COL_BATCH] = _col(raw_df, "BATCH", "").fillna("").astype(str)
-    df[COL_BATCH_BREAKDOWN] = _col(raw_df, "BATCH_BREAKDOWN", "").fillna("").astype(str)
 
     if "updated" in raw_df.columns:
         df["updated"] = pd.to_numeric(_col(raw_df, "updated", 0), errors="coerce").fillna(0).astype(int)
@@ -648,9 +646,6 @@ def persist_details_rows(
         if COL_BATCH in df.columns:
             d["BATCH"] = str(r.get(COL_BATCH) or "")
 
-        if COL_BATCH_BREAKDOWN in df.columns:
-            d["BATCH_BREAKDOWN"] = str(r.get(COL_BATCH_BREAKDOWN) or "")
-
         if system_s:
             d["SOURCE_OPERATOR"] = system_s
             d["SOURCE_SYSTEM"] = system_s
@@ -740,7 +735,6 @@ def persist_details_rows(
                     "MANUAL_OVERRIDE_REASON",
                     "MANUAL_OVERRIDE_USER",
                     "BATCH",
-                    "BATCH_BREAKDOWN",
                 ]
 
                 if system_s:
@@ -932,7 +926,6 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
-        CAST(COALESCE(BATCH_BREAKDOWN, '') AS STRING) as BATCH_BREAKDOWN,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,
@@ -1350,7 +1343,16 @@ def _load_inventory_data_filtered_cached(
     if source == "sqlite":
         import sqlite3
 
-        start_s = pd.Timestamp(start_ts).strftime("%Y-%m-%d")
+        # Always load at least 90 days of history from today, even if the user's
+        # start filter is more recent (e.g. "-3 days").  The forecast averaging
+        # functions (7-day, MTD) need real historical rows to train on; if the
+        # DB query is too narrow the averages and the forecast values change
+        # every time the user adjusts the start date, which is confusing.
+        # The display grid is trimmed to the user's actual start date AFTER
+        # the data is loaded (see display_details_tab in details_tab.py).
+        _today_ts = pd.Timestamp.today().normalize()
+        _training_start = min(pd.Timestamp(start_ts), _today_ts - pd.Timedelta(days=90))
+        start_s = _training_start.strftime("%Y-%m-%d")
         end_s = pd.Timestamp(end_ts).strftime("%Y-%m-%d")
 
         conn = sqlite3.connect(sqlite_db_path)
@@ -1398,8 +1400,11 @@ def _load_inventory_data_filtered_cached(
         "COALESCE(OPERATIONAL_DATE, DATA_DATE) >= %(start)s",
         "COALESCE(OPERATIONAL_DATE, DATA_DATE) <= %(end)s",
     ]
+    # Same 90-day training lookback for Snowflake (mirrors the SQLite fix above).
+    _today_ts_sf = pd.Timestamp.today().normalize()
+    _training_start_sf = min(pd.Timestamp(start_ts), _today_ts_sf - pd.Timedelta(days=90))
     binds: dict[str, object] = {
-        "start": pd.Timestamp(start_ts).strftime("%Y-%m-%d"),
+        "start": _training_start_sf.strftime("%Y-%m-%d"),
         "end": pd.Timestamp(end_ts).strftime("%Y-%m-%d"),
     }
     if region_norm:
@@ -1420,7 +1425,6 @@ def _load_inventory_data_filtered_cached(
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
-        CAST(COALESCE(BATCH_BREAKDOWN, '') AS STRING) as BATCH_BREAKDOWN,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,

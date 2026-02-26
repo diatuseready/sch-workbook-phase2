@@ -23,3 +23,13 @@ forecast_analysis_Rockies.csv
 forecast_analysis_X.csv
 simulate_forecast_table.py
 verify_test_data.py
+diagnose_source_type.py
+extract_rack_liftings.py
+forcst.txt
+FORECASTING_ANALYSIS.md
+FORECASTING_COMPLETE_GUIDE.md
+inventory.db
+RACK_LIFTING_FORECAST_GUIDE.md
+.gitignore
+verify_forecast_logic.py
+rack_liftings_rockies.csv
