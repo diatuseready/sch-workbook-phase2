@@ -337,7 +337,7 @@ def display_data_freshness_cards(
                 <div class="card">
                     <h4 style="color:{PRIMARY_GREEN}; margin-bottom:0.2rem;">{name}</h4>
                     <p style="margin:0; font-size:0.9rem; color:{TEXT_DARK};">
-                        Last Updated: <b>{last_upd}</b><br>
+                        Last Updated (CST): <b>{last_upd}</b><br>
                         Source System: <b>{source_system}</b><br>
                         Status: <span style="color:{color}; font-weight:700;">{status_label}</span>
                         <span style="color:#A0AEC0; font-weight:600;">({raw_status})</span><br>

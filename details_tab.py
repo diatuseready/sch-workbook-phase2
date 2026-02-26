@@ -837,15 +837,18 @@ def _style_source_cells(
         # with future dates AND app-generated forecast rows.
         # Runs last so it wins over every row-level color.
         is_future = row_date is not None and row_date > today
-        if is_future and "Close Inv" in cols:
-            ci_idx = cols.index("Close Inv")
-            raw_val = row.get("Close Inv") if "Close Inv" in row.index else None
-            if raw_val is not None and not (isinstance(raw_val, float) and pd.isna(raw_val)):
-                close_val = _to_float(raw_val)
-                if safefill is not None and close_val > safefill:
-                    styles[ci_idx] = f"background-color: {CLOSE_INV_ABOVE_SAFEFILL_BG};"
-                elif bottom is not None and close_val < bottom:
-                    styles[ci_idx] = f"background-color: {CLOSE_INV_BELOW_BOTTOM_BG};"
+        threshold_target_cols = {"Close Inv", "Total Closing Inv"}
+        if is_future:
+            for target_col in threshold_target_cols:
+                if target_col in cols:
+                    col_idx = cols.index(target_col)
+                    raw_val = row.get(target_col) if target_col in row.index else None
+                    if raw_val is not None and not (isinstance(raw_val, float) and pd.isna(raw_val)):
+                        close_val = _to_float(raw_val)
+                        if safefill is not None and close_val > safefill:
+                            styles[col_idx] = f"background-color: {CLOSE_INV_ABOVE_SAFEFILL_BG};"
+                        elif bottom is not None and close_val < bottom:
+                            styles[col_idx] = f"background-color: {CLOSE_INV_BELOW_BOTTOM_BG};"
         return styles
 
     return df.style.apply(_row_style, axis=1).hide(axis="index")
@@ -1626,6 +1629,7 @@ def _render_threshold_cards(
     c_bottom,
     c_note,
     c_info,
+    display_forecast_method: str | None = None,
 ) -> None:
 
     with c_safefill:
@@ -1666,24 +1670,17 @@ def _render_threshold_cards(
         )
 
     with c_info:
-        pass
-        # st.markdown(
-        #     """
-        #     <div style="font-size:0.72rem; line-height:1.55; margin-top:0.25rem;">
-        #       <span style="
-        #         display:inline-block; width:10px; height:10px;
-        #         background:#ffb3b3; border:1px solid #ccc;
-        #         border-radius:2px; margin-right:4px;
-        #       "></span>Above SafeFill<br>
-        #       <span style="
-        #         display:inline-block; width:10px; height:10px;
-        #         background:#ffe0b2; border:1px solid #ccc;
-        #         border-radius:2px; margin-right:4px;
-        #       "></span>Below Bottom
-        #     </div>
-        #     """,
-        #     unsafe_allow_html=True,
-        # )
+        method = "—" if not display_forecast_method else display_forecast_method
+ 
+        st.markdown(
+            f"""
+            <div class="mini-card" style="margin-bottom:1rem;">
+                <p class="label">Forecast Method</p>
+                <p class="value" style="font-size:0.95rem; font-weight:700;">{method}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str]) -> pd.DataFrame:
@@ -1780,6 +1777,8 @@ def display_location_details(
         st.info("No products available for the selected location.")
         return
 
+    forecast_method = get_rack_lifting_forecast_method(region=str(active_region or "Unknown"), location=selected_loc)
+
     c_toggle, c_loc, _ = st.columns([5, 5, 1])
     with c_toggle:
         show_fact = st.toggle(
@@ -1857,7 +1856,7 @@ def display_location_details(
             )
 
             # Threshold cards + Enable-Save toggle + Save button on the same row.
-            c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([2, 2, 3, 0.7, 1.3, 2])
+            c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([1.75, 1.75, 3, 1.2, 1.3, 2])
             _render_threshold_cards(
                 bottom=bottom,
                 safefill=safefill,
@@ -1866,6 +1865,7 @@ def display_location_details(
                 c_bottom=c_bt,
                 c_note=c_note,
                 c_info=c_info,
+                display_forecast_method=forecast_method,
             )
 
             enable_key = f"details_enable_save|{active_region}|{selected_loc}|{prod_name}"
