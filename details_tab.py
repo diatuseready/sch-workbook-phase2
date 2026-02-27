@@ -1755,6 +1755,10 @@ def _render_threshold_cards(
 
 def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str]) -> pd.DataFrame:
     # Keep any flow columns that might exist, even if not currently visible.
+    # Also include all columns that _recalculate_inventory_metrics may add
+    # to the canonical df — this prevents the stale-cols check from dropping
+    # them on the next render, which would trigger a frozen-base rebuild and
+    # reset the data_editor widget (losing the user's first edit).
     extra = [
         "Production",
         "Adjustments",
@@ -1766,6 +1770,14 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "Transfers",
         "Rack/Lifting",
         "Batch",
+        # Calculated columns added by _recalculate_inventory_metrics:
+        COL_TOTAL_CLOSING_INV,
+        COL_AVAILABLE_SPACE,
+        COL_LOADABLE,
+        COL_TOTAL_INVENTORY,
+        COL_ACCOUNTING_INV,
+        COL_7DAY_AVG_RACK,
+        COL_MTD_AVG_RACK,
     ]
 
     base = [
@@ -2247,22 +2259,42 @@ def display_location_details(
             frozen_base = st.session_state[_frozen_base_key]
 
             # Guard: if view_cols changed within the same ver (e.g. rare schema event)
-            # refresh the snapshot so column mismatch doesn't crash data_editor.
+            # do a version bump + rerun so both the frozen base AND the cached
+            # Styler are cleanly rebuilt.  Previously this guard silently replaced
+            # the frozen base in-place which changed the data hash and caused
+            # Streamlit's data_editor to reset its editing delta (losing user's
+            # first edit).  A full ver-bump guarantees a fresh, consistent pair
+            # of (frozen_base, styled) objects keyed to the new widget version.
             if list(frozen_base.columns) != list(
                 st.session_state[df_key].loc[:, view_cols].columns
             ):
-                st.session_state[_frozen_base_key] = (
-                    st.session_state[df_key].loc[:, view_cols].copy().reset_index(drop=True)
-                )
-                frozen_base = st.session_state[_frozen_base_key]
+                st.session_state[ver_key] = _ver_now + 1
+                st.rerun()
 
-            styled = _style_source_cells(
-                frozen_base,
-                locked_cols,
-                fact_reference=(st.session_state[df_key] if not bool(show_fact) else None),
-                safefill=safefill,
-                bottom=bottom,
-            )
+            # ── Frozen Styler for the editor widget ──────────────────────────
+            # Cache the Styler alongside the frozen base.  A freshly-created
+            # Styler on each render has different internal state (UUID, closure
+            # identities) which can cause Streamlit's element-ID hash to
+            # change, silently resetting the editing delta and making the
+            # first user edit appear to vanish.  By reusing the *exact same*
+            # Styler Python object across reruns the serialised proto is
+            # byte-identical → stable element ID → widget keeps its edits.
+            # ──────────────────────────────────────────────────────────────────
+            _frozen_styler_key = f"{widget_scope_key}__fstyler_v{_ver_now}"
+
+            if _frozen_styler_key not in st.session_state:
+                # New version or first load: create and cache the Styler.
+                _prev_styler_key = f"{widget_scope_key}__fstyler_v{_ver_now - 1}"
+                st.session_state.pop(_prev_styler_key, None)
+                st.session_state[_frozen_styler_key] = _style_source_cells(
+                    frozen_base,
+                    locked_cols,
+                    fact_reference=(st.session_state[df_key] if not bool(show_fact) else None),
+                    safefill=safefill,
+                    bottom=bottom,
+                )
+
+            styled = st.session_state[_frozen_styler_key]
 
             editor_column_order = [c for c in column_order if c in frozen_base.columns]
             editor_column_config = {k: v for k, v in column_config.items() if k in editor_column_order}
