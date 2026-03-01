@@ -150,6 +150,21 @@ def apply_custom_css():
         color: {PRIMARY_GREEN};
         margin: 0.15rem 0 0 0;
     }}
+
+    /* Transparent icon buttons (Reset ↺ and Formulas ℹ️) —
+       targets any stColumn whose subtree contains a .transparent-icon marker */
+    [data-testid="stColumn"]:has(.transparent-icon) button {{
+        background: transparent !important;
+        border: 1px solid #000 !important;
+        box-shadow: none !important;
+        color: {TEXT_DARK} !important;
+        padding: 6px 14px !important;
+        font-size: 14px !important;
+    }}
+    [data-testid="stColumn"]:has(.transparent-icon) button:hover {{
+        opacity: 0.6 !important;
+        background: transparent !important;
+    }}
     </style>
     """
     st.markdown(css_style, unsafe_allow_html=True)

@@ -17,6 +17,7 @@ from config import (
     COL_AVAILABLE_FACT,
     COL_AVAILABLE_SPACE,
     COL_BATCH,
+    COL_BATCH_BREAKDOWN,
     COL_BATCH_IN,
     COL_BATCH_IN_FACT,
     COL_BATCH_IN_FACT_RAW,
@@ -63,7 +64,7 @@ from config import (
     DETAILS_RENAME_MAP,
     ROLE_DISPLAY,
 )
-from data_loader import persist_details_rows, get_user_role
+from data_loader import persist_details_rows, get_user_role, load_filtered_inventory_data, _load_inventory_data_filtered_cached
 from ui_components import _render_blocking_overlay, _render_threshold_cards, _view_files_dialog
 from utils import dynamic_input_data_editor, _to_float, _to_numeric_series, _sum_row
 
@@ -102,6 +103,7 @@ DETAILS_COLS = [
     COL_FROM_327_RECEIPT,
     COL_STORAGE,
     COL_BATCH,
+    COL_BATCH_BREAKDOWN,
     COL_NOTES,
 ]
 
@@ -133,8 +135,9 @@ OUTFLOW_COLS = [COL_BATCH_OUT_RAW, COL_RACK_LIFTINGS_RAW, COL_PIPELINE_OUT]
 NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
 
 # Post-rename display names — used in _recalculate_open_close_inv
-DISPLAY_INFLOW_COLS = [COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION]    # Receipts, Pipeline In, Production
-DISPLAY_OUTFLOW_COLS = [COL_BATCH_OUT, COL_RACK_LIFTING, COL_PIPELINE_OUT]  # Deliveries, Rack/Lifting, Pipeline Out
+DISPLAY_INFLOW_COLS = [COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION,
+                       COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_FROM_327_RECEIPT]
+DISPLAY_OUTFLOW_COLS = [COL_BATCH_OUT, COL_RACK_LIFTING, COL_PIPELINE_OUT, COL_ARGENTINE]
 DISPLAY_NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
 
 # ---------------------------------------------------------------------------
@@ -253,13 +256,13 @@ def _recalculate_open_close_inv(df: pd.DataFrame, *, id_col: str) -> pd.DataFram
 
 
 def _recalculate_total_closing_inv(df: pd.DataFrame) -> pd.DataFrame:
-    """Total Closing Inv = Close Inv + Intransit."""
+    """Total Closing Inv = Available + Intransit."""
     if df is None or df.empty:
         return df
     out = df.copy()
-    close = _to_numeric_series(out["Close Inv"]).fillna(0.0) if "Close Inv" in out.columns else pd.Series(0.0, index=out.index)
+    available = _to_numeric_series(out[COL_AVAILABLE]).fillna(0.0) if COL_AVAILABLE in out.columns else pd.Series(0.0, index=out.index)
     intransit = _to_numeric_series(out[COL_INTRANSIT]).fillna(0.0) if COL_INTRANSIT in out.columns else pd.Series(0.0, index=out.index)
-    out[COL_TOTAL_CLOSING_INV] = (close.astype(float) + intransit.astype(float)).round(2)
+    out[COL_TOTAL_CLOSING_INV] = (available.astype(float) + intransit.astype(float)).round(2)
     return out
 
 
@@ -284,28 +287,28 @@ def _recalculate_loadable(df: pd.DataFrame, *, bottom: float | None) -> pd.DataF
 
 
 def _recalculate_total_inventory(df: pd.DataFrame, *, bottom: float | None) -> pd.DataFrame:
-    """Total Inventory = Available + Bottom."""
+    """Total Inventory = Close Inv + Bottom."""
     if df is None or df.empty:
         return df
     out = df.copy()
-    if COL_AVAILABLE not in out.columns or bottom is None:
+    if "Close Inv" not in out.columns or bottom is None:
         out[COL_TOTAL_INVENTORY] = np.nan
         return out
-    avail = _to_numeric_series(out[COL_AVAILABLE]).fillna(0.0)
-    out[COL_TOTAL_INVENTORY] = (avail.astype(float) + float(bottom)).round(2)
+    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
+    out[COL_TOTAL_INVENTORY] = (close.astype(float) + float(bottom)).round(2)
     return out
 
 
 def _recalculate_accounting_inv(df: pd.DataFrame) -> pd.DataFrame:
-    """Accounting Inventory = Available − Storage."""
-    if df is None or df.empty or COL_AVAILABLE not in df.columns:
+    """Accounting Inventory = Close Inv − Storage."""
+    if df is None or df.empty or "Close Inv" not in df.columns:
         return df
     out = df.copy()
     if COL_STORAGE not in out.columns:
         out[COL_STORAGE] = np.nan
-    available = _to_numeric_series(out[COL_AVAILABLE]).fillna(0.0)
+    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
     storage = _to_numeric_series(out[COL_STORAGE]).fillna(0.0)
-    out[COL_ACCOUNTING_INV] = (available.astype(float) - storage.astype(float)).round(2)
+    out[COL_ACCOUNTING_INV] = (close.astype(float) - storage.astype(float)).round(2)
     return out
 
 
@@ -545,6 +548,8 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         agg_map["updated"] = "max"
     if "Batch" in df.columns:
         agg_map["Batch"] = "last"
+    if COL_BATCH_BREAKDOWN in df.columns:
+        agg_map[COL_BATCH_BREAKDOWN] = "last"
     if "Notes" in df.columns:
         agg_map["Notes"] = "last"
     if "SOURCE_TYPE" in df.columns:
@@ -628,6 +633,8 @@ def _fill_missing_internal_dates(
             g2["SOURCE_TYPE"] = g2["SOURCE_TYPE"].fillna("")
         if "Batch" in g2.columns:
             g2["Batch"] = g2["Batch"].fillna("")
+        if COL_BATCH_BREAKDOWN in g2.columns:
+            g2[COL_BATCH_BREAKDOWN] = g2[COL_BATCH_BREAKDOWN].fillna("")
         if "Notes" in g2.columns:
             g2["Notes"] = g2["Notes"].fillna("")
         if "FILE_LOCATION" in g2.columns:
@@ -714,7 +721,7 @@ def build_details_view(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     keep = [c for c in df.columns if c in display_set or c in fact_set or c in _TRACKING_COLS]
     df = df[keep].copy()
 
-    no_round = {"Date", id_col, "Product", "Notes", "Batch", "updated", "FILE_LOCATION", "SOURCE_TYPE"}
+    no_round = {"Date", id_col, "Product", "Notes", "Batch", COL_BATCH_BREAKDOWN, "updated", "FILE_LOCATION", "SOURCE_TYPE"}
     for c in df.columns:
         if c not in no_round and pd.api.types.is_numeric_dtype(df[c]):
             df[c] = df[c].round(2)
@@ -758,6 +765,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
+        COL_BATCH_BREAKDOWN: st.column_config.TextColumn(COL_BATCH_BREAKDOWN),
         "Notes": st.column_config.TextColumn("Notes"),
         COL_STORAGE: st.column_config.NumberColumn(
             COL_STORAGE, disabled=False, format=NUM_FMT,
@@ -888,57 +896,18 @@ def _insert_fact_columns(column_order: list[str], *, df_cols: list[str], show_fa
 def _build_column_order(df: pd.DataFrame, *, visible: list[str], show_fact: bool) -> list[str]:
     """Build the display column order for the details editor.
 
-    Starts from the admin-configured visible list, then inserts derived
-    and fact columns at their correct positions.
+    Respects the admin-configured visible list exactly. The only
+    post-processing is:
+      1. Date is always first.
+      2. Fact columns (when toggled on) are inserted right after their
+         paired base column.
     """
     df_cols = set(df.columns)
 
-    # Base: visible columns that exist in the df
-    order = [c for c in visible if c in df_cols]
-
-    # Derived inventory metrics after "Close Inv" in a fixed sequence
-    if "Close Inv" in order:
-        for col, preferred_after in [
-            (COL_TOTAL_CLOSING_INV, "Close Inv"),
-            (COL_AVAILABLE_SPACE, COL_TOTAL_CLOSING_INV),
-            (COL_LOADABLE, COL_AVAILABLE_SPACE),
-            (COL_TOTAL_INVENTORY, COL_LOADABLE),
-            (COL_STORAGE, COL_TOTAL_INVENTORY),
-            (COL_ACCOUNTING_INV, COL_STORAGE),
-        ]:
-            if col in visible and col in df_cols:
-                actual_after = preferred_after if preferred_after in order else "Close Inv"
-                order = _ensure_cols_after(order, required=[col], after=actual_after)
-
-        # View File after the last Close Inv group column
-        if COL_VIEW_FILE in visible and COL_VIEW_FILE in df_cols:
-            close_group = [COL_ACCOUNTING_INV, COL_STORAGE, COL_TOTAL_INVENTORY,
-                           COL_LOADABLE, COL_AVAILABLE_SPACE, COL_TOTAL_CLOSING_INV, "Close Inv"]
-            anchor = next((c for c in close_group if c in order), "Close Inv")
-            order = _ensure_cols_after(order, required=[COL_VIEW_FILE], after=anchor)
-
-        # Batch after View File (or the last Close Inv group column)
-        if "Batch" in visible and "Batch" in df_cols:
-            batch_anchor = COL_VIEW_FILE if COL_VIEW_FILE in order else next(
-                (c for c in [COL_ACCOUNTING_INV, COL_STORAGE, COL_LOADABLE,
-                             COL_AVAILABLE_SPACE, COL_TOTAL_CLOSING_INV, "Close Inv"] if c in order),
-                "Close Inv",
-            )
-            order = _ensure_cols_after(order, required=["Batch"], after=batch_anchor)
-
-    # Rack averages after Rack/Lifting
-    if COL_RACK_LIFTING in order:
-        avg_cols = [c for c in [COL_7DAY_AVG_RACK, COL_MTD_AVG_RACK] if c in visible and c in df_cols]
-        if avg_cols:
-            order = _ensure_cols_after(order, required=avg_cols, after=COL_RACK_LIFTING)
-
-    # Sub-breakdown columns after Adjustments (Production as fallback)
-    sub_cols = [c for c in [COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_ARGENTINE, COL_FROM_327_RECEIPT]
-                if c in visible and c in df_cols]
-    if sub_cols:
-        sub_anchor = next((c for c in [COL_ADJUSTMENTS, COL_PRODUCTION] if c in order), None)
-        if sub_anchor:
-            order = _ensure_cols_after(order, required=sub_cols, after=sub_anchor)
+    # Use the admin-configured order exactly, filtering to columns that exist
+    order = [c for c in visible if c in df_cols and c != "Date"]
+    if "Date" in df_cols:
+        order = ["Date"] + order
 
     # Fact columns after their base columns (only when Terminal Feed is on)
     if show_fact:
@@ -1061,11 +1030,9 @@ def display_location_details(
     )
     visible = get_visible_columns(region=active_region, location=str(selected_loc))
 
-    # Terminal Feed toggle + location label
-    c_toggle, c_loc, _ = st.columns([5, 5, 1])
+    # Terminal Feed toggle + location label + Reset / Formulas icons
+    c_toggle, c_loc, c_reset_loc, c_formulas_loc = st.columns([4.5, 4.5, 0.5, 0.5])
     with c_toggle:
-        # Key does NOT include show_fact so the editor key stays stable across toggles.
-        # Toggling only changes column_order, preserving any in-progress edits.
         show_fact = st.toggle(
             "Show Terminal Feed",
             value=False,
@@ -1077,6 +1044,50 @@ def display_location_details(
             f"<h1 style='color: green; font-weight: 700; font-size: 1.2rem'>{selected_loc}</h1>",
             unsafe_allow_html=True,
         )
+    with c_reset_loc:
+        st.markdown('<div class="transparent-icon"></div>', unsafe_allow_html=True)
+        reset_clicked = st.button(
+            "↺", key=f"reset_{active_region}_{selected_loc}",
+            help="Discard unsaved changes and reload data from the database.",
+        )
+    with c_formulas_loc:
+        st.markdown('<div class="transparent-icon"></div>', unsafe_allow_html=True)
+        with st.popover("ℹ️"):
+            st.markdown(
+                "**Calculated Column Formulas**\n\n"
+                "| Column | Formula |\n"
+                "|---|---|\n"
+                "| **Opening Inv** | Previous day's Close Inv |\n"
+                "| **Close Inv** | Opening Inv + Receipts + Pipeline In + Production "
+                "− Deliveries − Rack/Lifting − Pipeline Out "
+                "+ Adjustments + Gain/Loss + Transfers "
+                "+ Tulsa + El Dorado + Other − Argentine + From 327 Receipt |\n"
+                "| **Total Closing Inv** | Available + Intransit |\n"
+                "| **Available Space** | SafeFill − Close Inv |\n"
+                "| **Loadable** | Close Inv − Bottom |\n"
+                "| **Total Inventory** | Close Inv + Bottom |\n"
+                "| **Accounting Inv** | Close Inv − Storage |\n"
+                "| **7 Day Avg** | 7-day rolling average of Rack/Lifting |\n"
+                "| **MTD Avg** | Month-to-date average of Rack/Lifting |",
+            )
+
+    # Handle reset at location level (clears all product tabs)
+    if reset_clicked:
+        _load_inventory_data_filtered_cached.clear()
+        details_cache_key = f"df_details|{active_region}"
+        fresh_filters = {
+            "active_region": active_region,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "selected_loc": selected_loc,
+            "loc_col": "Location",
+        }
+        st.session_state[details_cache_key] = load_filtered_inventory_data(fresh_filters)
+        loc_prefix = f"{active_region}_{selected_loc}_"
+        for k in list(st.session_state.keys()):
+            if str(k).startswith(loc_prefix):
+                st.session_state.pop(k, None)
+        st.rerun()
 
     for i, tab in enumerate(st.tabs(products)):
         prod_name = products[i]
@@ -1127,8 +1138,8 @@ def display_location_details(
                 region=active_region, location=str(selected_loc), product=str(prod_name),
             )
 
-            # ── Header row: threshold cards + Enable Save + Save button ──────
-            c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([1.75, 1.75, 3, 1.2, 1.3, 2])
+            # ── Header row: threshold cards + Enable Save + Save button ──
+            c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([1.75, 1.75, 2.7, 1.2, 1.3, 2.3])
             _render_threshold_cards(
                 bottom=bottom, safefill=safefill, note=note,
                 c_safefill=c_sf, c_bottom=c_bt, c_note=c_note, c_info=c_info,
@@ -1155,7 +1166,6 @@ def display_location_details(
                     metadata={"region": active_region, "scope": "location",
                               "location": selected_loc, "product": prod_name},
                 )
-
             # ── Load and prepare data (only on first render for this state_key) ──
             df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
 

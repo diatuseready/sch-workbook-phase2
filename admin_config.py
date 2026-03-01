@@ -16,14 +16,17 @@ from config import (
     SNOWFLAKE_WAREHOUSE,
     RACK_LIFTING_FORECAST_METHOD_DEFAULT,
     RACK_LIFTING_FORECAST_METHODS,
+    INPUT_INCOMING_COLS,
+    INPUT_OUTGOING_COLS,
+    INPUT_ADJUSTMENT_COLS,
+    CALCULATED_COLS,
+    MISC_COLS,
 )
 from data_loader import get_snowflake_session, load_region_location_pairs
 
 
 def _to_float_or_none(x):
-    """Best-effort parse to float; return None if blank/invalid.
-    Strips comma thousands-separators (e.g. '1,200' → 1200.0).
-    """
+    """Best-effort parse to float; return None if blank/invalid."""
     if isinstance(x, str):
         x = x.replace(",", "").strip()
     v = pd.to_numeric(pd.Series([x]), errors="coerce").iloc[0]
@@ -42,6 +45,44 @@ class Scope:
     location: str | None
     product: str | None
 
+
+# ---------------------------------------------------------------------------
+# Column group mapping for the admin column-order editor
+# ---------------------------------------------------------------------------
+
+_ADMIN_GROUP_MAP: dict[str, str] = {}
+for _col in INPUT_INCOMING_COLS:
+    _ADMIN_GROUP_MAP[str(_col)] = "Input – Incoming"
+for _col in INPUT_OUTGOING_COLS:
+    _ADMIN_GROUP_MAP[str(_col)] = "Input – Outgoing"
+for _col in INPUT_ADJUSTMENT_COLS:
+    _ADMIN_GROUP_MAP[str(_col)] = "Input – Adjustment"
+for _col in CALCULATED_COLS:
+    _ADMIN_GROUP_MAP[str(_col)] = "Calculated"
+for _col in MISC_COLS:
+    _ADMIN_GROUP_MAP[str(_col)] = "Misc"
+_ADMIN_GROUP_MAP["View File"] = "Misc"
+
+# All columns the admin can configure (Date is always forced first — excluded here)
+_ALL_CONFIGURABLE_COLS: list[str] = [
+    # Calculated
+    "Opening Inv", "Close Inv", "Total Closing Inv", "Available Space",
+    "Loadable", "Total Inventory", "Accounting Inventory", "7 Day Avg", "MTD Avg",
+    # Input – Incoming
+    "Receipts", "Pipeline In", "Production",
+    # Input – Outgoing
+    "Deliveries", "Rack/Lifting", "Pipeline Out",
+    # Input – Adjustment
+    "Adjustments", "Gain/Loss", "Transfers",
+    # Misc
+    "Available", "Intransit", "Storage",
+    "View File", "Batch", "Batch Breakdown", "Notes",
+    "Tulsa", "El Dorado", "Other", "Argentine", "From 327 Receipt",
+]
+
+# ---------------------------------------------------------------------------
+# Default visible columns (Date is always first; admins can customize the rest)
+# ---------------------------------------------------------------------------
 
 DEFAULT_VISIBLE_COLUMNS = [
     "Date",
@@ -72,10 +113,9 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Other",
     "Argentine",
     "From 327 Receipt",
-    "Batch Breakdown",
     "Batch",
-    "Notes",
     "Batch Breakdown",
+    "Notes",
 ]
 
 
@@ -98,7 +138,6 @@ def _new_row(*, region: str, location: str | None, product: str | None) -> dict:
         "NOTE": None,
         "DEFAULT_START_DAYS": -10,
         "DEFAULT_END_DAYS": 30,
-        # Details forecast behavior
         "RACK_LIFTING_FORECAST_METHOD": RACK_LIFTING_FORECAST_METHOD_DEFAULT,
     }
 
@@ -112,11 +151,10 @@ def ensure_admin_config_table_sqlite():
     cur.execute(f"PRAGMA table_info({SQLITE_ADMIN_CONFIG_TABLE})")
     existing_info = cur.fetchall()
     existing_cols = {r[1] for r in existing_info}
-    pk_cols = [r[1] for r in existing_info if int(r[5] or 0) > 0]  # (cid,name,type,notnull,dflt,pk)
+    pk_cols = [r[1] for r in existing_info if int(r[5] or 0) > 0]
 
     needs_migration = False
     if existing_info:
-        # Old schema did not have PRODUCT and PK did not include it.
         if "PRODUCT" not in existing_cols:
             needs_migration = True
         elif set(pk_cols) == {"REGION", "LOCATION"}:
@@ -152,19 +190,11 @@ def ensure_admin_config_table_sqlite():
             cur.execute(
                 f"""
                 INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
-                (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
-                SELECT
-                    REGION,
-                    LOCATION,
-                    '*',
-                    VISIBLE_COLUMNS_JSON,
-                    BOTTOM,
-                    SAFEFILL,
-                    NULL,
-                    DEFAULT_START_DAYS,
-                    DEFAULT_END_DAYS,
-                    '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}',
-                    UPDATED_AT
+                (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE,
+                 DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
+                SELECT REGION, LOCATION, '*', VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NULL,
+                       DEFAULT_START_DAYS, DEFAULT_END_DAYS,
+                       '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}', UPDATED_AT
                 FROM {old}
                 """
             )
@@ -172,26 +202,17 @@ def ensure_admin_config_table_sqlite():
             cur.execute(
                 f"""
                 INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
-                (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
-                SELECT
-                    REGION,
-                    LOCATION,
-                    '*',
-                    VISIBLE_COLUMNS_JSON,
-                    BOTTOM,
-                    SAFEFILL,
-                    NULL,
-                    DEFAULT_START_DAYS,
-                    DEFAULT_END_DAYS,
-                    '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}',
-                    datetime('now')
+                (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE,
+                 DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
+                SELECT REGION, LOCATION, '*', VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NULL,
+                       DEFAULT_START_DAYS, DEFAULT_END_DAYS,
+                       '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}', datetime('now')
                 FROM {old}
                 """
             )
 
         cur.execute(f"DROP TABLE {old}")
     else:
-        # Fresh install or already migrated.
         cur.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {SQLITE_ADMIN_CONFIG_TABLE} (
@@ -235,16 +256,9 @@ def ensure_admin_config_table_sqlite():
 @st.cache_data(ttl=60, show_spinner=False)
 def load_admin_config_df() -> pd.DataFrame:
     cols = [
-        "REGION",
-        "LOCATION",
-        "PRODUCT",
-        "VISIBLE_COLUMNS_JSON",
-        "BOTTOM",
-        "SAFEFILL",
-        "NOTE",
-        "DEFAULT_START_DAYS",
-        "DEFAULT_END_DAYS",
-        "RACK_LIFTING_FORECAST_METHOD",
+        "REGION", "LOCATION", "PRODUCT", "VISIBLE_COLUMNS_JSON",
+        "BOTTOM", "SAFEFILL", "NOTE", "DEFAULT_START_DAYS",
+        "DEFAULT_END_DAYS", "RACK_LIFTING_FORECAST_METHOD",
     ]
 
     if DATA_SOURCE == "sqlite":
@@ -256,7 +270,6 @@ def load_admin_config_df() -> pd.DataFrame:
         conn.close()
         return df
 
-    # Snowflake: best-effort schema evolution
     session = get_snowflake_session()
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
@@ -268,18 +281,18 @@ def load_admin_config_df() -> pd.DataFrame:
         ).collect()
         session.sql(f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} SET PRODUCT='*' WHERE PRODUCT IS NULL").collect()
         session.sql(
-            f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} SET RACK_LIFTING_FORECAST_METHOD='{RACK_LIFTING_FORECAST_METHOD_DEFAULT}' "
+            f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} "
+            f"SET RACK_LIFTING_FORECAST_METHOD='{RACK_LIFTING_FORECAST_METHOD_DEFAULT}' "
             f"WHERE RACK_LIFTING_FORECAST_METHOD IS NULL"
         ).collect()
     except Exception:
-        # Don't block UI if the executing role doesn't have DDL rights.
         pass
 
-    # Coalesce older rows.
     query = (
         f"SELECT REGION, LOCATION, COALESCE(PRODUCT, '*') AS PRODUCT, "
         f"VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, "
-        f"COALESCE(RACK_LIFTING_FORECAST_METHOD, '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}') AS RACK_LIFTING_FORECAST_METHOD "
+        f"COALESCE(RACK_LIFTING_FORECAST_METHOD, '{RACK_LIFTING_FORECAST_METHOD_DEFAULT}') "
+        f"AS RACK_LIFTING_FORECAST_METHOD "
         f"FROM {SNOWFLAKE_ADMIN_CONFIG_TABLE}"
     )
     return session.sql(query).to_pandas()
@@ -294,7 +307,8 @@ def _persist_sqlite(row: dict):
     cur.execute(
         f"""
         INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
-        (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
+        (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE,
+         DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(REGION, LOCATION, PRODUCT) DO UPDATE SET
             VISIBLE_COLUMNS_JSON=excluded.VISIBLE_COLUMNS_JSON,
@@ -307,15 +321,9 @@ def _persist_sqlite(row: dict):
             UPDATED_AT=datetime('now')
         """,
         (
-            row["REGION"],
-            row["LOCATION"],
-            row["PRODUCT"],
-            row.get("VISIBLE_COLUMNS_JSON"),
-            row.get("BOTTOM"),
-            row.get("SAFEFILL"),
-            row.get("NOTE"),
-            row.get("DEFAULT_START_DAYS"),
-            row.get("DEFAULT_END_DAYS"),
+            row["REGION"], row["LOCATION"], row["PRODUCT"],
+            row.get("VISIBLE_COLUMNS_JSON"), row.get("BOTTOM"), row.get("SAFEFILL"),
+            row.get("NOTE"), row.get("DEFAULT_START_DAYS"), row.get("DEFAULT_END_DAYS"),
             row.get("RACK_LIFTING_FORECAST_METHOD"),
         ),
     )
@@ -327,7 +335,6 @@ def _persist_snowflake(row: dict):
     session = get_snowflake_session()
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
-    # Best-effort schema evolution.
     try:
         session.sql(f"ALTER TABLE {SNOWFLAKE_ADMIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS PRODUCT STRING").collect()
         session.sql(f"ALTER TABLE {SNOWFLAKE_ADMIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS NOTE STRING").collect()
@@ -336,7 +343,8 @@ def _persist_snowflake(row: dict):
         ).collect()
         session.sql(f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} SET PRODUCT='*' WHERE PRODUCT IS NULL").collect()
         session.sql(
-            f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} SET RACK_LIFTING_FORECAST_METHOD='{RACK_LIFTING_FORECAST_METHOD_DEFAULT}' "
+            f"UPDATE {SNOWFLAKE_ADMIN_CONFIG_TABLE} "
+            f"SET RACK_LIFTING_FORECAST_METHOD='{RACK_LIFTING_FORECAST_METHOD_DEFAULT}' "
             f"WHERE RACK_LIFTING_FORECAST_METHOD IS NULL"
         ).collect()
     except Exception:
@@ -394,19 +402,17 @@ def _persist_snowflake(row: dict):
         RACK_LIFTING_FORECAST_METHOD = s.RACK_LIFTING_FORECAST_METHOD,
         UPDATED_AT = CURRENT_TIMESTAMP()
     WHEN NOT MATCHED THEN INSERT (
-        REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE, DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT
+        REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE,
+        DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT
     ) VALUES (
-        s.REGION, s.LOCATION, s.PRODUCT, s.VISIBLE_COLUMNS_JSON, s.BOTTOM, s.SAFEFILL, s.NOTE, s.DEFAULT_START_DAYS, s.DEFAULT_END_DAYS, s.RACK_LIFTING_FORECAST_METHOD, CURRENT_TIMESTAMP()
+        s.REGION, s.LOCATION, s.PRODUCT, s.VISIBLE_COLUMNS_JSON, s.BOTTOM, s.SAFEFILL, s.NOTE,
+        s.DEFAULT_START_DAYS, s.DEFAULT_END_DAYS, s.RACK_LIFTING_FORECAST_METHOD, CURRENT_TIMESTAMP()
     )
     """
     session.sql(sql).collect()
 
 
 def get_rack_lifting_forecast_method(*, region: str, location: str | None) -> str:
-    """Get the configured Rack/Liftings forecast method for a scope.
-
-    Forecast method is Region/Location scoped (not Product scoped).
-    """
     cfg = get_effective_config(region=region, location=location, product=None)
     method = str(cfg.get("RACK_LIFTING_FORECAST_METHOD") or "").strip() or RACK_LIFTING_FORECAST_METHOD_DEFAULT
     if method not in set(RACK_LIFTING_FORECAST_METHODS):
@@ -429,7 +435,6 @@ def save_admin_config(*, region: str, location: str | None, product: str | None,
 def _rows_for_scope(df: pd.DataFrame, scope: Scope) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
-
     region = str(scope.region).strip() or "Unknown"
     loc = _location_key(scope.location)
     prod = _product_key(scope.product)
@@ -440,13 +445,10 @@ def get_effective_config(*, region: str, location: str | None, product: str | No
     df = load_admin_config_df()
 
     # Precedence (last wins):
-    #   region default            (LOCATION='*', PRODUCT='*')
-    #   region + product-only     (LOCATION='*', PRODUCT=prod)
-    #   region + location-only    (LOCATION=loc, PRODUCT='*')
-    #   region + location+product (LOCATION=loc, PRODUCT=prod)
-    # This gives location overrides precedence over product-only overrides when
-    # both are present.
-
+    #   region default         (LOCATION='*', PRODUCT='*')
+    #   region + product-only  (LOCATION='*', PRODUCT=prod)
+    #   region + location-only (LOCATION=loc, PRODUCT='*')
+    #   region + loc + product (LOCATION=loc, PRODUCT=prod)
     region_default = _rows_for_scope(df, Scope(region=region, location=None, product=None))
     product_only = _rows_for_scope(df, Scope(region=region, location=None, product=product))
     location_only = _rows_for_scope(df, Scope(region=region, location=location, product=None))
@@ -461,33 +463,36 @@ def get_effective_config(*, region: str, location: str | None, product: str | No
 
 
 def get_visible_columns(*, region: str, location: str | None) -> list[str]:
-    # Column visibility remains Region/Location scoped (not Product scoped).
+    """Return the ordered list of visible columns for the given scope.
+
+    Date is always first. The rest come from the stored config (or defaults).
+    """
     cfg = get_effective_config(region=region, location=location, product=None)
     raw = cfg.get("VISIBLE_COLUMNS_JSON")
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
         return list(DEFAULT_VISIBLE_COLUMNS)
 
     cols = json.loads(str(raw) or "[]")
-    if isinstance(cols, list) and cols:
-        # Backward compatible: older stored configs used Batch In/Out.
-        rename = {
-            "Batch In": "Receipts",
-            "Batch Out": "Deliveries",
-            "Batch In Fact": "Receipts Fact",
-            "Batch Out Fact": "Deliveries Fact",
-        }
-        out = [rename.get(str(c), str(c)) for c in cols]
+    if not isinstance(cols, list) or not cols:
+        return list(DEFAULT_VISIBLE_COLUMNS)
 
-        if "Close Inv" in out and "Available Space" not in out:
-            anchor = "Total Closing Inv" if "Total Closing Inv" in out else "Close Inv"
-            out.insert(out.index(anchor) + 1, "Available Space")
+    # Backward-compatible column renames
+    rename = {
+        "Batch In": "Receipts",
+        "Batch Out": "Deliveries",
+        "Batch In Fact": "Receipts Fact",
+        "Batch Out Fact": "Deliveries Fact",
+    }
+    out = [rename.get(str(c), str(c)) for c in cols]
 
-        return out
-    return list(DEFAULT_VISIBLE_COLUMNS)
+    # Ensure Date is always the first column
+    out = [c for c in out if c != "Date"]
+    out = ["Date"] + out
+
+    return out
 
 
 def get_default_date_window(*, region: str, location: str | None) -> tuple[int, int]:
-    # Date-window defaults remain Region/Location scoped (not Product scoped).
     cfg = get_effective_config(region=region, location=location, product=None)
     s = pd.to_numeric(pd.Series([cfg.get("DEFAULT_START_DAYS")]), errors="coerce").iloc[0]
     e = pd.to_numeric(pd.Series([cfg.get("DEFAULT_END_DAYS")]), errors="coerce").iloc[0]
@@ -498,7 +503,6 @@ def get_default_date_window(*, region: str, location: str | None) -> tuple[int, 
 
 def get_threshold_overrides(*, region: str, location: str | None, product: str | None = None) -> dict:
     if product is None or str(product).strip() == "":
-        # No product in scope => thresholds are not applicable.
         return {"BOTTOM": None, "SAFEFILL": None, "NOTE": None}
 
     df = load_admin_config_df()
@@ -526,18 +530,12 @@ def get_threshold_overrides(*, region: str, location: str | None, product: str |
 def display_super_admin_panel(*, regions: list[str], active_region: str | None, all_data: pd.DataFrame | None = None):
     st.subheader("Super Admin Configuration")
 
-    # ------------------------------------------------------------------
-    # Manual product addition (writes to RAW_INVENTORY_TABLE / APP_INVENTORY)
-    # ------------------------------------------------------------------
-
     @st.dialog("Add New Product")
     def _add_new_product_dialog(*, default_region: str, region_options: list[str]):
         from datetime import date
-
         from data_loader import insert_manual_product_today, load_region_location_pairs
 
         st.caption(f"Creates a new row for today ({date.today().strftime('%Y-%m-%d')}) with all flows set to 0.")
-
         _k = "admin_add_product"
 
         region_in = st.selectbox(
@@ -576,43 +574,24 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             )
 
         product_in = st.text_input("Product name", key=f"{_k}_product")
-
         c1, c2 = st.columns(2)
         with c1:
-            opening_in = st.number_input(
-                "Opening Inventory (today)",
-                value=0.0,
-                step=1.0,
-                format="%.2f",
-                key=f"{_k}_opening",
-            )
+            opening_in = st.number_input("Opening Inventory (today)", value=0.0, step=1.0, format="%.2f", key=f"{_k}_opening")
         with c2:
-            closing_in = st.number_input(
-                "Closing Inventory (today)",
-                value=0.0,
-                step=1.0,
-                format="%.2f",
-                key=f"{_k}_closing",
-            )
+            closing_in = st.number_input("Closing Inventory (today)", value=0.0, step=1.0, format="%.2f", key=f"{_k}_closing")
 
         note = "This Product was added manually today"
         st.text_input("Note", value=note, disabled=True)
 
         b1, b2 = st.columns(2)
         with b1:
-            if logged_button(
-                "💾 Save",
-                type="primary",
-                event="admin_add_product_save",
-                metadata={"region": region_in, "location": location_in, "product": product_in},
-            ):
+            if logged_button("💾 Save", type="primary", event="admin_add_product_save",
+                             metadata={"region": region_in, "location": location_in, "product": product_in}):
                 try:
                     if mode == "Select Existing" and not locs:
                         raise ValueError("No locations available for selected region")
                     insert_manual_product_today(
-                        region=region_in,
-                        location=location_in,
-                        product=product_in,
+                        region=region_in, location=location_in, product=product_in,
                         opening_inventory_bbl=float(opening_in),
                         closing_inventory_bbl=float(closing_in),
                         note=note,
@@ -628,11 +607,7 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                     )
                     st.error(str(e))
         with b2:
-            if logged_button(
-                "Cancel",
-                event="admin_add_product_cancel",
-                metadata={"region": region_in},
-            ):
+            if logged_button("Cancel", event="admin_add_product_cancel", metadata={"region": region_in}):
                 st.rerun()
 
     region = st.selectbox(
@@ -641,25 +616,21 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
         index=(regions.index(active_region) if active_region in (regions or []) else 0),
     )
 
-    # We no longer preload the full inventory table. Use a small distinct query.
     locs: list[str] = []
     try:
         pairs = load_region_location_pairs()
         if pairs is not None and not pairs.empty and "Region" in pairs.columns and "Location" in pairs.columns:
             locs = sorted(pairs[pairs["Region"] == region]["Location"].dropna().astype(str).unique().tolist())
     except Exception:
-        # Admin UI should still load even if query fails.
         locs = []
 
     scope_opts = ["(Region default)"] + locs
     scope = st.selectbox("Location (optional)", options=scope_opts)
     location = None if scope == "(Region default)" else scope
 
-    # Product list depends on Region + optional Location.
     products: list[str] = []
     try:
         from data_loader import load_products_for_admin_scope
-
         products = load_products_for_admin_scope(region=region, location=location)
     except Exception:
         products = []
@@ -677,19 +648,62 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
         end_days = _to_int_or(cfg.get("DEFAULT_END_DAYS"), 30)
         rl_method = str(cfg.get("RACK_LIFTING_FORECAST_METHOD") or RACK_LIFTING_FORECAST_METHOD_DEFAULT)
     else:
-        st.markdown("#### Column Visibility")
-
-        all_cols = sorted(set(DEFAULT_VISIBLE_COLUMNS))
-        current_cols = json.loads(str(cfg.get("VISIBLE_COLUMNS_JSON") or "[]"))
-        if not isinstance(current_cols, list):
-            current_cols = list(DEFAULT_VISIBLE_COLUMNS)
-
-        selected_cols = st.multiselect(
-            "Visible columns",
-            options=all_cols,
-            default=[c for c in current_cols if c in all_cols],
+        # ── Column Visibility & Order ──────────────────────────────────────
+        st.markdown("#### Column Visibility & Order")
+        st.caption(
+            "**Date** is always shown first and cannot be removed. "
+            "Toggle columns on/off and set their **Position** (lower number = displayed earlier)."
         )
 
+        current_cols = json.loads(str(cfg.get("VISIBLE_COLUMNS_JSON") or "[]"))
+        if not isinstance(current_cols, list) or not current_cols:
+            current_cols = list(DEFAULT_VISIBLE_COLUMNS)
+        # Remove Date from the configurable list (always forced first)
+        current_non_date = [c for c in current_cols if c != "Date"]
+        current_set = set(current_non_date)
+
+        # Build position map: column → 1-based position from current config
+        pos_map = {col: i + 1 for i, col in enumerate(current_non_date)}
+        max_pos = len(current_non_date)
+
+        col_rows = []
+        for col in _ALL_CONFIGURABLE_COLS:
+            if col in current_set:
+                pos = pos_map[col]
+            else:
+                max_pos += 1
+                pos = max_pos
+            col_rows.append({
+                "Column": col,
+                "Position": pos,
+                "Show": col in current_set,
+            })
+
+        col_df = pd.DataFrame(col_rows)
+        col_df = col_df.sort_values("Position").reset_index(drop=True)
+
+        edited_col_df = st.data_editor(
+            col_df,
+            num_rows="fixed",
+            hide_index=True,
+            column_config={
+                "Column": st.column_config.TextColumn("Column", disabled=True),
+                "Position": st.column_config.NumberColumn(
+                    "Position", min_value=1, step=1, format="%d",
+                    help="Lower = shown first. Only applies to visible columns.",
+                ),
+                "Show": st.column_config.CheckboxColumn("Show", default=False),
+            },
+            width="stretch",
+            height=550,
+            key=f"col_order_editor|{region}|{scope}",
+        )
+
+        # Build ordered list: visible columns sorted by Position, Date always first
+        visible_rows = edited_col_df[edited_col_df["Show"]].sort_values("Position")
+        selected_cols = ["Date"] + visible_rows["Column"].tolist()
+
+        # ── Forecast ──────────────────────────────────────────────────────
         st.markdown("#### Forecast (Rack/Liftings)")
         rl_method = st.selectbox(
             "Rack/Liftings forecast method",
@@ -699,10 +713,7 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 if str(cfg.get("RACK_LIFTING_FORECAST_METHOD")) in set(RACK_LIFTING_FORECAST_METHODS)
                 else list(RACK_LIFTING_FORECAST_METHODS).index(RACK_LIFTING_FORECAST_METHOD_DEFAULT)
             ),
-            help=(
-                "Controls how Details -> Forecast rows estimate Rack/Liftings. "
-                "7_day_avg and mtd_avg exclude 0 values when computing the average."
-            ),
+            help="Controls how Details forecast rows estimate Rack/Liftings.",
         )
 
     st.markdown("#### Thresholds")
@@ -726,12 +737,10 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 value="" if cfg.get("SAFEFILL") is None or pd.isna(cfg.get("SAFEFILL")) else str(cfg.get("SAFEFILL")),
                 placeholder="Leave blank for no override",
             )
-
         note = st.text_input(
             "Note",
             value=(
-                ""
-                if cfg.get("NOTE") is None or (isinstance(cfg.get("NOTE"), float) and pd.isna(cfg.get("NOTE")))
+                "" if cfg.get("NOTE") is None or (isinstance(cfg.get("NOTE"), float) and pd.isna(cfg.get("NOTE")))
                 else str(cfg.get("NOTE"))
             ),
             placeholder="Optional note for this product scope",
@@ -753,7 +762,6 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
                 step=1,
             )
 
-    # Action buttons: Add New Product (left) + Save configuration (right)
     a1, a2 = st.columns([1, 1])
     with a1:
         save_clicked = logged_button(
@@ -762,15 +770,10 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             metadata={"region": region, "location": location, "product": product},
         )
     with a2:
-        if logged_button(
-            "Add New Product",
-            event="admin_add_product_open",
-            metadata={"region": region},
-        ):
+        if logged_button("Add New Product", event="admin_add_product_open", metadata={"region": region}):
             _add_new_product_dialog(default_region=region, region_options=regions)
 
     if save_clicked:
-        # Validate Bottom and SafeFill before saving.
         if product is not None:
             bottom_val = _to_float_or_none(bottom)
             safefill_val = _to_float_or_none(safefill)
@@ -778,17 +781,15 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
             safefill_invalid = safefill.strip() != "" and safefill_val is None
             if bottom_invalid or safefill_invalid:
                 bad = [f for f, flag in [("Bottom", bottom_invalid), ("SafeFill", safefill_invalid)] if flag]
-                st.error(f"Invalid value(s) for: {', '.join(bad)}. Please enter numbers only (commas are allowed, e.g. 1,200).")
+                st.error(f"Invalid value(s) for: {', '.join(bad)}. Please enter numbers only.")
                 st.stop()
 
         updates = {
-            # Only persist these fields at Region/Location scope.
             "VISIBLE_COLUMNS_JSON": (
                 json.dumps(selected_cols or DEFAULT_VISIBLE_COLUMNS)
                 if product is None
                 else cfg.get("VISIBLE_COLUMNS_JSON")
             ),
-
             "BOTTOM": (_to_float_or_none(bottom) if product is not None else None),
             "SAFEFILL": (_to_float_or_none(safefill) if product is not None else None),
             "NOTE": ((str(note).strip() or None) if product is not None else None),

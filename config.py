@@ -16,73 +16,90 @@ RAW_INVENTORY_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_INVENTORY"
 SNOWFLAKE_ADMIN_CONFIG_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_SUPERADMIN_CONFIG"
 SQLITE_ADMIN_CONFIG_TABLE = "APP_SUPERADMIN_CONFIG"
 
-
-# -----------------------------------------------------------------------------
-# Data source / storage configuration
-# -----------------------------------------------------------------------------
-
-# Choose data source: "sqlite" for local/dev or "snowflake" for prod
 DATA_SOURCE = "sqlite"  # "snowflake"
 
-# SQLite configuration
 SQLITE_DB_PATH = "inventory.db"
 SQLITE_TABLE = "APP_INVENTORY"
 SQLITE_SOURCE_STATUS_TABLE = "APP_SOURCE_STATUS"
 
-# Snowflake configuration
 SNOWFLAKE_WAREHOUSE = "HFS_ADHOC_WH"
 SNOWFLAKE_SOURCE_STATUS_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_SOURCE_STATUS"
 SNOWFLAKE_WORKBOOK_STAGE = "@CONSUMPTION.HFS_COMMERCIAL_INVENTORY.SCHEDULERWORKBOOKS_INTERNAL_COPY_STG"
 SNOWFLAKE_LOCATION_MAPPING_TABLE = "CONFORMED.HFS_COMMERCIAL_INVENTORY.MASTER_LOCATION_CODE_MAPPING"
 
-
-# -----------------------------------------------------------------------------
-# App audit + error logging
-# -----------------------------------------------------------------------------
-
-# SQLite tables (local/dev)
 SQLITE_AUDIT_LOG_TABLE = "APP_AUDIT_LOG"
 SQLITE_ERROR_LOG_TABLE = "APP_ERROR_LOG"
 
-# Snowflake tables (prod)
 SNOWFLAKE_AUDIT_LOG_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_AUDIT_LOG"
 SNOWFLAKE_ERROR_LOG_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_ERROR_LOG"
 
 
-# -----------------------------------------------------------------------------
-# Canonical column names used across the dashboard
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Canonical column names
+# =============================================================================
 
-# Base columns
+# --- Identity / metadata ---
 COL_DATE = "Date"
 COL_REGION = "Region"
 COL_LOCATION = "Location"
 COL_SYSTEM = "System"
 COL_PRODUCT = "Product"
 COL_UPDATED = "updated"
-COL_NOTES = "Notes"
-COL_BATCH = "Batch"
 
-# Inventory columns
-COL_OPEN_INV_RAW = "Open Inv"
-COL_CLOSE_INV_RAW = "Close Inv"
-COL_OPENING_INV = "Opening Inv"  # renamed for UI/editor
+# --- Input columns — Incoming  (positive contribution to Closing Inventory) ---
+# Close Inv = Opening Inv + Incoming − Outgoing + Adjustments
+COL_BATCH_IN_RAW = "Batch In (RECEIPTS_BBL)"   # raw DB column name
+COL_BATCH_IN = "Receipts"                        # display name in UI/editor
+COL_PIPELINE_IN = "Pipeline In"
+COL_PRODUCTION = "Production"
 
-# Additional inventory metrics
-COL_AVAILABLE = "Available"
-COL_INTRANSIT = "Intransit"
+# --- Input columns — Outgoing  (reduce Closing Inventory) ---
+COL_BATCH_OUT_RAW = "Batch Out (DELIVERIES_BBL)"   # raw DB column name
+COL_BATCH_OUT = "Deliveries"                         # display name in UI/editor
+COL_RACK_LIFTINGS_RAW = "Rack/Liftings"             # raw DB column name
+COL_RACK_LIFTING = "Rack/Lifting"                    # display name in UI/editor
+COL_PIPELINE_OUT = "Pipeline Out"
 
+# --- Input columns — Adjustments  (net effect on Closing Inventory) ---
+COL_ADJUSTMENTS = "Adjustments"
+COL_GAIN_LOSS = "Gain/Loss"
+COL_TRANSFERS = "Transfers"
+
+# --- Calculated columns  (auto-derived, always read-only in the editor) ---
+COL_OPEN_INV_RAW = "Open Inv"                  # raw DB name; renamed to Opening Inv in UI
+COL_OPENING_INV = "Opening Inv"                # = previous day's Close Inv
+COL_CLOSE_INV_RAW = "Close Inv"               # = Opening + Incoming − Outgoing + Adjustments
+COL_AVAILABLE = "Available"                    # system-supplied; used in Total/Accounting Inv
+COL_INTRANSIT = "Intransit"                    # system-supplied; used in Total Closing Inv
+COL_TOTAL_CLOSING_INV = "Total Closing Inv"   # = Available + Intransit
+COL_AVAILABLE_SPACE = "Available Space"        # = SafeFill − Close Inv
+COL_LOADABLE = "Loadable"                      # = Close Inv − Bottom
+COL_TOTAL_INVENTORY = "Total Inventory"        # = Close Inv + Bottom
+COL_ACCOUNTING_INV = "Accounting Inventory"    # = Close Inv − Storage
+COL_7DAY_AVG_RACK = "7 Day Avg"               # 7-day rolling average of Rack/Lifting
+COL_MTD_AVG_RACK = "MTD Avg"                  # month-to-date average of Rack/Lifting
+
+# --- Misc columns  (user-editable; no direct impact on Closing Inventory) ---
+COL_STORAGE = "Storage"            # user-entered; drives Accounting Inventory
+COL_BATCH = "Batch"                # free-text batch label
+COL_NOTES = "Notes"                # free-text notes
+COL_TULSA = "Tulsa"                # receipts sub-breakdown
+COL_EL_DORADO = "El Dorado"        # receipts sub-breakdown
+COL_OTHER = "Other"                # receipts sub-breakdown
+COL_ARGENTINE = "Argentine"        # receipts sub-breakdown
+COL_FROM_327_RECEIPT = "From 327 Receipt"  # receipts sub-breakdown
+COL_BATCH_BREAKDOWN = "Batch Breakdown"    # free-text batch breakdown
+
+# --- Fact / Terminal Feed columns  (paired read-only columns; toggled via UI) ---
 COL_OPEN_INV_FACT_RAW = "Open Inv Fact"
-COL_OPENING_INV_FACT = "Opening Inv Fact"  # renamed for UI/editor
+COL_OPENING_INV_FACT = "Opening Inv Fact"       # renamed for UI/editor
 
-COL_CLOSE_INV_FACT_RAW = "Close Inv Fact"  # display name is the same
+COL_CLOSE_INV_FACT_RAW = "Close Inv Fact"
 
 COL_BATCH_IN_FACT_RAW = "Batch In Fact (FACT_RECEIPTS_BBL)"
-# Display name in the UI/details editor
 COL_BATCH_IN_FACT = "Receipts Fact"
 
 COL_BATCH_OUT_FACT_RAW = "Batch Out Fact (FACT_DELIVERIES_BBL)"
-# Display name in the UI/details editor
 COL_BATCH_OUT_FACT = "Deliveries Fact"
 
 COL_RACK_LIFTINGS_FACT_RAW = "Rack/Liftings Fact"
@@ -95,52 +112,76 @@ COL_ADJUSTMENTS_FACT = "Adjustments Fact"
 COL_GAIN_LOSS_FACT = "Gain/Loss Fact"
 COL_TRANSFERS_FACT = "Transfers Fact"
 
-# Fact inventory metrics
 COL_AVAILABLE_FACT = "Available Fact"
 COL_INTRANSIT_FACT = "Intransit Fact"
 
-# Flows
-COL_BATCH_IN_RAW = "Batch In (RECEIPTS_BBL)"
-COL_BATCH_OUT_RAW = "Batch Out (DELIVERIES_BBL)"
-# Display names in the UI/details editor
-COL_BATCH_IN = "Receipts"
-COL_BATCH_OUT = "Deliveries"
-
-COL_RACK_LIFTINGS_RAW = "Rack/Liftings"
-COL_RACK_LIFTING = "Rack/Lifting"  # renamed for UI/editor
-
-COL_PIPELINE_IN = "Pipeline In"
-COL_PIPELINE_OUT = "Pipeline Out"
-COL_PRODUCTION = "Production"
-COL_ADJUSTMENTS = "Adjustments"
-COL_GAIN_LOSS = "Gain/Loss"
-COL_TRANSFERS = "Transfers"
-
-# Capacities/thresholds
+# --- Capacity / threshold columns (reference only, not editable) ---
 COL_TANK_CAPACITY = "Tank Capacity"
 COL_SAFE_FILL_LIMIT = "Safe Fill Limit"
-COL_AVAILABLE_SPACE = "Available Space"
-
-# UI-only / derived inventory metrics (not persisted)
-COL_TOTAL_CLOSING_INV = "Total Closing Inv"
-COL_LOADABLE = "Loadable"
-
-# UI-only calculated columns (not persisted to DB)
-COL_TOTAL_INVENTORY = "Total Inventory"
-COL_ACCOUNTING_INV = "Accounting Inventory"
-COL_7DAY_AVG_RACK = "7 Day Avg"
-COL_MTD_AVG_RACK = "MTD Avg"
-
-# User-editable columns that ARE persisted to DB (→ STORAGE_BBL etc.)
-COL_STORAGE = "Storage"
-COL_TULSA = "Tulsa"
-COL_EL_DORADO = "El Dorado"
-COL_OTHER = "Other"
-COL_ARGENTINE = "Argentine"
-COL_FROM_327_RECEIPT = "From 327 Receipt"
 
 
-# Convenience groups
+# =============================================================================
+# Column group tuples
+# Used for admin config UI (group labels, ordering) and editor locking logic.
+# =============================================================================
+
+# Input — Incoming: added to Closing Inventory
+INPUT_INCOMING_COLS: tuple[str, ...] = (
+    COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION,
+    COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_FROM_327_RECEIPT,
+)
+
+# Input — Outgoing: subtracted from Closing Inventory
+INPUT_OUTGOING_COLS: tuple[str, ...] = (COL_BATCH_OUT, COL_RACK_LIFTING, COL_PIPELINE_OUT, COL_ARGENTINE)
+
+# Input — Adjustments: net effect on Closing Inventory
+INPUT_ADJUSTMENT_COLS: tuple[str, ...] = (COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS)
+
+# All input columns combined
+INPUT_COLS: tuple[str, ...] = INPUT_INCOMING_COLS + INPUT_OUTGOING_COLS + INPUT_ADJUSTMENT_COLS
+
+# Calculated: auto-derived, always read-only in the editor
+CALCULATED_COLS: tuple[str, ...] = (
+    COL_OPENING_INV,
+    COL_CLOSE_INV_RAW,
+    COL_TOTAL_CLOSING_INV,
+    COL_AVAILABLE_SPACE,
+    COL_LOADABLE,
+    COL_TOTAL_INVENTORY,
+    COL_ACCOUNTING_INV,
+    COL_7DAY_AVG_RACK,
+    COL_MTD_AVG_RACK,
+)
+
+# Misc: editable, no direct impact on Closing Inventory
+# (Storage drives Accounting Inventory; Available/Intransit come from the system feed)
+MISC_COLS: tuple[str, ...] = (
+    COL_AVAILABLE,
+    COL_INTRANSIT,
+    COL_STORAGE,
+    COL_BATCH,
+    COL_NOTES,
+    COL_BATCH_BREAKDOWN,
+)
+
+
+# =============================================================================
+# Rename map  (raw DB column name → UI display name)
+# =============================================================================
+
+DETAILS_RENAME_MAP = {
+    COL_OPEN_INV_RAW: COL_OPENING_INV,
+    COL_OPEN_INV_FACT_RAW: COL_OPENING_INV_FACT,
+    "BATCH": COL_BATCH,
+    COL_BATCH_IN_RAW: COL_BATCH_IN,
+    COL_BATCH_IN_FACT_RAW: COL_BATCH_IN_FACT,
+    COL_BATCH_OUT_RAW: COL_BATCH_OUT,
+    COL_BATCH_OUT_FACT_RAW: COL_BATCH_OUT_FACT,
+    COL_RACK_LIFTINGS_RAW: COL_RACK_LIFTING,
+    COL_RACK_LIFTINGS_FACT_RAW: COL_RACK_LIFTING_FACT,
+    "BATCH_BREAKDOWN": COL_BATCH_BREAKDOWN,
+}
+
 SUMMARY_AGG_COLS = (
     COL_CLOSE_INV_RAW,
     COL_OPEN_INV_RAW,
@@ -157,19 +198,6 @@ SUMMARY_AGG_COLS = (
     COL_AVAILABLE_SPACE,
 )
 
-DETAILS_RENAME_MAP = {
-    COL_OPEN_INV_RAW: COL_OPENING_INV,
-    COL_OPEN_INV_FACT_RAW: COL_OPENING_INV_FACT,
-    # Free-text column stored in APP_INVENTORY.BATCH
-    "BATCH": COL_BATCH,
-    COL_BATCH_IN_RAW: COL_BATCH_IN,
-    COL_BATCH_IN_FACT_RAW: COL_BATCH_IN_FACT,
-    COL_BATCH_OUT_RAW: COL_BATCH_OUT,
-    COL_BATCH_OUT_FACT_RAW: COL_BATCH_OUT_FACT,
-    COL_RACK_LIFTINGS_RAW: COL_RACK_LIFTING,
-    COL_RACK_LIFTINGS_FACT_RAW: COL_RACK_LIFTING_FACT,
-}
-
 RACK_LIFTING_FORECAST_METHOD_DEFAULT = "7_day_avg"
 RACK_LIFTING_FORECAST_METHODS: tuple[str, ...] = (
     "weekday_weighted",
@@ -178,6 +206,6 @@ RACK_LIFTING_FORECAST_METHODS: tuple[str, ...] = (
 )
 
 # Snowflake role names that control feature access
-ROLE_POWER = "SCHEDULER_WORKBOOK_POWER_FR"    # full access
-ROLE_CHANGE = "SCHEDULER_WORKBOOK_CHANGE_FR"  # Admin Config disabled
-ROLE_DISPLAY = "SCHEDULER_WORKBOOK_DISPLAY_FR"  # Admin Config + Enable Save disabled
+ROLE_POWER = "SCHEDULER_WORKBOOK_POWER_FR"
+ROLE_CHANGE = "SCHEDULER_WORKBOOK_CHANGE_FR"
+ROLE_DISPLAY = "SCHEDULER_WORKBOOK_DISPLAY_FR"
