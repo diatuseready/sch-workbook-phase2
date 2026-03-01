@@ -123,21 +123,21 @@ COL_AVAILABLE_SPACE = "Available Space"
 
 # UI-only / derived inventory metrics (not persisted)
 COL_TOTAL_CLOSING_INV = "Total Closing Inv"
-COL_LOADABLE = "Loadable"  # Close Inv - Bottoms
+COL_LOADABLE = "Loadable"
 
 # UI-only calculated columns (not persisted to DB)
-COL_TOTAL_INVENTORY = "Total Inventory"     # Close Inv + Bottoms (threshold)
-COL_ACCOUNTING_INV = "Accounting Inventory"  # Close Inv - Storage
-COL_7DAY_AVG_RACK = "7 Day Avg"             # 7-day rolling average of Rack/Lifting (historical, excl. zeros)
-COL_MTD_AVG_RACK = "MTD Avg"               # Month-to-date average of Rack/Lifting (current calendar month, excl. zeros)
+COL_TOTAL_INVENTORY = "Total Inventory"
+COL_ACCOUNTING_INV = "Accounting Inventory"
+COL_7DAY_AVG_RACK = "7 Day Avg"
+COL_MTD_AVG_RACK = "MTD Avg"
 
 # User-editable columns that ARE persisted to DB (→ STORAGE_BBL etc.)
-COL_STORAGE = "Storage"                          # Manual entry; persisted as STORAGE_BBL; drives Accounting Inventory
-COL_TULSA = "Tulsa"                              # Location sub-breakdown; persisted as TULSA_BBL
-COL_EL_DORADO = "El Dorado"                      # Location sub-breakdown; persisted as EL_DORADO_BBL
-COL_OTHER = "Other"                              # Residual sub-breakdown; persisted as OTHER_BBL
-COL_ARGENTINE = "Argentine"                      # Sub-location breakdown; persisted as ARGENTINE_BBL
-COL_FROM_327_RECEIPT = "From 327 Receipt"        # Receipt sub-breakdown; persisted as FROM_327_RECEIPT_BBL
+COL_STORAGE = "Storage"
+COL_TULSA = "Tulsa"
+COL_EL_DORADO = "El Dorado"
+COL_OTHER = "Other"
+COL_ARGENTINE = "Argentine"
+COL_FROM_327_RECEIPT = "From 327 Receipt"
 
 
 # Convenience groups

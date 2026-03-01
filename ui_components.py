@@ -1,10 +1,11 @@
 import base64
+import html
 from pathlib import Path
 
 import streamlit as st
 import pandas as pd
 
-from config import BG_LIGHT, TEXT_DARK, PRIMARY_GREEN, CARD_BG, ACCENT_GREEN
+from config import BG_LIGHT, TEXT_DARK, PRIMARY_GREEN, CARD_BG, ACCENT_GREEN, DATA_SOURCE
 
 
 def setup_page():
@@ -12,7 +13,6 @@ def setup_page():
     st.set_page_config(
         page_title="HF Sinclair Scheduler Dashboard",
         layout="wide",
-        # UX: we don't use the sidebar in this app flow.
         initial_sidebar_state="collapsed"
     )
 
@@ -21,26 +21,22 @@ def apply_custom_css():
     """Apply custom CSS styling to the app."""
     css_style = f"""
     <style>
-    /* Remove top whitespace: hide Streamlit's header chrome and tighten main padding */
     [data-testid="stHeader"],
     [data-testid="stToolbar"] {{
         display: none !important;
     }}
 
-    /* Streamlit keeps default vertical padding around the app; reduce it */
     .block-container {{
         padding-top: 1rem;
         padding-bottom: 1.5rem;
     }}
 
-    /* Hide the sidebar entirely (app is designed as a top-down, single-column flow) */
     [data-testid="stSidebar"],
     [data-testid="stSidebarNav"],
     [data-testid="collapsedControl"] {{
         display: none !important;
     }}
 
-    /* Remove the left gutter Streamlit keeps for the sidebar */
     section[data-testid="stMain"] {{
         padding-left: 1.5rem;
         padding-right: 1.5rem;
@@ -63,10 +59,9 @@ def apply_custom_css():
         align-items: center;
     }}
 
-    /* Header layout: logo on the far-left, title centered. */
     .main-header .header-left,
     .main-header .header-right {{
-        width: 10%; /* keep left/right equal so the title remains centered */
+        width: 10%;
         min-width: 56px;
         display: flex;
         align-items: center;
@@ -112,7 +107,6 @@ def apply_custom_css():
         transition: 0.3s;
     }}
 
-    /* Utility: vertical spacer to align buttons with input widgets (labels). */
     .btn-spacer {{
         height: 1.6rem;
     }}
@@ -163,19 +157,12 @@ def apply_custom_css():
 
 @st.cache_data(show_spinner=False)
 def _get_logo_data_uri(filename: str = "hfs_dino_logo.png") -> str | None:
-    """Return a data URI for the header logo, or None if not available.
-
-    We embed the image as base64 so it works reliably in Streamlit without
-    needing static file hosting.
-    """
-    # Prefer a path relative to this source file (works regardless of CWD).
+    """Return a base64 data URI for the header logo, or None if not found."""
     p = Path(__file__).resolve().with_name(filename)
     if not p.exists():
-        # Fallback for cases where the app is executed from repo root.
         p = Path(filename)
     if not p.exists():
         return None
-
     data = base64.b64encode(p.read_bytes()).decode("utf-8")
     return f"data:image/png;base64,{data}"
 
@@ -198,48 +185,169 @@ def display_header():
         )
         return
 
-    # Fallback (no logo)
     st.markdown(
         '<div class="main-header"><div class="header-title">HF Sinclair Scheduler FlowSight</div></div>',
         unsafe_allow_html=True,
     )
 
 
-def _pipeline_down(processing_status: str) -> bool:
-    """Return True when the pipeline is considered down for a location."""
-    s = str(processing_status or "").strip().upper()
-    return (
-        s in {"FAILED", "ERROR", "DOWN"} or
-        "FAIL" in s or
-        "ERROR" in s or
-        "DOWN" in s
+# ---------------------------------------------------------------------------
+# Details-tab UI helpers
+# ---------------------------------------------------------------------------
+
+@st.dialog("System Files")
+def _view_files_dialog(*, file_locations: list[str] | None, context: dict | None = None) -> None:
+    """Popup showing signed download links for system files for a given row/day."""
+    from data_loader import generate_snowflake_signed_urls
+
+    ctx = context or {}
+    title_bits = [b for b in [ctx.get("date"), ctx.get("location"), ctx.get("product")] if b]
+    if title_bits:
+        st.caption(" / ".join(str(b) for b in title_bits))
+
+    paths = [str(p).strip() for p in (file_locations or []) if p is not None and str(p).strip()]
+
+    if DATA_SOURCE != "snowflake":
+        st.info("File downloads are only available in Snowflake mode.")
+        return
+
+    if not paths:
+        st.info("No system files found for this row.")
+        return
+
+    with st.spinner("Generating signed URLs…"):
+        signed = generate_snowflake_signed_urls(paths, expiry_seconds=3600)
+
+    if not signed:
+        st.warning("No downloadable links could be generated.")
+        return
+
+    st.write("Click a file to download:")
+
+    def _short_label(name: str, *, max_len: int = 55) -> str:
+        s = str(name or "")
+        if len(s) <= max_len:
+            return s
+        head = max(10, (max_len - 1) // 2)
+        tail = max(10, max_len - 1 - head)
+        return s[:head].rstrip() + "…" + s[-tail:].lstrip()
+
+    for item in signed:
+        p = str(item.get("path") or "")
+        url = str(item.get("url") or "")
+        label = p.split("/")[-1] if "/" in p else p
+        if url:
+            st.link_button(label=_short_label(label), url=url)
+            st.caption(p)
+
+
+def _render_blocking_overlay(show: bool, *, message: str = "Saving…") -> None:
+    """Render a full-screen overlay to block clicks during long operations."""
+    if not show:
+        return
+    msg = html.escape(str(message or "Saving…"))
+    st.markdown(
+        f"""
+        <style>
+        #details-save-overlay {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.35);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: all;
+        }}
+        #details-save-overlay .card {{
+            background: white;
+            border-radius: 12px;
+            padding: 18px 22px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+            font-weight: 700;
+            color: #2D3748;
+        }}
+        </style>
+        <div id="details-save-overlay">
+          <div class="card">{msg}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
-def _freshness_badge(processing_status: str, last_updated_at) -> tuple[str, str]:
-    """Return (label, color) per business rules.
+def _render_threshold_cards(
+    *,
+    bottom: float | None,
+    safefill: float | None,
+    note: str | None = None,
+    c_safefill,
+    c_bottom,
+    c_note,
+    c_info,
+    display_forecast_method: str | None = None,
+) -> None:
+    """Render SafeFill, Bottom, Note, and Forecast Method mini-cards."""
+    with c_safefill:
+        v = "—" if safefill is None else f"{safefill:,.0f}"
+        st.markdown(
+            f'<div class="mini-card" style="margin-bottom:1rem;">'
+            f'<p class="label">SafeFill</p><p class="value">{v}</p></div>',
+            unsafe_allow_html=True,
+        )
 
-    Rules:
-    - Red: pipeline down
-    - Green: refreshed < 24 hours
-    - Yellow: >= 24 hours (or unknown timestamp)
-    """
+    with c_bottom:
+        v = "—" if bottom is None else f"{bottom:,.0f}"
+        st.markdown(
+            f'<div class="mini-card" style="margin-bottom:1rem;">'
+            f'<p class="label">Bottom</p><p class="value">{v}</p></div>',
+            unsafe_allow_html=True,
+        )
+
+    with c_note:
+        v = "—" if note in (None, "") else str(note)
+        st.markdown(
+            f'<div class="mini-card" style="margin-bottom:1rem;">'
+            f'<p class="label">Note</p>'
+            f'<p class="value" style="font-size:0.95rem; font-weight:700;">{v}</p></div>',
+            unsafe_allow_html=True,
+        )
+
+    with c_info:
+        method = "—" if not display_forecast_method else display_forecast_method
+        st.markdown(
+            f'<div class="mini-card" style="margin-bottom:1rem;">'
+            f'<p class="label">Forecast Method</p>'
+            f'<p class="value" style="font-size:0.95rem; font-weight:700;">{method}</p></div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Source status / data freshness
+# ---------------------------------------------------------------------------
+
+def _pipeline_down(processing_status: str) -> bool:
+    s = str(processing_status or "").strip().upper()
+    return s in {"FAILED", "ERROR", "DOWN"} or "FAIL" in s or "ERROR" in s or "DOWN" in s
+
+
+def _freshness_badge(processing_status: str, last_updated_at) -> tuple[str, str]:
+    """Return (label, color) based on pipeline status and data age."""
     if _pipeline_down(processing_status):
-        return "DOWN", "#E53E3E"  # red
+        return "DOWN", "#E53E3E"
 
     ts = pd.to_datetime(last_updated_at, errors="coerce")
     if pd.isna(ts):
-        return "STALE", "#D69E2E"  # yellow
+        return "STALE", "#D69E2E"
 
-    # Compare using naive timestamps to avoid tz issues.
     now = pd.Timestamp.utcnow().tz_localize(None)
     if getattr(ts, "tzinfo", None) is not None:
         ts = ts.tz_convert(None)
 
-    age_hours = (now - ts).total_seconds() / 3600.0
-    if age_hours < 24:
-        return "CURRENT", "#38A169"  # green
-    return "STALE", "#D69E2E"  # yellow
+    if (now - ts).total_seconds() / 3600.0 < 24:
+        return "CURRENT", "#38A169"
+    return "STALE", "#D69E2E"
 
 
 def _format_ts(ts) -> str:
@@ -247,9 +355,7 @@ def _format_ts(ts) -> str:
         return "—"
     try:
         t = pd.to_datetime(ts)
-        if pd.isna(t):
-            return "—"
-        return t.strftime("%Y-%m-%d %H:%M")
+        return "—" if pd.isna(t) else t.strftime("%Y-%m-%d %H:%M")
     except Exception:
         return str(ts)
 
@@ -261,7 +367,6 @@ def display_data_freshness_cards(
     loc_col: str,
     source_status: "pd.DataFrame",
 ):
-
     if source_status is None or source_status.empty:
         st.info("No source status data available.")
         return
@@ -272,16 +377,12 @@ def display_data_freshness_cards(
 
     df = source_status.copy()
 
-    
     if active_region and "REGION_CODE" in df.columns:
         df = df[df["REGION_CODE"].fillna("Unknown") == active_region]
 
     selected_loc_s = str(selected_loc)
 
-    # Filter to the selected Location/System.
     if str(loc_col) == "Location":
-        # Source status table may still have *old* location names in LOCATION,
-        # but we join the master mapping table to get the *current* name in APP_LOCATION_DESC.
         if "APP_LOCATION_DESC" in df.columns:
             df = df[df["APP_LOCATION_DESC"].astype(str) == selected_loc_s]
         elif "LOCATION" in df.columns:
@@ -294,41 +395,29 @@ def display_data_freshness_cards(
         system_series = op
         if isinstance(system_series, pd.Series):
             system_series = system_series.fillna("")
-
         if "SOURCE_SYSTEM" in df.columns:
             sys_s = sys.fillna("") if isinstance(sys, pd.Series) else ""
             system_series = system_series.where(system_series.astype(str).str.strip().ne(""), sys_s)
         if "LOCATION" in df.columns:
             loc_s = loc.fillna("") if isinstance(loc, pd.Series) else ""
             system_series = system_series.where(system_series.astype(str).str.strip().ne(""), loc_s)
-
         df = df[system_series.astype(str) == selected_loc_s]
 
     if df.empty:
         st.info(f"No source status rows found for {loc_col}: '{selected_loc_s}'")
         return
 
-    # Pick most recent row per CLASS (reduces duplicates)
     if "LAST_UPDATED_AT" in df.columns:
         df = df.sort_values("LAST_UPDATED_AT", ascending=False)
         if "CLASS" in df.columns:
             df = df.drop_duplicates(subset=["CLASS"], keep="first")
 
-    # Limit cards to avoid overly wide layout
-    max_cards = 8
-    df = df.head(max_cards)
-
-    cols = st.columns(min(len(df), max_cards))
+    df = df.head(8)
+    cols = st.columns(min(len(df), 8))
     for i, (_, row) in enumerate(df.iterrows()):
         with cols[i]:
-            # Keep display minimal: Location name, Last Updated, Status
             name = str(row.get("DISPLAY_NAME") or row.get("LOCATION") or row.get("CLASS") or "Source")
-            source_system = str(
-                row.get("SOURCE_SYSTEM") or
-                row.get("SOURCE_OPERATOR") or
-                row.get("SOURCE_LABEL") or
-                ""
-            ).strip() or "—"
+            source_system = str(row.get("SOURCE_SYSTEM") or row.get("SOURCE_OPERATOR") or "").strip() or "—"
             raw_status = str(row.get("PROCESSING_STATUS") or "").strip() or "UNKNOWN"
             status_label, color = _freshness_badge(raw_status, row.get("LAST_UPDATED_AT"))
             last_upd = _format_ts(row.get("LAST_UPDATED_AT"))
