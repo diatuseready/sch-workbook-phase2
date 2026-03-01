@@ -243,16 +243,27 @@ def _recalculate_available_space(df: pd.DataFrame, *, safefill: float | None) ->
 
 
 def _recalculate_total_closing_inv(df: pd.DataFrame) -> pd.DataFrame:
-    """UI-only metric: Total Closing Inv = Close Inv + Intransit."""
+    """UI-only metric: Total Closing Inv = Close Inv + Intransit.
+
+    If Intransit is absent from the DataFrame it is treated as 0 so that the
+    column is ALWAYS added (= Close Inv in that case).  This keeps column
+    visibility consistent across products regardless of whether the upstream
+    feed carries an Intransit value.
+    """
     if df is None or df.empty:
         return df
 
     out = df.copy()
-    if "Close Inv" not in out.columns or COL_INTRANSIT not in out.columns:
+    if "Close Inv" not in out.columns:
+        out[COL_TOTAL_CLOSING_INV] = np.nan
         return out
 
     close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
-    intransit = _to_numeric_series(out[COL_INTRANSIT]).fillna(0.0)
+    # Treat missing Intransit column as all-zeros rather than skipping the column.
+    if COL_INTRANSIT in out.columns:
+        intransit = _to_numeric_series(out[COL_INTRANSIT]).fillna(0.0)
+    else:
+        intransit = pd.Series(0.0, index=out.index)
     out[COL_TOTAL_CLOSING_INV] = (close.astype(float) + intransit.astype(float)).round(2)
     return out
 
@@ -282,15 +293,13 @@ def _recalculate_total_inventory(df: pd.DataFrame, *, bottom: float | None) -> p
         return df
 
     out = df.copy()
-    if "Close Inv" not in out.columns:
+    # Always add the column so it appears in the grid for every product.
+    if "Available" not in out.columns or bottom is None or (isinstance(bottom, float) and pd.isna(bottom)):
+        out[COL_TOTAL_INVENTORY] = np.nan
         return out
 
-    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
-    if bottom is None or (isinstance(bottom, float) and pd.isna(bottom)):
-        out[COL_TOTAL_INVENTORY] = np.nan
-    else:
-        out[COL_TOTAL_INVENTORY] = (close.astype(float) + float(bottom)).round(2)
-
+    avail = _to_numeric_series(out["Available"]).fillna(0.0)
+    out[COL_TOTAL_INVENTORY] = (avail.astype(float) + float(bottom)).round(2)
     return out
 
 
@@ -906,7 +915,9 @@ def _needs_inventory_rerun(before: pd.DataFrame, after: pd.DataFrame) -> bool:
         # The editor may return strings with commas; normalize them before compare.
         b = _to_numeric_series(before[c]).fillna(0.0).to_numpy(dtype=float)
         a = _to_numeric_series(after[c]).fillna(0.0).to_numpy(dtype=float)
-        if not np.allclose(a, b, rtol=0, atol=1e-9):
+        # 0.005 bbl tolerance: absorbs float/rounding noise from Snowflake stored
+        # values without masking real user changes (smallest meaningful unit is ~0.01 bbl).
+        if not np.allclose(a, b, rtol=0, atol=0.005):
             return True
     return False
 
@@ -1501,7 +1512,6 @@ def _render_threshold_cards(
 
 
 def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str]) -> pd.DataFrame:
-    # Keep any flow columns that might exist, even if not currently visible.
     extra = [
         "Production",
         "Adjustments",
@@ -1513,6 +1523,14 @@ def _build_editor_df(df_display: pd.DataFrame, *, id_col: str, ui_cols: list[str
         "Transfers",
         "Rack/Lifting",
         "Batch",
+        # Calculated columns added by _recalculate_inventory_metrics:
+        COL_TOTAL_CLOSING_INV,
+        COL_AVAILABLE_SPACE,
+        COL_LOADABLE,
+        COL_TOTAL_INVENTORY,
+        COL_ACCOUNTING_INV,
+        COL_7DAY_AVG_RACK,
+        COL_MTD_AVG_RACK,
     ]
 
     base = [
@@ -1727,9 +1745,21 @@ def display_location_details(
             df_display = _recalculate_total_inventory(df_display, bottom=bottom)
             df_display = _recalculate_accounting_inv(df_display)
             df_display = _fill_rack_averages_per_row(df_display, df_prod)
+
             cols = [c for c in (["Date", "Location"] + DETAILS_COLS) if c in df_display.columns]
 
             visible = get_visible_columns(region=active_region, location=str(selected_loc))
+
+            _sub_breakdown_ensure = [
+                COL_TULSA, COL_EL_DORADO, COL_OTHER,
+                COL_ARGENTINE, COL_FROM_327_RECEIPT,
+            ]
+            for _sub_col in _sub_breakdown_ensure:
+                if _sub_col in visible and _sub_col not in df_display.columns:
+                    df_display[_sub_col] = 0.0
+                    if _sub_col not in cols:
+                        cols.append(_sub_col)
+            # ─────────────────────────────────────────────────────────────────────
             column_order: list[str] = []
             for c in visible:
                 if c == COL_VIEW_FILE:
@@ -1759,36 +1789,40 @@ def display_location_details(
                         before=None,
                     )
 
-                column_order = _ensure_cols_after(
-                    column_order,
-                    required=[COL_LOADABLE],
-                    after=COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else "Close Inv",
-                    before=None,
-                )
+                if COL_LOADABLE in visible:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=[COL_LOADABLE],
+                        after=COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else "Close Inv",
+                        before=None,
+                    )
 
                 anchor_after_loadable = (
                     COL_LOADABLE if COL_LOADABLE in column_order else
                     COL_AVAILABLE_SPACE if COL_AVAILABLE_SPACE in column_order else
                     "Close Inv"
                 )
-                column_order = _ensure_cols_after(
-                    column_order,
-                    required=[COL_TOTAL_INVENTORY],
-                    after=anchor_after_loadable,
-                    before=None,
-                )
-                column_order = _ensure_cols_after(
-                    column_order,
-                    required=[COL_STORAGE],
-                    after=COL_TOTAL_INVENTORY if COL_TOTAL_INVENTORY in column_order else anchor_after_loadable,
-                    before=None,
-                )
-                column_order = _ensure_cols_after(
-                    column_order,
-                    required=[COL_ACCOUNTING_INV],
-                    after=COL_STORAGE if COL_STORAGE in column_order else anchor_after_loadable,
-                    before=None,
-                )
+                if COL_TOTAL_INVENTORY in visible:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=[COL_TOTAL_INVENTORY],
+                        after=anchor_after_loadable,
+                        before=None,
+                    )
+                if COL_STORAGE in visible:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=[COL_STORAGE],
+                        after=COL_TOTAL_INVENTORY if COL_TOTAL_INVENTORY in column_order else anchor_after_loadable,
+                        before=None,
+                    )
+                if COL_ACCOUNTING_INV in visible:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=[COL_ACCOUNTING_INV],
+                        after=COL_STORAGE if COL_STORAGE in column_order else anchor_after_loadable,
+                        before=None,
+                    )
 
                 if COL_VIEW_FILE in column_order:
                     # Keep View File after the last Close-Inv-group column.
@@ -1815,12 +1849,14 @@ def display_location_details(
                     )
 
             if COL_RACK_LIFTING in column_order:
-                column_order = _ensure_cols_after(
-                    column_order,
-                    required=[COL_7DAY_AVG_RACK, COL_MTD_AVG_RACK],
-                    after=COL_RACK_LIFTING,
-                    before=None,
-                )
+                _avg_cols_to_insert = [c for c in [COL_7DAY_AVG_RACK, COL_MTD_AVG_RACK] if c in visible]
+                if _avg_cols_to_insert:
+                    column_order = _ensure_cols_after(
+                        column_order,
+                        required=_avg_cols_to_insert,
+                        after=COL_RACK_LIFTING,
+                        before=None,
+                    )
 
             _sub_breakdown_cols = [
                 COL_TULSA, COL_EL_DORADO, COL_OTHER,
@@ -1832,7 +1868,7 @@ def display_location_details(
                 COL_PRODUCTION if COL_PRODUCTION in column_order else
                 "Production"
             )
-            _sub_available = [c for c in _sub_breakdown_cols if c in cols]
+            _sub_available = [c for c in _sub_breakdown_cols if c in cols and c in visible]
             if _sub_available and _sub_anchor in column_order:
                 column_order = _ensure_cols_after(
                     column_order,
@@ -1855,8 +1891,12 @@ def display_location_details(
 
             editor_df = _build_editor_df(df_display, id_col="Location", ui_cols=column_order)
 
-            # Initialize/refresh canonical df (schema should be stable across FACT toggle).
-            if df_key not in st.session_state or list(st.session_state[df_key].columns) != list(editor_df.columns):
+            _saved_ss = st.session_state.get(df_key)
+            _fresh_col_set = set(editor_df.columns)
+            _saved_col_set = set(_saved_ss.columns) if _saved_ss is not None else set()
+            _new_source_cols = _fresh_col_set - _saved_col_set  # cols added in source
+            _needs_full_rebuild = _saved_ss is None or bool(_new_source_cols)
+            if _needs_full_rebuild:
                 st.session_state[df_key] = _recalculate_inventory_metrics(
                     editor_df,
                     id_col="Location",
@@ -1867,6 +1907,11 @@ def display_location_details(
                     rack_mtd_avg=rack_mtd_avg,
                     df_hist=df_prod,
                 )
+            elif bool(_saved_col_set - _fresh_col_set):
+                _stale_cols = list(_saved_col_set - _fresh_col_set)
+                st.session_state[df_key] = st.session_state[df_key].drop(
+                    columns=_stale_cols, errors="ignore"
+                )
 
             st.session_state[df_key] = st.session_state[df_key].reset_index(drop=True)
 
@@ -1876,17 +1921,42 @@ def display_location_details(
                 if (bool(show_fact) or (not str(c).endswith(" Fact")))
             ]
 
-            view_df = st.session_state[df_key].loc[:, view_cols].copy()
+            _ver_now = int(st.session_state.get(ver_key, 0))
+            _frozen_base_key = f"{widget_scope_key}__fbase_v{_ver_now}"
 
-            styled = _style_source_cells(
-                view_df,
-                locked_cols,
-                fact_reference=(st.session_state[df_key] if not bool(show_fact) else None),
-                safefill=safefill,
-                bottom=bottom,
-            )
+            if _frozen_base_key not in st.session_state:
 
-            editor_column_order = [c for c in column_order if c in view_cols]
+                _prev_fbase_key = f"{widget_scope_key}__fbase_v{_ver_now - 1}"
+                st.session_state.pop(_prev_fbase_key, None)
+                st.session_state[_frozen_base_key] = (
+                    st.session_state[df_key].loc[:, view_cols].copy().reset_index(drop=True)
+                )
+
+            frozen_base = st.session_state[_frozen_base_key]
+
+            if list(frozen_base.columns) != list(
+                st.session_state[df_key].loc[:, view_cols].columns
+            ):
+                st.session_state[ver_key] = _ver_now + 1
+                st.rerun()
+
+            _frozen_styler_key = f"{widget_scope_key}__fstyler_v{_ver_now}"
+
+            if _frozen_styler_key not in st.session_state:
+                # New version or first load: create and cache the Styler.
+                _prev_styler_key = f"{widget_scope_key}__fstyler_v{_ver_now - 1}"
+                st.session_state.pop(_prev_styler_key, None)
+                st.session_state[_frozen_styler_key] = _style_source_cells(
+                    frozen_base,
+                    locked_cols,
+                    fact_reference=(st.session_state[df_key] if not bool(show_fact) else None),
+                    safefill=safefill,
+                    bottom=bottom,
+                )
+
+            styled = st.session_state[_frozen_styler_key]
+
+            editor_column_order = [c for c in column_order if c in frozen_base.columns]
             editor_column_config = {k: v for k, v in column_config.items() if k in editor_column_order}
 
             edited = dynamic_input_data_editor(
@@ -1913,8 +1983,8 @@ def display_location_details(
             # Merge the edited view back into the canonical df so edits persist across toggle.
             canonical = st.session_state[df_key].reset_index(drop=True)
             if canonical.shape[0] != recomputed_view.shape[0]:
-                # Safety fallback: rebuild canonical if something changed the rowset.
-                canonical = _recalculate_inventory_metrics(
+
+                _fresh_canonical = _recalculate_inventory_metrics(
                     editor_df,
                     id_col="Location",
                     safefill=safefill,
@@ -1922,8 +1992,29 @@ def display_location_details(
                     ensure_fact_cols=True,
                     rack_7day_avg=rack_7day_avg,
                     rack_mtd_avg=rack_mtd_avg,
-                    df_hist=df_prod,  # fresh from DB on fallback rebuild
+                    df_hist=df_prod,
                 ).reset_index(drop=True)
+                # Attempt to port user edits from the old canonical where dates align.
+                _editable_restore_cols = [
+                    COL_RACK_LIFTING, COL_STORAGE, "Batch", "Notes", "updated",
+                    COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_ARGENTINE, COL_FROM_327_RECEIPT,
+                ]
+                if (
+                    "Date" in canonical.columns and
+                    "Date" in _fresh_canonical.columns and
+                    "updated" in canonical.columns
+                ):
+                    _edited_rows = canonical[canonical["updated"].fillna(0).astype(int) != 0]
+                    if not _edited_rows.empty:
+                        _fresh_canonical = _fresh_canonical.set_index("Date")
+                        for _, _erow in _edited_rows.iterrows():
+                            _edate = _erow.get("Date")
+                            if _edate in _fresh_canonical.index:
+                                for _ec in _editable_restore_cols:
+                                    if _ec in _erow.index and _ec in _fresh_canonical.columns:
+                                        _fresh_canonical.at[_edate, _ec] = _erow[_ec]
+                        _fresh_canonical = _fresh_canonical.reset_index()
+                canonical = _fresh_canonical
             else:
                 for c in recomputed_view.columns:
                     if c in canonical.columns:

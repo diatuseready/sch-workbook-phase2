@@ -33,3 +33,4 @@ RACK_LIFTING_FORECAST_GUIDE.md
 .gitignore
 verify_forecast_logic.py
 rack_liftings_rockies.csv
+DETAILS_TAB_EDIT_FIX.md

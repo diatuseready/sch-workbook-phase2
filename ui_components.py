@@ -272,8 +272,9 @@ def display_data_freshness_cards(
 
     df = source_status.copy()
 
-    if active_region and "REGION" in df.columns:
-        df = df[df["REGION"].fillna("Unknown") == active_region]
+    
+    if active_region and "REGION_CODE" in df.columns:
+        df = df[df["REGION_CODE"].fillna("Unknown") == active_region]
 
     selected_loc_s = str(selected_loc)
 

@@ -1056,7 +1056,7 @@ def _load_source_status_cached(source: str, sqlite_db_path: str) -> pd.DataFrame
         m.APP_LOCATION_DESC,
         s.CLASS,
         s.LOCATION,
-        s.REGION,
+        m.REGION_CODE,
         s.SOURCE_OPERATOR,
         s.SOURCE_SYSTEM,
         s.SOURCE_TYPE,
