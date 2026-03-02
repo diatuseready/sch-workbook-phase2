@@ -437,17 +437,38 @@ def display_data_freshness_cards(
             status_label, color = _freshness_badge(raw_status, row.get("LAST_UPDATED_AT"))
             last_upd = _format_ts(row.get("LAST_UPDATED_AT"))
 
-            st.markdown(
-                f"""
-                <div class="card">
-                    <h4 style="color:{PRIMARY_GREEN}; margin-bottom:0.2rem;">{name}</h4>
-                    <p style="margin:0; font-size:0.9rem; color:{TEXT_DARK};">
-                        Last Updated (CST): <b>{last_upd}</b><br>
-                        Source System: <b>{source_system}</b><br>
-                        Status: <span style="color:{color}; font-weight:700;">{status_label}</span>
-                        <span style="color:#A0AEC0; font-weight:600;">({raw_status})</span><br>
-                    </p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            if last_upd == "—":
+                color = "#718096"
+                # Tells the user that this could be a manual location with no automated status, in a different style
+                st.markdown(
+                    f"""
+                    <div class="card" style="border:1px dashed {color};">
+                        <h4 style="color:{color}; margin-bottom:0.2rem;">{name}</h4>
+                        <p style="margin:0; font-size:0.9rem; color:{TEXT_DARK};">
+                            This may be a manual location with no automated status.
+
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                    
+                
+            else:
+                st.markdown(
+                    f"""
+                    <div class="card">
+                        <h4 style="color:{PRIMARY_GREEN}; margin-bottom:0.2rem;">{name}</h4>
+                        <p style="margin:0; font-size:0.9rem; color:{TEXT_DARK};">
+                            Last Updated (CST): <b>{last_upd}</b>
+
+                            Source System: <b>{source_system}</b>
+
+                            Status: <span style="color:{color}; font-weight:700;">{status_label}</span>
+                            <span style="color:#A0AEC0; font-weight:600;">({raw_status})
+</span>
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
