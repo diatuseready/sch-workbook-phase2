@@ -1357,12 +1357,14 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
             selected_loc = None
         else:
             key_loc = f"details_selected_loc|{active_region}"
-            current = st.session_state.get(key_loc)
+            _persist_key = f"_details_loc_persist|{active_region}"
+            current = st.session_state.get(key_loc) or st.session_state.get(_persist_key)
             index = locations.index(current) if current in locations else 0
             selected_loc = st.selectbox(
                 filter_label, options=locations, index=index,
                 key=key_loc, on_change=_un_collapse_expandables,
             )
+            st.session_state[_persist_key] = selected_loc
 
     today = pd.Timestamp.today().date()
     start_off, end_off = get_default_date_window(
