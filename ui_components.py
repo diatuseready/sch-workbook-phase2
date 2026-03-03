@@ -445,8 +445,7 @@ def display_data_freshness_cards(
                     <div class="card" style="border:1px dashed {color};">
                         <h4 style="color:{color}; margin-bottom:0.2rem;">{name}</h4>
                         <p style="margin:0; font-size:0.9rem; color:{TEXT_DARK};">
-                            This may be a manual location with no automated status.
-
+                            This may be a manual location with no automated status.<br>
                         </p>
                     </div>
                     """,
@@ -460,13 +459,10 @@ def display_data_freshness_cards(
                     <div class="card">
                         <h4 style="color:{PRIMARY_GREEN}; margin-bottom:0.2rem;">{name}</h4>
                         <p style="margin:0; font-size:0.9rem; color:{TEXT_DARK};">
-                            Last Updated (CST): <b>{last_upd}</b>
-
-                            Source System: <b>{source_system}</b>
-
+                            Last Updated (CST): <b>{last_upd}</b><br>
+                            Source System: <b>{source_system}</b><br>
                             Status: <span style="color:{color}; font-weight:700;">{status_label}</span>
-                            <span style="color:#A0AEC0; font-weight:600;">({raw_status})
-</span>
+                            <span style="color:#A0AEC0; font-weight:600;">({raw_status})</span><br>
                         </p>
                     </div>
                     """,
