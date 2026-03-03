@@ -78,9 +78,12 @@ COL_TOTAL_INVENTORY = "Total Inventory"        # = Close Inv + Bottom
 COL_ACCOUNTING_INV = "Accounting Inventory"    # = Close Inv − Storage
 COL_7DAY_AVG_RACK = "7 Day Avg"               # 7-day rolling average of Rack/Lifting
 COL_MTD_AVG_RACK = "MTD Avg"                  # month-to-date average of Rack/Lifting
+COL_CALCULATED_RECEIPT = "Calculated Receipt"  # = Today Available − Yesterday Available + Today Rack/Lifting
 
 # --- Misc columns  (user-editable; no direct impact on Closing Inventory) ---
 COL_STORAGE = "Storage"            # user-entered; drives Accounting Inventory
+COL_VESSEL = "Vessel"              # user-entered; free-text vessel name
+COL_VESSEL_VOLUME = "Vessel Volume" # user-entered; vessel volume (BBL)
 COL_BATCH = "Batch"                # free-text batch label
 COL_NOTES = "Notes"                # free-text notes
 COL_TULSA = "Tulsa"                # receipts sub-breakdown
@@ -151,6 +154,7 @@ CALCULATED_COLS: tuple[str, ...] = (
     COL_ACCOUNTING_INV,
     COL_7DAY_AVG_RACK,
     COL_MTD_AVG_RACK,
+    COL_CALCULATED_RECEIPT,
 )
 
 # Misc: editable, no direct impact on Closing Inventory
@@ -159,6 +163,8 @@ MISC_COLS: tuple[str, ...] = (
     COL_AVAILABLE,
     COL_INTRANSIT,
     COL_STORAGE,
+    COL_VESSEL,
+    COL_VESSEL_VOLUME,
     COL_BATCH,
     COL_NOTES,
     COL_BATCH_BREAKDOWN,

@@ -68,6 +68,7 @@ _ALL_CONFIGURABLE_COLS: list[str] = [
     # Calculated
     "Opening Inv", "Close Inv", "Total Closing Inv", "Available Space",
     "Loadable", "Total Inventory", "Accounting Inventory", "7 Day Avg", "MTD Avg",
+    "Calculated Receipt",
     # Input – Incoming
     "Receipts", "Pipeline In", "Production",
     # Input – Outgoing
@@ -75,7 +76,7 @@ _ALL_CONFIGURABLE_COLS: list[str] = [
     # Input – Adjustment
     "Adjustments", "Gain/Loss", "Transfers",
     # Misc
-    "Available", "Intransit", "Storage",
+    "Available", "Intransit", "Storage", "Vessel Volume", "Vessel",
     "View File", "Batch", "Batch Breakdown", "Notes",
     "Tulsa", "El Dorado", "Other", "Argentine", "From 327 Receipt",
 ]
@@ -95,11 +96,14 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Loadable",
     "Total Inventory",
     "Storage",
+    "Vessel",
+    "Vessel Volume",
     "Accounting Inventory",
     "View File",
     "Receipts",
     "Deliveries",
     "Rack/Lifting",
+    "Calculated Receipt",
     "7 Day Avg",
     "MTD Avg",
     "Pipeline In",

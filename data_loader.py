@@ -44,6 +44,8 @@ from config import (
 
     # User-editable persisted columns (phase-2)
     COL_STORAGE,
+    COL_VESSEL,
+    COL_VESSEL_VOLUME,
     COL_TULSA,
     COL_EL_DORADO,
     COL_OTHER,
@@ -149,6 +151,7 @@ NUMERIC_COLUMN_MAP = {
 
     # User-editable persisted columns (phase-2 sub-breakdowns)
     COL_STORAGE: "STORAGE_BBL",
+    COL_VESSEL_VOLUME: "VESSEL_VOLUME_BBL",
     COL_TULSA: "TULSA_BBL",
     COL_EL_DORADO: "EL_DORADO_BBL",
     COL_OTHER: "OTHER_BBL",
@@ -281,6 +284,7 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
 
     df[COL_BATCH] = _col(raw_df, "BATCH", "").fillna("").astype(str)
+    df[COL_VESSEL] = _col(raw_df, "VESSEL", "").fillna("").astype(str)
 
     if "updated" in raw_df.columns:
         df["updated"] = pd.to_numeric(_col(raw_df, "updated", 0), errors="coerce").fillna(0).astype(int)
@@ -569,6 +573,7 @@ def persist_details_rows(
         "Gain/Loss": "GAIN_LOSS_BBL",
             # Phase-2 user-editable persisted columns
             "Storage": "STORAGE_BBL",
+            "Vessel Volume": "VESSEL_VOLUME_BBL",
             "Tulsa": "TULSA_BBL",
             "El Dorado": "EL_DORADO_BBL",
             "Other": "OTHER_BBL",
@@ -603,6 +608,7 @@ def persist_details_rows(
         "Accounting Inventory",  # Close Inv - Storage
         "7 Day Avg",             # 7-day rolling avg of Rack/Lifting
         "MTD Avg",               # Month-to-date avg of Rack/Lifting
+        "Calculated Receipt",    # Today Available - Yesterday Available + Today Rack/Lifting
         # NOTE: "Storage" is intentionally NOT in this set — it is now persisted as STORAGE_BBL
     }
 
@@ -645,6 +651,9 @@ def persist_details_rows(
 
         if COL_BATCH in df.columns:
             d["BATCH"] = str(r.get(COL_BATCH) or "")
+
+        if COL_VESSEL in df.columns:
+            d["VESSEL"] = str(r.get(COL_VESSEL) or "")
 
         if system_s:
             d["SOURCE_OPERATOR"] = system_s
@@ -713,6 +722,7 @@ def persist_details_rows(
                     "ADJUSTMENTS_BBL",
                     "GAIN_LOSS_BBL",
                     "STORAGE_BBL",
+                    "VESSEL_VOLUME_BBL",
                     "TULSA_BBL",
                     "EL_DORADO_BBL",
                     "OTHER_BBL",
@@ -735,6 +745,7 @@ def persist_details_rows(
                     "MANUAL_OVERRIDE_REASON",
                     "MANUAL_OVERRIDE_USER",
                     "BATCH",
+                    "VESSEL",
                 ]
 
                 if system_s:
@@ -743,13 +754,17 @@ def persist_details_rows(
 
                 # Auto-migrate: add new columns to SQLite if they don't exist yet.
                 _new_bbl_cols = [
-                    "STORAGE_BBL", "TULSA_BBL", "EL_DORADO_BBL", "OTHER_BBL",
+                    "STORAGE_BBL", "VESSEL_VOLUME_BBL", "TULSA_BBL", "EL_DORADO_BBL", "OTHER_BBL",
                     "ARGENTINE_BBL", "FROM_327_RECEIPT_BBL",
                 ]
                 _existing_cols = {r[1] for r in cur.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
                 for _c in _new_bbl_cols:
                     if _c not in _existing_cols:
                         cur.execute(f"ALTER TABLE {SQLITE_TABLE} ADD COLUMN {_c} REAL DEFAULT 0")
+                _new_text_cols = ["VESSEL"]
+                for _c in _new_text_cols:
+                    if _c not in _existing_cols:
+                        cur.execute(f"ALTER TABLE {SQLITE_TABLE} ADD COLUMN {_c} TEXT DEFAULT ''")
 
                 for c in write_cols:
                     row.setdefault(c, 0.0 if c.endswith("_BBL") else None)
@@ -956,6 +971,8 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(SAFE_FILL_LIMIT_BBL, 0) AS FLOAT) as SAFE_FILL_LIMIT_BBL,
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
         CAST(COALESCE(STORAGE_BBL, 0) AS FLOAT) as STORAGE_BBL,
+        CAST(COALESCE(VESSEL_VOLUME_BBL, 0) AS FLOAT) as VESSEL_VOLUME_BBL,
+        CAST(COALESCE(VESSEL, '') AS STRING) as VESSEL,
         CAST(COALESCE(TULSA_BBL, 0) AS FLOAT) as TULSA_BBL,
         CAST(COALESCE(EL_DORADO_BBL, 0) AS FLOAT) as EL_DORADO_BBL,
         CAST(COALESCE(OTHER_BBL, 0) AS FLOAT) as OTHER_BBL,
@@ -1455,6 +1472,8 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(SAFE_FILL_LIMIT_BBL, 0) AS FLOAT) as SAFE_FILL_LIMIT_BBL,
         CAST(COALESCE(AVAILABLE_SPACE_BBL, 0) AS FLOAT) as AVAILABLE_SPACE_BBL,
         CAST(COALESCE(STORAGE_BBL, 0) AS FLOAT) as STORAGE_BBL,
+        CAST(COALESCE(VESSEL_VOLUME_BBL, 0) AS FLOAT) as VESSEL_VOLUME_BBL,
+        CAST(COALESCE(VESSEL, '') AS STRING) as VESSEL,
         CAST(COALESCE(TULSA_BBL, 0) AS FLOAT) as TULSA_BBL,
         CAST(COALESCE(EL_DORADO_BBL, 0) AS FLOAT) as EL_DORADO_BBL,
         CAST(COALESCE(OTHER_BBL, 0) AS FLOAT) as OTHER_BBL,

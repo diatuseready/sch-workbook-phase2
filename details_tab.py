@@ -26,6 +26,7 @@ from config import (
     COL_BATCH_OUT_FACT,
     COL_BATCH_OUT_FACT_RAW,
     COL_BATCH_OUT_RAW,
+    COL_CALCULATED_RECEIPT,
     COL_CLOSE_INV_FACT_RAW,
     COL_CLOSE_INV_RAW,
     COL_EL_DORADO,
@@ -59,6 +60,8 @@ from config import (
     COL_TRANSFERS,
     COL_TRANSFERS_FACT,
     COL_TULSA,
+    COL_VESSEL,
+    COL_VESSEL_VOLUME,
     COL_7DAY_AVG_RACK,
     DATA_SOURCE,
     DETAILS_RENAME_MAP,
@@ -88,6 +91,7 @@ DETAILS_COLS = [
     COL_BATCH_IN,
     COL_BATCH_OUT,
     COL_RACK_LIFTING,
+    COL_CALCULATED_RECEIPT,
     COL_7DAY_AVG_RACK,
     COL_MTD_AVG_RACK,
     COL_PIPELINE_IN,
@@ -102,6 +106,8 @@ DETAILS_COLS = [
     COL_ARGENTINE,
     COL_FROM_327_RECEIPT,
     COL_STORAGE,
+    COL_VESSEL,
+    COL_VESSEL_VOLUME,
     COL_BATCH,
     COL_BATCH_BREAKDOWN,
     COL_NOTES,
@@ -201,6 +207,7 @@ LOCKED_BASE_COLS = [
     "Date", "{id_col}", "Product", "Close Inv",
     COL_TOTAL_CLOSING_INV, COL_AVAILABLE_SPACE, COL_LOADABLE,
     COL_TOTAL_INVENTORY, COL_ACCOUNTING_INV, COL_7DAY_AVG_RACK, COL_MTD_AVG_RACK,
+    COL_CALCULATED_RECEIPT,
     "Opening Inv",
 ]
 
@@ -312,6 +319,99 @@ def _recalculate_accounting_inv(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _recalculate_calculated_receipt(
+    df: pd.DataFrame,
+    *,
+    id_col: str,
+    df_hist: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Calculated Receipt = Today's Available \u2212 Yesterday's Available + Today's Rack/Lifting.
+
+    Behaviour:
+    - Past rows and today: always computed.  When the date filter starts mid-period
+      (so the first visible row has no in-grid predecessor), the function looks back
+      into the full historical data (df_hist) to find the prior-day Available \u2014 so
+      the value is never NaN purely because of the filter window.
+    - Future rows (date > today, i.e. forecast rows): always NaN \u2014 no meaningful
+      receipt figure can be derived from projected Available values.
+    - Groups are partitioned by (id_col, Product) so each location/product is
+      independent.
+    """
+    if df is None or df.empty:
+        return df
+    if COL_AVAILABLE not in df.columns:
+        df = df.copy()
+        df[COL_CALCULATED_RECEIPT] = np.nan
+        return df
+
+    out = df.copy()
+    today = pd.Timestamp.today().normalize()
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+
+    # Coerce inputs
+    out[COL_AVAILABLE] = _to_numeric_series(out[COL_AVAILABLE]).fillna(0.0)
+    if COL_RACK_LIFTING in out.columns:
+        out[COL_RACK_LIFTING] = _to_numeric_series(out[COL_RACK_LIFTING]).fillna(0.0)
+    else:
+        out[COL_RACK_LIFTING] = 0.0
+
+    # Build a prior-day Available lookup from full history so the first visible row
+    # of a filtered window never suffers a spurious NaN.
+    # Key: (id_val, prod_val, date_normalized) -> available
+    hist_avail: dict[tuple, float] = {}
+    if df_hist is not None and not df_hist.empty and COL_AVAILABLE in df_hist.columns:
+        h = df_hist.copy()
+        h["Date"] = pd.to_datetime(h["Date"], errors="coerce")
+        h = h[h["Date"].notna()]
+        # Exclude forecast rows from the reference data
+        if "SOURCE_TYPE" in h.columns:
+            h = h[h["SOURCE_TYPE"].astype(str).str.lower() != "forecast"]
+        h[COL_AVAILABLE] = pd.to_numeric(h[COL_AVAILABLE], errors="coerce").fillna(0.0)
+        id_col_h = id_col if id_col in h.columns else None
+        prod_col_h = "Product" if "Product" in h.columns else None
+        for _, row in h.iterrows():
+            id_val = str(row[id_col_h]) if id_col_h else "*"
+            prod_val = str(row[prod_col_h]) if prod_col_h else "*"
+            hist_avail[(id_val, prod_val, row["Date"].normalize())] = float(row[COL_AVAILABLE])
+
+    group_cols = [id_col] + (["Product"] if "Product" in out.columns else [])
+    sort_cols = ["Date"] + group_cols
+    out = out.sort_values(sort_cols, kind="mergesort")
+
+    def _apply(g: pd.DataFrame) -> pd.DataFrame:
+        g = g.sort_values("Date", kind="mergesort").copy()
+        avail_s = _to_numeric_series(g[COL_AVAILABLE]).fillna(0.0)
+        rack_s = _to_numeric_series(g[COL_RACK_LIFTING]).fillna(0.0)
+        id_val = str(g[id_col].iloc[0]) if id_col in g.columns else "*"
+        prod_val = str(g["Product"].iloc[0]) if "Product" in g.columns else "*"
+        results: list = []
+        for i, idx in enumerate(g.index):
+            row_date = g.at[idx, "Date"]
+            # Forecast rows (date > today) -> NaN
+            if pd.isna(row_date) or row_date.normalize() > today:
+                results.append(np.nan)
+                continue
+            today_avail = float(avail_s.iloc[i])
+            today_rack = float(rack_s.iloc[i])
+            if i > 0:
+                # Prior row is within the grid -- use it directly
+                prev_avail: float | None = float(avail_s.iloc[i - 1])
+            else:
+                # First visible row: resolve prior-day Available from full history
+                yesterday = row_date.normalize() - pd.Timedelta(days=1)
+                prev_avail = hist_avail.get((id_val, prod_val, yesterday))
+            if prev_avail is None or (isinstance(prev_avail, float) and np.isnan(prev_avail)):
+                results.append(np.nan)
+            else:
+                results.append(round(today_avail - prev_avail + today_rack, 2))
+        g[COL_CALCULATED_RECEIPT] = results
+        return g
+
+    parts = [_apply(g) for _, g in out.groupby(group_cols, dropna=False, sort=False)]
+    out = pd.concat(parts, axis=0) if parts else out
+    out = out.sort_values(sort_cols, kind="mergesort")
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.date
+    return out
 def _fill_rack_averages_per_row(df: pd.DataFrame, df_hist: pd.DataFrame) -> pd.DataFrame:
     """Compute per-row 7-day and MTD rack averages from historical data."""
     if df is None or df.empty:
@@ -392,6 +492,7 @@ def _recalculate_inventory_metrics(
     out = _recalculate_loadable(out, bottom=bottom)
     out = _recalculate_total_inventory(out, bottom=bottom)
     out = _recalculate_accounting_inv(out)
+    out = _recalculate_calculated_receipt(out, id_col=id_col, df_hist=df_hist)
     if df_hist is not None:
         out = _fill_rack_averages_per_row(out, df_hist)
     return out
@@ -401,7 +502,7 @@ def _needs_inventory_rerun(before: pd.DataFrame, after: pd.DataFrame) -> bool:
     """Return True if calculated inventory columns have changed enough to warrant a re-render."""
     if before is None or after is None or before.shape[0] != after.shape[0]:
         return False
-    for c in ["Opening Inv", "Close Inv", COL_ACCOUNTING_INV]:
+    for c in ["Opening Inv", "Close Inv", COL_ACCOUNTING_INV, COL_CALCULATED_RECEIPT]:
         if c not in before.columns or c not in after.columns:
             continue
         b = _to_numeric_series(before[c]).fillna(0.0).to_numpy(dtype=float)
@@ -559,6 +660,10 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
             agg_map[sub] = "sum"
     if COL_STORAGE in df.columns:
         agg_map[COL_STORAGE] = "last"
+    if COL_VESSEL in df.columns:
+        agg_map[COL_VESSEL] = "last"
+    if COL_VESSEL_VOLUME in df.columns:
+        agg_map[COL_VESSEL_VOLUME] = "last"
     if "FILE_LOCATION" in df.columns:
         agg_map["FILE_LOCATION"] = "last"
 
@@ -637,6 +742,8 @@ def _fill_missing_internal_dates(
             g2[COL_BATCH_BREAKDOWN] = g2[COL_BATCH_BREAKDOWN].fillna("")
         if "Notes" in g2.columns:
             g2["Notes"] = g2["Notes"].fillna("")
+        if COL_VESSEL in g2.columns:
+            g2[COL_VESSEL] = g2[COL_VESSEL].fillna("")
         if "FILE_LOCATION" in g2.columns:
             g2["FILE_LOCATION"] = g2["FILE_LOCATION"].apply(
                 lambda v: [] if (v is None or (isinstance(v, float) and pd.isna(v))) else v
@@ -721,7 +828,7 @@ def build_details_view(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     keep = [c for c in df.columns if c in display_set or c in fact_set or c in _TRACKING_COLS]
     df = df[keep].copy()
 
-    no_round = {"Date", id_col, "Product", "Notes", "Batch", COL_BATCH_BREAKDOWN, "updated", "FILE_LOCATION", "SOURCE_TYPE"}
+    no_round = {"Date", id_col, "Product", "Notes", "Batch", COL_BATCH_BREAKDOWN, COL_VESSEL, "updated", "FILE_LOCATION", "SOURCE_TYPE"}
     for c in df.columns:
         if c not in no_round and pd.api.types.is_numeric_dtype(df[c]):
             df[c] = df[c].round(2)
@@ -739,6 +846,10 @@ def _build_editor_df(df_display: pd.DataFrame) -> pd.DataFrame:
         out[COL_VIEW_FILE] = out[COL_VIEW_FILE].fillna(False).astype(bool)
     if COL_STORAGE not in out.columns:
         out[COL_STORAGE] = np.nan
+    if COL_VESSEL_VOLUME not in out.columns:
+        out[COL_VESSEL_VOLUME] = np.nan
+    if COL_VESSEL not in out.columns:
+        out[COL_VESSEL] = ""
     return out.reset_index(drop=True)
 
 
@@ -770,6 +881,14 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
         COL_STORAGE: st.column_config.NumberColumn(
             COL_STORAGE, disabled=False, format=NUM_FMT,
             help="Volume held in storage. Used to compute Accounting Inventory (Close Inv − Storage).",
+        ),
+        COL_VESSEL: st.column_config.TextColumn(
+            COL_VESSEL,
+            help="Vessel name or identifier for this row.",
+        ),
+        COL_VESSEL_VOLUME: st.column_config.NumberColumn(
+            COL_VESSEL_VOLUME, disabled=False, format=NUM_FMT,
+            help="Volume associated with the vessel (BBL).",
         ),
         "SOURCE_TYPE": st.column_config.TextColumn("SOURCE_TYPE", disabled=True),
         COL_VIEW_FILE: st.column_config.CheckboxColumn(
@@ -1068,7 +1187,8 @@ def display_location_details(
                 "| **Total Inventory** | Close Inv + Bottom |\n"
                 "| **Accounting Inv** | Close Inv − Storage |\n"
                 "| **7 Day Avg** | 7-day rolling average of Rack/Lifting |\n"
-                "| **MTD Avg** | Month-to-date average of Rack/Lifting |",
+                "| **MTD Avg** | Month-to-date average of Rack/Lifting |\n"
+                "| **Calculated Receipt** | Today's Available − Yesterday's Available + Today's Rack/Lifting |",
             )
 
     # Handle reset at location level (clears all product tabs)
