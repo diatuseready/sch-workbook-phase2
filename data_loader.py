@@ -26,6 +26,11 @@ from config import (
 
     # Free-text columns
     COL_BATCH,
+    COL_BATCH_BREAKDOWN,
+    COL_RMPL_BATCH_ID,
+    COL_SEMINOE_BATCH_ID,
+    COL_MEDICINE_BATCH_ID,
+    COL_PIONEER_BATCH_ID,
 
     # Flow columns
     COL_BATCH_IN_RAW,
@@ -33,6 +38,11 @@ from config import (
     COL_RACK_LIFTINGS_RAW,
     COL_PIPELINE_IN,
     COL_PIPELINE_OUT,
+    COL_PTO,
+    COL_RMPL_PIPELINE_OUT,
+    COL_SEMINOE_PIPELINE_OUT,
+    COL_MEDICINE_PIPELINE_OUT,
+    COL_PIONEER_PIPELINE_OUT,
     COL_PRODUCTION,
     COL_ADJUSTMENTS,
     COL_GAIN_LOSS,
@@ -49,7 +59,7 @@ from config import (
     COL_TULSA,
     COL_EL_DORADO,
     COL_OTHER,
-    COL_ARGENTINE,
+    COL_OFFLINE,
     COL_FROM_327_RECEIPT,
 
     # Capacity/threshold columns
@@ -138,6 +148,11 @@ NUMERIC_COLUMN_MAP = {
     COL_PRODUCTION: "PRODUCTION_BBL",
     COL_PIPELINE_IN: "PIPELINE_IN_BBL",
     COL_PIPELINE_OUT: "PIPELINE_OUT_BBL",
+    COL_PTO: "PTO",
+    COL_RMPL_PIPELINE_OUT: "RMPL_PIPELINE_OUT",
+    COL_SEMINOE_PIPELINE_OUT: "SEMINOE_PIPELINE_OUT",
+    COL_MEDICINE_PIPELINE_OUT: "MEDICINE_PIPELINE_OUT",
+    COL_PIONEER_PIPELINE_OUT: "PIONEER_PIPELINE_OUT",
     COL_ADJUSTMENTS: "ADJUSTMENTS_BBL",
     COL_GAIN_LOSS: "GAIN_LOSS_BBL",
     COL_TRANSFERS: "TRANSFERS_BBL",
@@ -155,7 +170,7 @@ NUMERIC_COLUMN_MAP = {
     COL_TULSA: "TULSA_BBL",
     COL_EL_DORADO: "EL_DORADO_BBL",
     COL_OTHER: "OTHER_BBL",
-    COL_ARGENTINE: "ARGENTINE_BBL",
+    COL_OFFLINE: "OFFLINE_BBL",
     COL_FROM_327_RECEIPT: "FROM_327_RECEIPT_BBL",
 
     # Fact columns (optional UI display)
@@ -215,6 +230,20 @@ def get_user_role() -> str:
 
 
 def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
+    # Backward-compatible aliases across schema versions.
+    if "OFFLINE_BBL" not in raw_df.columns and "ARGENTINE_BBL" in raw_df.columns:
+        raw_df = raw_df.copy()
+        raw_df["OFFLINE_BBL"] = raw_df["ARGENTINE_BBL"]
+    for _new, _old in [
+        ("RMPL_PIPELINE_OUT", "RMPL_PIPELINE_OUT_BBL"),
+        ("SEMINOE_PIPELINE_OUT", "SEMINOE_PIPELINE_OUT_BBL"),
+        ("MEDICINE_PIPELINE_OUT", "MEDICINE_PIPELINE_OUT_BBL"),
+        ("PIONEER_PIPELINE_OUT", "PIONEER_PIPELINE_OUT_BBL"),
+    ]:
+        if _new not in raw_df.columns and _old in raw_df.columns:
+            raw_df = raw_df.copy()
+            raw_df[_new] = raw_df[_old]
+
     df = pd.DataFrame(index=raw_df.index)
 
     def _parse_file_locations(v) -> list[str]:
@@ -284,6 +313,11 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["Notes"] = _col(raw_df, "MANUAL_OVERRIDE_REASON", "").fillna("")
 
     df[COL_BATCH] = _col(raw_df, "BATCH", "").fillna("").astype(str)
+    df[COL_BATCH_BREAKDOWN] = _col(raw_df, "BATCH_BREAKDOWN", "").fillna("").astype(str)
+    df[COL_RMPL_BATCH_ID] = _col(raw_df, "RMPL_BATCH_ID", "").fillna("").astype(str)
+    df[COL_SEMINOE_BATCH_ID] = _col(raw_df, "SEMINOE_BATCH_ID", "").fillna("").astype(str)
+    df[COL_MEDICINE_BATCH_ID] = _col(raw_df, "MEDICINE_BATCH_ID", "").fillna("").astype(str)
+    df[COL_PIONEER_BATCH_ID] = _col(raw_df, "PIONEER_BATCH_ID", "").fillna("").astype(str)
     df[COL_VESSEL] = _col(raw_df, "VESSEL", "").fillna("").astype(str)
 
     if "updated" in raw_df.columns:
@@ -568,6 +602,11 @@ def persist_details_rows(
         "Rack/Lifting": "RACK_LIFTINGS_BBL",
         "Pipeline In": "PIPELINE_IN_BBL",
         "Pipeline Out": "PIPELINE_OUT_BBL",
+        "PTO": "PTO",
+        "RMPL Pipeline Out": "RMPL_PIPELINE_OUT",
+        "Seminoe Pipeline Out": "SEMINOE_PIPELINE_OUT",
+        "Medicine Pipeline Out": "MEDICINE_PIPELINE_OUT",
+        "Pioneer Pipeline Out": "PIONEER_PIPELINE_OUT",
         "Transfers": "TRANSFERS_BBL",
         "Adjustments": "ADJUSTMENTS_BBL",
         "Gain/Loss": "GAIN_LOSS_BBL",
@@ -577,10 +616,19 @@ def persist_details_rows(
             "Tulsa": "TULSA_BBL",
             "El Dorado": "EL_DORADO_BBL",
             "Other": "OTHER_BBL",
-            "Argentine": "ARGENTINE_BBL",
+            "Offline": "OFFLINE_BBL",
+            "Argentine": "OFFLINE_BBL",
             "From 327 Receipt": "FROM_327_RECEIPT_BBL",
         "Adjustments Fact": "FACT_ADJUSTMENTS_BBL",
         "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
+    }
+
+    TEXT_MAP = {
+        COL_BATCH_BREAKDOWN: "BATCH_BREAKDOWN",
+        COL_RMPL_BATCH_ID: "RMPL_BATCH_ID",
+        COL_SEMINOE_BATCH_ID: "SEMINOE_BATCH_ID",
+        COL_MEDICINE_BATCH_ID: "MEDICINE_BATCH_ID",
+        COL_PIONEER_BATCH_ID: "PIONEER_BATCH_ID",
     }
 
     # Fact (terminal-feed) columns — display name → DB column name.
@@ -631,6 +679,17 @@ def persist_details_rows(
         source_type = str(r.get("SOURCE_TYPE") or "").strip().lower()
         if source_type not in {"system", "user", "forecast"}:
             source_type = "user"
+        # When a user explicitly saves a forecast row, promote it to 'user' so
+        # that on reload it is preserved in _extend_with_30d_forecast rather than
+        # being discarded and overwritten by a freshly generated estimate.
+        _date_for_st = pd.to_datetime(r.get("Date"), errors="coerce")
+        _today_for_st = pd.Timestamp.today().normalize()
+        if (
+            source_type == "forecast"
+            and pd.notna(_date_for_st)
+            and _date_for_st.normalize() >= _today_for_st
+        ):
+            source_type = "user"
 
         date_val = r.get("Date")
         date_s = None if pd.isna(date_val) else str(date_val)
@@ -651,6 +710,10 @@ def persist_details_rows(
 
         if COL_BATCH in df.columns:
             d["BATCH"] = str(r.get(COL_BATCH) or "")
+
+        for ui_col, db_col in TEXT_MAP.items():
+            if ui_col in df.columns:
+                d[db_col] = str(r.get(ui_col) or "")
 
         if COL_VESSEL in df.columns:
             d["VESSEL"] = str(r.get(COL_VESSEL) or "")
@@ -718,6 +781,11 @@ def persist_details_rows(
                     "RACK_LIFTINGS_BBL",
                     "PIPELINE_IN_BBL",
                     "PIPELINE_OUT_BBL",
+                    "PTO",
+                    "RMPL_PIPELINE_OUT",
+                    "SEMINOE_PIPELINE_OUT",
+                    "MEDICINE_PIPELINE_OUT",
+                    "PIONEER_PIPELINE_OUT",
                     "TRANSFERS_BBL",
                     "ADJUSTMENTS_BBL",
                     "GAIN_LOSS_BBL",
@@ -726,7 +794,7 @@ def persist_details_rows(
                     "TULSA_BBL",
                     "EL_DORADO_BBL",
                     "OTHER_BBL",
-                    "ARGENTINE_BBL",
+                    "OFFLINE_BBL",
                     "FROM_327_RECEIPT_BBL",
                     "FACT_OPENING_INVENTORY_BBL",
                     "FACT_CLOSING_INVENTORY_BBL",
@@ -745,6 +813,11 @@ def persist_details_rows(
                     "MANUAL_OVERRIDE_REASON",
                     "MANUAL_OVERRIDE_USER",
                     "BATCH",
+                    "BATCH_BREAKDOWN",
+                    "RMPL_BATCH_ID",
+                    "SEMINOE_BATCH_ID",
+                    "MEDICINE_BATCH_ID",
+                    "PIONEER_BATCH_ID",
                     "VESSEL",
                 ]
 
@@ -755,19 +828,32 @@ def persist_details_rows(
                 # Auto-migrate: add new columns to SQLite if they don't exist yet.
                 _new_bbl_cols = [
                     "STORAGE_BBL", "VESSEL_VOLUME_BBL", "TULSA_BBL", "EL_DORADO_BBL", "OTHER_BBL",
-                    "ARGENTINE_BBL", "FROM_327_RECEIPT_BBL",
+                    "OFFLINE_BBL", "FROM_327_RECEIPT_BBL",
+                    "PTO",
+                    "RMPL_PIPELINE_OUT", "SEMINOE_PIPELINE_OUT",
+                    "MEDICINE_PIPELINE_OUT", "PIONEER_PIPELINE_OUT",
                 ]
                 _existing_cols = {r[1] for r in cur.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
                 for _c in _new_bbl_cols:
                     if _c not in _existing_cols:
                         cur.execute(f"ALTER TABLE {SQLITE_TABLE} ADD COLUMN {_c} REAL DEFAULT 0")
-                _new_text_cols = ["VESSEL"]
+                _new_text_cols = [
+                    "VESSEL", "BATCH_BREAKDOWN",
+                    "RMPL_BATCH_ID", "SEMINOE_BATCH_ID", "MEDICINE_BATCH_ID", "PIONEER_BATCH_ID",
+                ]
                 for _c in _new_text_cols:
                     if _c not in _existing_cols:
                         cur.execute(f"ALTER TABLE {SQLITE_TABLE} ADD COLUMN {_c} TEXT DEFAULT ''")
 
+                numeric_default_cols = {
+                    "PTO",
+                    "RMPL_PIPELINE_OUT",
+                    "SEMINOE_PIPELINE_OUT",
+                    "MEDICINE_PIPELINE_OUT",
+                    "PIONEER_PIPELINE_OUT",
+                }
                 for c in write_cols:
-                    row.setdefault(c, 0.0 if c.endswith("_BBL") else None)
+                    row.setdefault(c, 0.0 if (c.endswith("_BBL") or c in numeric_default_cols) else None)
 
                 if existing_key:
                     set_sql = ", ".join([f"{c}=?" for c in write_cols] + ["UPDATED_AT=?"])
@@ -802,7 +888,7 @@ def persist_details_rows(
         #     ("TULSA_BBL", "FLOAT"),
         #     ("EL_DORADO_BBL", "FLOAT"),
         #     ("OTHER_BBL", "FLOAT"),
-        #     ("ARGENTINE_BBL", "FLOAT"),
+        #     ("OFFLINE_BBL", "FLOAT"),
         #     ("FROM_327_RECEIPT_BBL", "FLOAT"),
         # ]
         # for _sf_col, _sf_type in _new_sf_cols:
@@ -835,7 +921,7 @@ def persist_details_rows(
                 except Exception:
                     return "0"
 
-            if col.endswith("_BBL"):
+            if col in (set(NUM_MAP.values()) | set(FACT_MAP.values())):
                 try:
                     return str(float(v))
                 except Exception:
@@ -849,7 +935,7 @@ def persist_details_rows(
                 return f"TO_DATE({c}) AS {c}"
             if c == "MANUAL_OVERRIDE_FLAG":
                 return f"CAST({c} AS NUMBER(1,0)) AS {c}"
-            if c.endswith("_BBL"):
+            if c in (set(NUM_MAP.values()) | set(FACT_MAP.values())):
                 return f"CAST({c} AS DOUBLE) AS {c}"
             return f"CAST({c} AS STRING) AS {c}"
 
@@ -941,6 +1027,11 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
+        CAST(COALESCE(BATCH_BREAKDOWN, '') AS STRING) as BATCH_BREAKDOWN,
+        CAST(COALESCE(RMPL_BATCH_ID, '') AS STRING) as RMPL_BATCH_ID,
+        CAST(COALESCE(SEMINOE_BATCH_ID, '') AS STRING) as SEMINOE_BATCH_ID,
+        CAST(COALESCE(MEDICINE_BATCH_ID, '') AS STRING) as MEDICINE_BATCH_ID,
+        CAST(COALESCE(PIONEER_BATCH_ID, '') AS STRING) as PIONEER_BATCH_ID,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,
@@ -951,6 +1042,11 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(PRODUCTION_BBL, 0) AS FLOAT) as PRODUCTION_BBL,
         CAST(COALESCE(PIPELINE_IN_BBL, 0) AS FLOAT) as PIPELINE_IN_BBL,
         CAST(COALESCE(PIPELINE_OUT_BBL, 0) AS FLOAT) as PIPELINE_OUT_BBL,
+        CAST(COALESCE(PTO, 0) AS FLOAT) as PTO,
+        CAST(COALESCE(RMPL_PIPELINE_OUT, 0) AS FLOAT) as RMPL_PIPELINE_OUT,
+        CAST(COALESCE(SEMINOE_PIPELINE_OUT, 0) AS FLOAT) as SEMINOE_PIPELINE_OUT,
+        CAST(COALESCE(MEDICINE_PIPELINE_OUT, 0) AS FLOAT) as MEDICINE_PIPELINE_OUT,
+        CAST(COALESCE(PIONEER_PIPELINE_OUT, 0) AS FLOAT) as PIONEER_PIPELINE_OUT,
         CAST(COALESCE(TRY_TO_DOUBLE(ADJUSTMENTS_BBL), 0) AS FLOAT) as ADJUSTMENTS_BBL,
         CAST(COALESCE(TRY_TO_DOUBLE(GAIN_LOSS_BBL), 0) AS FLOAT) as GAIN_LOSS_BBL,
         CAST(COALESCE(TRY_TO_DOUBLE(TRANSFERS_BBL), 0) AS FLOAT) as TRANSFERS_BBL,
@@ -976,7 +1072,7 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(TULSA_BBL, 0) AS FLOAT) as TULSA_BBL,
         CAST(COALESCE(EL_DORADO_BBL, 0) AS FLOAT) as EL_DORADO_BBL,
         CAST(COALESCE(OTHER_BBL, 0) AS FLOAT) as OTHER_BBL,
-        CAST(COALESCE(ARGENTINE_BBL, 0) AS FLOAT) as ARGENTINE_BBL,
+        CAST(COALESCE(OFFLINE_BBL, 0) AS FLOAT) as OFFLINE_BBL,
         CAST(COALESCE(FROM_327_RECEIPT_BBL, 0) AS FLOAT) as FROM_327_RECEIPT_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
@@ -1442,6 +1538,11 @@ def _load_inventory_data_filtered_cached(
         SOURCE_OPERATOR,
         SOURCE_SYSTEM,
         CAST(COALESCE(BATCH, '') AS STRING) as BATCH,
+        CAST(COALESCE(BATCH_BREAKDOWN, '') AS STRING) as BATCH_BREAKDOWN,
+        CAST(COALESCE(RMPL_BATCH_ID, '') AS STRING) as RMPL_BATCH_ID,
+        CAST(COALESCE(SEMINOE_BATCH_ID, '') AS STRING) as SEMINOE_BATCH_ID,
+        CAST(COALESCE(MEDICINE_BATCH_ID, '') AS STRING) as MEDICINE_BATCH_ID,
+        CAST(COALESCE(PIONEER_BATCH_ID, '') AS STRING) as PIONEER_BATCH_ID,
         CAST(COALESCE(RECEIPTS_BBL, 0) AS FLOAT) as RECEIPTS_BBL,
         CAST(COALESCE(DELIVERIES_BBL, 0) AS FLOAT) as DELIVERIES_BBL,
         CAST(COALESCE(RACK_LIFTINGS_BBL, 0) AS FLOAT) as RACK_LIFTINGS_BBL,
@@ -1452,6 +1553,11 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(PRODUCTION_BBL, 0) AS FLOAT) as PRODUCTION_BBL,
         CAST(COALESCE(PIPELINE_IN_BBL, 0) AS FLOAT) as PIPELINE_IN_BBL,
         CAST(COALESCE(PIPELINE_OUT_BBL, 0) AS FLOAT) as PIPELINE_OUT_BBL,
+        CAST(COALESCE(PTO, 0) AS FLOAT) as PTO,
+        CAST(COALESCE(RMPL_PIPELINE_OUT, 0) AS FLOAT) as RMPL_PIPELINE_OUT,
+        CAST(COALESCE(SEMINOE_PIPELINE_OUT, 0) AS FLOAT) as SEMINOE_PIPELINE_OUT,
+        CAST(COALESCE(MEDICINE_PIPELINE_OUT, 0) AS FLOAT) as MEDICINE_PIPELINE_OUT,
+        CAST(COALESCE(PIONEER_PIPELINE_OUT, 0) AS FLOAT) as PIONEER_PIPELINE_OUT,
         CAST(COALESCE(TRY_TO_DOUBLE(ADJUSTMENTS_BBL), 0) AS FLOAT) as ADJUSTMENTS_BBL,
         CAST(COALESCE(TRY_TO_DOUBLE(GAIN_LOSS_BBL), 0) AS FLOAT) as GAIN_LOSS_BBL,
         CAST(COALESCE(TRY_TO_DOUBLE(TRANSFERS_BBL), 0) AS FLOAT) as TRANSFERS_BBL,
@@ -1477,7 +1583,7 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(TULSA_BBL, 0) AS FLOAT) as TULSA_BBL,
         CAST(COALESCE(EL_DORADO_BBL, 0) AS FLOAT) as EL_DORADO_BBL,
         CAST(COALESCE(OTHER_BBL, 0) AS FLOAT) as OTHER_BBL,
-        CAST(COALESCE(ARGENTINE_BBL, 0) AS FLOAT) as ARGENTINE_BBL,
+        CAST(COALESCE(OFFLINE_BBL, 0) AS FLOAT) as OFFLINE_BBL,
         CAST(COALESCE(FROM_327_RECEIPT_BBL, 0) AS FLOAT) as FROM_327_RECEIPT_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,

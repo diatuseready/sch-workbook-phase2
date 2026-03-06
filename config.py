@@ -89,9 +89,19 @@ COL_NOTES = "Notes"                # free-text notes
 COL_TULSA = "Tulsa"                # receipts sub-breakdown
 COL_EL_DORADO = "El Dorado"        # receipts sub-breakdown
 COL_OTHER = "Other"                # receipts sub-breakdown
-COL_ARGENTINE = "Argentine"        # receipts sub-breakdown
+COL_OFFLINE = "Offline"            # renamed from Argentine; maps to OFFLINE_BBL in DB
+COL_ARGENTINE = COL_OFFLINE         # backward-compatible alias
 COL_FROM_327_RECEIPT = "From 327 Receipt"  # receipts sub-breakdown
 COL_BATCH_BREAKDOWN = "Batch Breakdown"    # free-text batch breakdown
+COL_RMPL_PIPELINE_OUT = "RMPL Pipeline Out"
+COL_SEMINOE_PIPELINE_OUT = "Seminoe Pipeline Out"
+COL_MEDICINE_PIPELINE_OUT = "Medicine Pipeline Out"
+COL_PIONEER_PIPELINE_OUT = "Pioneer Pipeline Out"
+COL_PTO = "PTO"
+COL_RMPL_BATCH_ID = "RMPL Batch ID"
+COL_SEMINOE_BATCH_ID = "Seminoe Batch ID"
+COL_MEDICINE_BATCH_ID = "Medicine Batch ID"
+COL_PIONEER_BATCH_ID = "Pioneer Batch ID"
 
 # --- Fact / Terminal Feed columns  (paired read-only columns; toggled via UI) ---
 COL_OPEN_INV_FACT_RAW = "Open Inv Fact"
@@ -135,7 +145,17 @@ INPUT_INCOMING_COLS: tuple[str, ...] = (
 )
 
 # Input — Outgoing: subtracted from Closing Inventory
-INPUT_OUTGOING_COLS: tuple[str, ...] = (COL_BATCH_OUT, COL_RACK_LIFTING, COL_PIPELINE_OUT, COL_ARGENTINE)
+INPUT_OUTGOING_COLS: tuple[str, ...] = (
+    COL_BATCH_OUT,
+    COL_RACK_LIFTING,
+    COL_PIPELINE_OUT,
+    COL_RMPL_PIPELINE_OUT,
+    COL_SEMINOE_PIPELINE_OUT,
+    COL_MEDICINE_PIPELINE_OUT,
+    COL_PIONEER_PIPELINE_OUT,
+    COL_PTO,
+    COL_OFFLINE,
+)
 
 # Input — Adjustments: net effect on Closing Inventory
 INPUT_ADJUSTMENT_COLS: tuple[str, ...] = (COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS)
@@ -168,6 +188,10 @@ MISC_COLS: tuple[str, ...] = (
     COL_BATCH,
     COL_NOTES,
     COL_BATCH_BREAKDOWN,
+    COL_RMPL_BATCH_ID,
+    COL_SEMINOE_BATCH_ID,
+    COL_MEDICINE_BATCH_ID,
+    COL_PIONEER_BATCH_ID,
 )
 
 

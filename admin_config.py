@@ -73,12 +73,14 @@ _ALL_CONFIGURABLE_COLS: list[str] = [
     "Receipts", "Pipeline In", "Production",
     # Input – Outgoing
     "Deliveries", "Rack/Lifting", "Pipeline Out",
+    "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out", "PTO",
     # Input – Adjustment
     "Adjustments", "Gain/Loss", "Transfers",
     # Misc
     "Available", "Intransit", "Storage", "Vessel Volume", "Vessel",
     "View File", "Batch", "Batch Breakdown", "Notes",
-    "Tulsa", "El Dorado", "Other", "Argentine", "From 327 Receipt",
+    "RMPL Batch ID", "Seminoe Batch ID", "Medicine Batch ID", "Pioneer Batch ID",
+    "Tulsa", "El Dorado", "Other", "Offline", "From 327 Receipt",
 ]
 
 # ---------------------------------------------------------------------------
@@ -108,6 +110,11 @@ DEFAULT_VISIBLE_COLUMNS = [
     "MTD Avg",
     "Pipeline In",
     "Pipeline Out",
+    "RMPL Pipeline Out",
+    "Seminoe Pipeline Out",
+    "Medicine Pipeline Out",
+    "Pioneer Pipeline Out",
+    "PTO",
     "Gain/Loss",
     "Transfers",
     "Production",
@@ -115,10 +122,14 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Tulsa",
     "El Dorado",
     "Other",
-    "Argentine",
+    "Offline",
     "From 327 Receipt",
     "Batch",
     "Batch Breakdown",
+    "RMPL Batch ID",
+    "Seminoe Batch ID",
+    "Medicine Batch ID",
+    "Pioneer Batch ID",
     "Notes",
 ]
 
@@ -486,6 +497,7 @@ def get_visible_columns(*, region: str, location: str | None) -> list[str]:
         "Batch Out": "Deliveries",
         "Batch In Fact": "Receipts Fact",
         "Batch Out Fact": "Deliveries Fact",
+        "Argentine": "Offline",
     }
     out = [rename.get(str(c), str(c)) for c in cols]
 

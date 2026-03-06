@@ -12,7 +12,7 @@ from config import (
     COL_ACCOUNTING_INV,
     COL_ADJUSTMENTS,
     COL_ADJUSTMENTS_FACT,
-    COL_ARGENTINE,
+    COL_OFFLINE,
     COL_AVAILABLE,
     COL_AVAILABLE_FACT,
     COL_AVAILABLE_SPACE,
@@ -26,6 +26,10 @@ from config import (
     COL_BATCH_OUT_FACT,
     COL_BATCH_OUT_FACT_RAW,
     COL_BATCH_OUT_RAW,
+    COL_MEDICINE_BATCH_ID,
+    COL_MEDICINE_PIPELINE_OUT,
+    COL_PIONEER_BATCH_ID,
+    COL_PIONEER_PIPELINE_OUT,
     COL_CALCULATED_RECEIPT,
     COL_CLOSE_INV_FACT_RAW,
     COL_CLOSE_INV_RAW,
@@ -47,9 +51,12 @@ from config import (
     COL_PIPELINE_IN_FACT,
     COL_PIPELINE_OUT,
     COL_PIPELINE_OUT_FACT,
+    COL_PTO,
     COL_PRODUCT,
     COL_PRODUCTION,
     COL_PRODUCTION_FACT,
+    COL_RMPL_BATCH_ID,
+    COL_RMPL_PIPELINE_OUT,
     COL_RACK_LIFTING,
     COL_RACK_LIFTING_FACT,
     COL_RACK_LIFTINGS_FACT_RAW,
@@ -59,6 +66,8 @@ from config import (
     COL_TOTAL_INVENTORY,
     COL_TRANSFERS,
     COL_TRANSFERS_FACT,
+    COL_SEMINOE_BATCH_ID,
+    COL_SEMINOE_PIPELINE_OUT,
     COL_TULSA,
     COL_VESSEL,
     COL_VESSEL_VOLUME,
@@ -96,6 +105,11 @@ DETAILS_COLS = [
     COL_MTD_AVG_RACK,
     COL_PIPELINE_IN,
     COL_PIPELINE_OUT,
+    COL_RMPL_PIPELINE_OUT,
+    COL_SEMINOE_PIPELINE_OUT,
+    COL_MEDICINE_PIPELINE_OUT,
+    COL_PIONEER_PIPELINE_OUT,
+    COL_PTO,
     COL_GAIN_LOSS,
     COL_TRANSFERS,
     COL_PRODUCTION,
@@ -103,13 +117,17 @@ DETAILS_COLS = [
     COL_TULSA,
     COL_EL_DORADO,
     COL_OTHER,
-    COL_ARGENTINE,
+    COL_OFFLINE,
     COL_FROM_327_RECEIPT,
     COL_STORAGE,
     COL_VESSEL,
     COL_VESSEL_VOLUME,
     COL_BATCH,
     COL_BATCH_BREAKDOWN,
+    COL_RMPL_BATCH_ID,
+    COL_SEMINOE_BATCH_ID,
+    COL_MEDICINE_BATCH_ID,
+    COL_PIONEER_BATCH_ID,
     COL_NOTES,
 ]
 
@@ -143,7 +161,18 @@ NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
 # Post-rename display names — used in _recalculate_open_close_inv
 DISPLAY_INFLOW_COLS = [COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION,
                        COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_FROM_327_RECEIPT]
-DISPLAY_OUTFLOW_COLS = [COL_BATCH_OUT, COL_RACK_LIFTING, COL_PIPELINE_OUT, COL_ARGENTINE, COL_VESSEL_VOLUME]
+DISPLAY_OUTFLOW_COLS = [
+    COL_BATCH_OUT,
+    COL_RACK_LIFTING,
+    COL_PIPELINE_OUT,
+    COL_RMPL_PIPELINE_OUT,
+    COL_SEMINOE_PIPELINE_OUT,
+    COL_MEDICINE_PIPELINE_OUT,
+    COL_PIONEER_PIPELINE_OUT,
+    COL_PTO,
+    COL_OFFLINE,
+    COL_VESSEL_VOLUME,
+]
 DISPLAY_NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
 
 # ---------------------------------------------------------------------------
@@ -492,6 +521,7 @@ def _recalculate_inventory_metrics(
     out = _recalculate_loadable(out, bottom=bottom)
     out = _recalculate_total_inventory(out, bottom=bottom)
     out = _recalculate_accounting_inv(out)
+    # Calculated Receipt is a display KPI and does not feed Close Inv math.
     out = _recalculate_calculated_receipt(out, id_col=id_col, df_hist=df_hist)
     if df_hist is not None:
         out = _fill_rack_averages_per_row(out, df_hist)
@@ -655,9 +685,23 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         agg_map["Notes"] = "last"
     if "SOURCE_TYPE" in df.columns:
         agg_map["SOURCE_TYPE"] = "first"
-    for sub in [COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_ARGENTINE, COL_FROM_327_RECEIPT]:
+    for sub in [
+        COL_TULSA,
+        COL_EL_DORADO,
+        COL_OTHER,
+        COL_OFFLINE,
+        COL_FROM_327_RECEIPT,
+        COL_RMPL_PIPELINE_OUT,
+        COL_SEMINOE_PIPELINE_OUT,
+        COL_MEDICINE_PIPELINE_OUT,
+        COL_PIONEER_PIPELINE_OUT,
+        COL_PTO,
+    ]:
         if sub in df.columns:
             agg_map[sub] = "sum"
+    for bid in [COL_RMPL_BATCH_ID, COL_SEMINOE_BATCH_ID, COL_MEDICINE_BATCH_ID, COL_PIONEER_BATCH_ID]:
+        if bid in df.columns:
+            agg_map[bid] = "last"
     if COL_STORAGE in df.columns:
         agg_map[COL_STORAGE] = "last"
     if COL_VESSEL in df.columns:
@@ -744,6 +788,9 @@ def _fill_missing_internal_dates(
             g2["Notes"] = g2["Notes"].fillna("")
         if COL_VESSEL in g2.columns:
             g2[COL_VESSEL] = g2[COL_VESSEL].fillna("")
+        for bid in [COL_RMPL_BATCH_ID, COL_SEMINOE_BATCH_ID, COL_MEDICINE_BATCH_ID, COL_PIONEER_BATCH_ID]:
+            if bid in g2.columns:
+                g2[bid] = g2[bid].fillna("")
         if "FILE_LOCATION" in g2.columns:
             g2["FILE_LOCATION"] = g2["FILE_LOCATION"].apply(
                 lambda v: [] if (v is None or (isinstance(v, float) and pd.isna(v))) else v
@@ -782,6 +829,27 @@ def _extend_with_30d_forecast(
     daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce")
     hist_daily = daily[daily["Date"] < today].copy()
 
+    # Preserve future rows that were explicitly saved by a user so they survive
+    # page reload.  A future row is considered user-saved when its SOURCE_TYPE is
+    # 'user' OR its updated/MANUAL_OVERRIDE_FLAG was set to 1 on save.
+    future_db = daily[daily["Date"] >= today].copy()
+    if not future_db.empty:
+        _src = future_db.get("SOURCE_TYPE", pd.Series(dtype=str)).astype(str).str.strip().str.lower()
+        _upd = future_db.get("updated", pd.Series(0, index=future_db.index)).fillna(0).astype(int)
+        saved_future = future_db[_src.eq("user") | _upd.eq(1)].copy()
+    else:
+        saved_future = pd.DataFrame()
+
+    # Build lookup of (id_val, product, normalized_date) already covered by
+    # user-saved future rows so we skip re-generating those dates.
+    saved_future_keys: set[tuple] = set()
+    if not saved_future.empty:
+        for _, _sfr in saved_future.iterrows():
+            saved_future_keys.add(
+                (_sfr.get(id_col), str(_sfr.get("Product", "")),
+                 pd.Timestamp(_sfr["Date"]).normalize())
+            )
+
     forecast_flow_cols = [c for c in [COL_RACK_LIFTINGS_RAW] if c in flow_cols]
     if forecast_end is not None:
         forecast_end = pd.Timestamp(forecast_end)
@@ -796,6 +864,9 @@ def _extend_with_30d_forecast(
         prev_close = _last_close_inv(group)
 
         for d in _forecast_dates(last_date, forecast_end, default_days):
+            # Skip dates already covered by a user-saved future row
+            if (id_val, str(product), d.normalize()) in saved_future_keys:
+                continue
             flows = {c: 0.0 for c in flow_cols}
             if forecast_flow_cols:
                 flows.update(estimate(d))
@@ -803,14 +874,20 @@ def _extend_with_30d_forecast(
             prev_close = closing
             forecast_rows.append({
                 "Date": d, id_col: id_val, "Product": product,
-                "SOURCE_TYPE": "forecast", "updated": 0, "Batch": "", "Notes": "",
+                "SOURCE_TYPE": "forecast", "updated": 0, "Batch": "", COL_BATCH_BREAKDOWN: "", "Notes": "",
                 "FILE_LOCATION": [], "Open Inv": opening, "Close Inv": closing, **flows,
             })
 
-    if not forecast_rows:
+    parts = [hist_daily]
+    if not saved_future.empty:
+        parts.append(saved_future)
+    if forecast_rows:
+        parts.append(pd.DataFrame(forecast_rows))
+
+    if len(parts) == 1:
         return hist_daily
 
-    combined = pd.concat([hist_daily, pd.DataFrame(forecast_rows)], ignore_index=True)
+    combined = pd.concat(parts, ignore_index=True)
     for c in ["Open Inv", "Close Inv"] + flow_cols:
         if c in combined.columns:
             combined[c] = pd.to_numeric(combined[c]).fillna(0.0)
@@ -828,7 +905,22 @@ def build_details_view(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     keep = [c for c in df.columns if c in display_set or c in fact_set or c in _TRACKING_COLS]
     df = df[keep].copy()
 
-    no_round = {"Date", id_col, "Product", "Notes", "Batch", COL_BATCH_BREAKDOWN, COL_VESSEL, "updated", "FILE_LOCATION", "SOURCE_TYPE"}
+    no_round = {
+        "Date",
+        id_col,
+        "Product",
+        "Notes",
+        "Batch",
+        COL_BATCH_BREAKDOWN,
+        COL_RMPL_BATCH_ID,
+        COL_SEMINOE_BATCH_ID,
+        COL_MEDICINE_BATCH_ID,
+        COL_PIONEER_BATCH_ID,
+        COL_VESSEL,
+        "updated",
+        "FILE_LOCATION",
+        "SOURCE_TYPE",
+    }
     for c in df.columns:
         if c not in no_round and pd.api.types.is_numeric_dtype(df[c]):
             df[c] = df[c].round(2)
@@ -850,6 +942,27 @@ def _build_editor_df(df_display: pd.DataFrame) -> pd.DataFrame:
         out[COL_VESSEL_VOLUME] = np.nan
     if COL_VESSEL not in out.columns:
         out[COL_VESSEL] = ""
+    if COL_BATCH_BREAKDOWN not in out.columns:
+        out[COL_BATCH_BREAKDOWN] = ""
+    else:
+        out[COL_BATCH_BREAKDOWN] = out[COL_BATCH_BREAKDOWN].fillna("")
+    for bid in [COL_RMPL_BATCH_ID, COL_SEMINOE_BATCH_ID, COL_MEDICINE_BATCH_ID, COL_PIONEER_BATCH_ID]:
+        if bid not in out.columns:
+            out[bid] = ""
+        else:
+            out[bid] = out[bid].fillna("")
+    for pcol in [COL_RMPL_PIPELINE_OUT, COL_SEMINOE_PIPELINE_OUT, COL_MEDICINE_PIPELINE_OUT, COL_PIONEER_PIPELINE_OUT]:
+        if pcol not in out.columns:
+            out[pcol] = 0.0
+        else:
+            out[pcol] = _to_numeric_series(out[pcol]).fillna(0.0)
+    if COL_PTO not in out.columns:
+        out[COL_PTO] = 0.0
+    else:
+        out[COL_PTO] = _to_numeric_series(out[COL_PTO]).fillna(0.0)
+    # Keep Calculated Receipt as a display-only column even when not computed.
+    if COL_CALCULATED_RECEIPT not in out.columns:
+        out[COL_CALCULATED_RECEIPT] = np.nan
     return out.reset_index(drop=True)
 
 
@@ -1172,8 +1285,10 @@ def display_location_details(
                 "| **Opening Inv** | Previous day's Close Inv |\n"
                 "| **Close Inv** | Opening Inv + Receipts + Pipeline In + Production "
                 "− Deliveries − Rack/Lifting − Pipeline Out "
+                "− RMPL Pipeline Out − Seminoe Pipeline Out − Medicine Pipeline Out − Pioneer Pipeline Out "
+                "− PTO "
                 "+ Adjustments + Gain/Loss + Transfers "
-                "+ Tulsa + El Dorado + Other − Argentine + From 327 Receipt |\n"
+                "+ Tulsa + El Dorado + Other − Offline + From 327 Receipt |\n"
                 "| **Total Closing Inv** | Available + Intransit |\n"
                 "| **Available Space** | SafeFill − Close Inv |\n"
                 "| **Loadable** | Close Inv − Bottom |\n"
@@ -1181,7 +1296,7 @@ def display_location_details(
                 "| **Accounting Inv** | Close Inv − Storage |\n"
                 "| **7 Day Avg** | 7-day rolling average of Rack/Lifting |\n"
                 "| **MTD Avg** | Month-to-date average of Rack/Lifting |\n"
-                "| **Calculated Receipt** | Today's Available − Yesterday's Available + Today's Rack/Lifting |",
+                "| **Calculated Receipt** | Today's Available − Yesterday's Available + Today's Rack/Lifting (display KPI only; does not affect Close Inv) |",
             )
 
     # Handle reset at location level (clears all product tabs)
@@ -1297,14 +1412,29 @@ def display_location_details(
                 ].reset_index(drop=True)
 
                 # Add sub-breakdown columns if configured but absent from source data
-                for sub in [COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_ARGENTINE, COL_FROM_327_RECEIPT]:
+                for sub in [COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_OFFLINE, COL_FROM_327_RECEIPT]:
                     if sub in visible and sub not in df_display.columns:
                         df_display[sub] = 0.0
+                for pcol in [COL_RMPL_PIPELINE_OUT, COL_SEMINOE_PIPELINE_OUT, COL_MEDICINE_PIPELINE_OUT, COL_PIONEER_PIPELINE_OUT]:
+                    if pcol in visible and pcol not in df_display.columns:
+                        df_display[pcol] = 0.0
+                if COL_PTO in visible and COL_PTO not in df_display.columns:
+                    df_display[COL_PTO] = 0.0
+                if COL_BATCH_BREAKDOWN in visible and COL_BATCH_BREAKDOWN not in df_display.columns:
+                    df_display[COL_BATCH_BREAKDOWN] = ""
+                for bid in [COL_RMPL_BATCH_ID, COL_SEMINOE_BATCH_ID, COL_MEDICINE_BATCH_ID, COL_PIONEER_BATCH_ID]:
+                    if bid in visible and bid not in df_display.columns:
+                        df_display[bid] = ""
 
                 editor_df = _build_editor_df(df_display)
                 st.session_state[df_key] = _recalculate_inventory_metrics(
                     editor_df, id_col="Location", safefill=safefill, bottom=bottom, df_hist=df_prod,
                 )
+
+            # Backward compatibility: existing session state may predate
+            # Calculated Receipt backfill/computation wiring.
+            if COL_CALCULATED_RECEIPT not in st.session_state[df_key].columns:
+                st.session_state[df_key][COL_CALCULATED_RECEIPT] = np.nan
 
             # ── Stable snapshot for this editor version ──────────────────────
             # The snapshot is created once per version and passed as the editor's
