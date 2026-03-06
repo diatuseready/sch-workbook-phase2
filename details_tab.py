@@ -1059,24 +1059,20 @@ def _threshold_values(
 # Save dialogs (details-tab-specific)
 # ---------------------------------------------------------------------------
 
-@st.dialog("Confirm Save")
 def _confirm_save_dialog(*, payload: dict) -> None:
-    scope_label = payload.get("scope_label") or "this selection"
-    st.write(f"Are you sure you want to save changes for **{scope_label}**?")
-    _, c_yes = st.columns([8, 2])
-    with c_yes:
-        if logged_button(
-            "Save", type="primary",
-            event="details_confirm_save",
-            metadata={k: payload.get(k) for k in ("region", "location", "system", "product", "scope_label")},
-        ):
-            st.session_state["details_save_stage"] = "pre_save"
-            st.session_state["details_save_payload"] = payload
-            st.session_state["details_save_overlay"] = {"on": True, "df_key": payload.get("df_key")}
-            st.rerun()
+    """
+    Start save immediately (no popup).
+    Function name kept for compatibility.
+    """
+    st.session_state["details_save_stage"] = "pre_save"
+    st.session_state["details_save_payload"] = payload
+    st.session_state["details_save_overlay"] = {
+        "on": True,
+        "df_key": payload.get("df_key"),
+    }
 
 
-@st.dialog("Save Result")
+# @st.dialog("Save Result")
 def _save_result_dialog(*, result: dict) -> None:
     # Hide the dialog close button to force the auto-countdown
     st.markdown(
@@ -1091,11 +1087,8 @@ def _save_result_dialog(*, result: dict) -> None:
     err = str(result.get("error") or "")
 
     if ok:
-        st.success(f"Saved successfully ({n} rows).")
-        ph = st.empty()
-        for i in range(5, 0, -1):
-            ph.caption(f"Closing in {i}s…")
-            time.sleep(1)
+        # st.toast(f"Saved successfully ({n} rows).")
+        time.sleep(0.2)
         st.session_state["details_save_stage"] = None
         st.session_state["details_save_result"] = None
         st.session_state["details_save_overlay_removal_pending"] = result.get("df_key")
@@ -1207,6 +1200,10 @@ def display_location_details(
         for k in list(st.session_state.keys()):
             if str(k).startswith(loc_prefix):
                 st.session_state.pop(k, None)
+
+        st.session_state.pop("details_save_stage", None)
+        st.session_state.pop("details_save_payload", None)
+        st.session_state.pop("details_save_result", None)        
         st.rerun()
 
     for i, tab in enumerate(st.tabs(products)):
@@ -1336,6 +1333,24 @@ def display_location_details(
                 column_config=column_config,
             )
 
+            _pre_sync_text: dict = {}
+            for _snap_col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]:
+                if base_key in st.session_state and _snap_col in st.session_state[base_key].columns:
+                    _pre_sync_text[_snap_col] = (
+                        st.session_state[base_key][_snap_col].fillna("").values.copy()
+                    )
+            _TEXT_COLS = [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
+            if edited is not None and not edited.empty:
+                for col in _TEXT_COLS:
+                    if col in edited.columns:
+                        vals = edited[col].fillna("").values
+
+                        if df_key in st.session_state and col in st.session_state[df_key].columns:
+                            st.session_state[df_key][col] = vals
+
+                        if base_key in st.session_state and col in st.session_state[base_key].columns:
+                            st.session_state[base_key][col] = vals
+
             # ── Recalculate derived columns from the current editor state ────
             df_hist_for_avg = _overlay_rack_edits(df_prod, edited)
             recomputed = _recalculate_inventory_metrics(
@@ -1349,6 +1364,21 @@ def display_location_details(
                 for c in recomputed.columns:
                     canonical[c] = recomputed[c].values
                 st.session_state[df_key] = canonical
+
+            if edited is not None and not edited.empty and base_key in st.session_state:
+                for _col in _TEXT_COLS:
+                    if _col in edited.columns and _col in st.session_state[base_key].columns:
+                        st.session_state[base_key][_col] = edited[_col].values 
+            _text_cols_changed = edited is not None and not edited.empty and any(
+                col in edited.columns
+                and col in _pre_sync_text
+                and not np.array_equal(
+                    _pre_sync_text[col], edited[col].fillna("").values
+                )
+                for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
+            )
+            if _text_cols_changed:
+                st.rerun()            
 
             # ── Handle "View File" checkbox action ───────────────────────────
             if COL_VIEW_FILE in recomputed.columns:
