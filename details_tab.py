@@ -1183,6 +1183,7 @@ def _confirm_save_dialog(*, payload: dict) -> None:
         "on": True,
         "df_key": payload.get("df_key"),
     }
+    st.rerun()
 
 
 # @st.dialog("Save Result")
@@ -1566,7 +1567,21 @@ def display_location_details(
                                   "product": payload.get("product"),
                                   "rows_saved": int(n)},
                     )
+                    _load_inventory_data_filtered_cached.clear()
+                    details_cache_key = f"df_details|{active_region}"
+                    st.session_state[details_cache_key] = load_filtered_inventory_data({
+                        "active_region": active_region,
+                        "start_ts": start_ts,
+                        "end_ts": end_ts,
+                        "selected_loc": selected_loc,
+                        "loc_col": "Location",
+                    })
+                    loc_prefix = f"{active_region}_{selected_loc}_"
+                    for k in list(st.session_state.keys()):
+                        if str(k).startswith(loc_prefix):
+                            st.session_state.pop(k, None)
                     st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
+
                 except Exception as e:
                     log_audit(
                         event="details_save_failed",
@@ -1576,11 +1591,14 @@ def display_location_details(
                                   "error": str(e)},
                     )
                     st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
-
-                st.session_state[enable_ver_key] = int(st.session_state.get(enable_ver_key, 0)) + 1
-                st.session_state.pop(enable_widget_key, None)
-                st.session_state["details_save_stage"] = "result"
-                st.rerun()
+                finally:
+                    
+                    st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
+                    st.session_state["details_save_overlay_removal_pending"] = None
+                    st.session_state[enable_ver_key] = int(st.session_state.get(enable_ver_key, 0)) + 1
+                    st.session_state.pop(enable_widget_key, None)
+                    st.session_state["details_save_stage"] = "result"
+                    st.rerun()   
 
             # Show save result dialog
             result = st.session_state.get("details_save_result")
