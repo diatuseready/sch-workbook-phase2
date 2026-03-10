@@ -886,7 +886,6 @@ def _extend_with_30d_forecast(
 
     if len(parts) == 1:
         return hist_daily
-
     combined = pd.concat(parts, ignore_index=True)
     for c in ["Open Inv", "Close Inv"] + flow_cols:
         if c in combined.columns:
@@ -1257,7 +1256,7 @@ def display_location_details(
     visible = get_visible_columns(region=active_region, location=str(selected_loc))
 
     # Terminal Feed toggle + location label + Reset / Formulas icons
-    c_toggle, c_loc, c_reset_loc, c_formulas_loc = st.columns([4.5, 4.5, 0.5, 0.5])
+    c_toggle, c_loc, c_live_loc,c_reset_loc, c_formulas_loc = st.columns([4.2, 4.2,1.8, 0.5, 0.5])
     with c_toggle:
         show_fact = st.toggle(
             "Show Terminal Feed",
@@ -1270,6 +1269,15 @@ def display_location_details(
             f"<h1 style='color: green; font-weight: 700; font-size: 1.2rem'>{selected_loc}</h1>",
             unsafe_allow_html=True,
         )
+    live_calc_loc_key = f"details_live_calc|{active_region}|{selected_loc}"
+    with c_live_loc:
+        live_calc_clicked = st.toggle(
+            "Live Calculation",
+            value=False,
+            key=live_calc_loc_key,
+            disabled=(get_user_role() == ROLE_DISPLAY),
+            help="Apply current edits and recalculate values.",
+        )    
     with c_reset_loc:
         st.markdown('<div class="transparent-icon"></div>', unsafe_allow_html=True)
         reset_clicked = st.button(
@@ -1339,6 +1347,9 @@ def display_location_details(
             ver = int(st.session_state.get(ver_key, 0))
             base_key = f"{state_key}__base_v{ver}"  # stable snapshot passed to editor this version
             widget_key = f"{state_key}__editor_v{ver}"
+            orig_key = f"{state_key}orig"
+            enable_state_key = f"{state_key}enable_state"
+
 
             # ── View File dialog ─────────────────────────────────────────────
             vf_payload = st.session_state.get("details_view_file_payload")
@@ -1387,8 +1398,9 @@ def display_location_details(
                 enable_save = st.toggle(
                     "Enable Save", value=False, key=enable_widget_key,
                     disabled=(get_user_role() == ROLE_DISPLAY),
-                    help="Toggle ON before saving to ensure the last edited cell commits.",
+                    help="Toggle ON before saving to ensure the last edited cell commits.",                   
                 )
+
             with c_save:
                 save_clicked = logged_button(
                     f"Save {prod_name} Data",
@@ -1432,6 +1444,9 @@ def display_location_details(
                     editor_df, id_col="Location", safefill=safefill, bottom=bottom, df_hist=df_prod,
                 )
 
+            if orig_key not in st.session_state:
+                st.session_state[orig_key] = st.session_state[df_key].copy().reset_index(drop=True)
+    
             # Backward compatibility: existing session state may predate
             # Calculated Receipt backfill/computation wiring.
             if COL_CALCULATED_RECEIPT not in st.session_state[df_key].columns:
@@ -1463,6 +1478,48 @@ def display_location_details(
                 key=widget_key,
                 column_config=column_config,
             )
+            live_calc_state_key = f"{state_key}live_calc_state"
+            prev_live_calc = bool(st.session_state.get(live_calc_state_key, False))
+            curr_live_calc = bool(live_calc_clicked)
+
+            if curr_live_calc and not prev_live_calc:
+                current_input = edited if edited is not None and not edited.empty else st.session_state[df_key].copy()
+
+                raw_for_forecast = _overlay_rack_edits(df_prod, current_input)
+                rebuilt = _extend_with_30d_forecast(
+                    raw_for_forecast,
+                    id_col="Location",
+                    region=active_region,
+                    location=str(selected_loc),
+                    history_start=start_ts,
+                    forecast_end=end_ts,
+                )
+
+                recomputed = build_details_view(rebuilt, id_col="Location")
+                recomputed = recomputed[
+                    recomputed["Date"] >= pd.Timestamp(start_ts).normalize().date()
+                ].reset_index(drop=True)
+                recomputed = _build_editor_df(recomputed)
+                recomputed = _recalculate_inventory_metrics(
+                    recomputed,
+                    id_col="Location",
+                    safefill=safefill,
+                    bottom=bottom,
+                    df_hist=raw_for_forecast,
+                ).reset_index(drop=True)
+
+                st.session_state[df_key] = recomputed.copy()
+                st.session_state[base_key] = recomputed.copy()
+                st.session_state[live_calc_state_key] = True
+                st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
+                
+                st.rerun()
+
+            if not curr_live_calc and prev_live_calc:
+                st.session_state[live_calc_state_key] = False
+
+
+
 
             _pre_sync_text: dict = {}
             for _snap_col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]:
@@ -1528,10 +1585,19 @@ def display_location_details(
                     st.session_state[ver_key] = ver + 1
                     st.rerun()
 
-            # ── Force a re-render if calculated columns changed ──────────────
+
+
             if _needs_inventory_rerun(edited, recomputed):
-                st.session_state[ver_key] = ver + 1
-                st.rerun()
+                canonical = st.session_state[df_key].copy().reset_index(drop=True)
+                if canonical.shape[0] == recomputed.shape[0]:
+                    for c in recomputed.columns:
+                        canonical[c] = recomputed[c].values
+                st.session_state[df_key] = canonical
+
+                if st.session_state.get(live_calc_state_key, False):
+                    st.session_state[base_key] = canonical.copy()
+                    st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
+                    st.rerun() 
 
             # ── Save flow ────────────────────────────────────────────────────
             if save_clicked:
@@ -1598,7 +1664,7 @@ def display_location_details(
                     st.session_state[enable_ver_key] = int(st.session_state.get(enable_ver_key, 0)) + 1
                     st.session_state.pop(enable_widget_key, None)
                     st.session_state["details_save_stage"] = "result"
-                    st.rerun()   
+                    st.rerun()
 
             # Show save result dialog
             result = st.session_state.get("details_save_result")
