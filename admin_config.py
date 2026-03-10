@@ -11,6 +11,8 @@ from app_logging import logged_button, log_audit, log_error
 from config import (
     SQLITE_ADMIN_CONFIG_TABLE,
     SNOWFLAKE_ADMIN_CONFIG_TABLE,
+    SQLITE_COLUMN_LINKS_TABLE,
+    SNOWFLAKE_COLUMN_LINKS_TABLE,
     DATA_SOURCE,
     SQLITE_DB_PATH,
     SNOWFLAKE_WAREHOUSE,
@@ -543,6 +545,143 @@ def get_threshold_overrides(*, region: str, location: str | None, product: str |
     return out
 
 
+# ---------------------------------------------------------------------------
+# Linkable columns — editable numeric columns that can be linked across products
+# ---------------------------------------------------------------------------
+
+LINKABLE_COLUMNS: list[str] = [
+    "Receipts", "Deliveries", "Rack/Lifting",
+    "Pipeline In", "Pipeline Out",
+    "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out",
+    "PTO", "Production", "Adjustments", "Gain/Loss", "Transfers",
+    "Tulsa", "El Dorado", "Other", "Offline", "From 327 Receipt",
+    "Available", "Intransit", "Storage", "Vessel Volume",
+]
+
+
+# ---------------------------------------------------------------------------
+# Column links — table management
+# ---------------------------------------------------------------------------
+
+def ensure_column_links_table_sqlite():
+    import sqlite3
+    conn = sqlite3.connect(SQLITE_DB_PATH)
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {SQLITE_COLUMN_LINKS_TABLE} (
+            LINK_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+            SOURCE_REGION TEXT NOT NULL,
+            SOURCE_LOCATION TEXT NOT NULL,
+            SOURCE_PRODUCT TEXT NOT NULL,
+            SOURCE_COLUMN TEXT NOT NULL,
+            TARGET_REGION TEXT NOT NULL,
+            TARGET_LOCATION TEXT NOT NULL,
+            TARGET_PRODUCT TEXT NOT NULL,
+            TARGET_COLUMN TEXT NOT NULL,
+            CREATED_AT TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_column_links_df() -> pd.DataFrame:
+    if DATA_SOURCE == "sqlite":
+        import sqlite3
+        ensure_column_links_table_sqlite()
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        df = pd.read_sql_query(f"SELECT * FROM {SQLITE_COLUMN_LINKS_TABLE}", conn)
+        conn.close()
+        return df
+
+    session = get_snowflake_session()
+    session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+    try:
+        session.sql(f"""
+            CREATE TABLE IF NOT EXISTS {SNOWFLAKE_COLUMN_LINKS_TABLE} (
+                LINK_ID INTEGER AUTOINCREMENT,
+                SOURCE_REGION STRING, SOURCE_LOCATION STRING,
+                SOURCE_PRODUCT STRING, SOURCE_COLUMN STRING,
+                TARGET_REGION STRING, TARGET_LOCATION STRING,
+                TARGET_PRODUCT STRING, TARGET_COLUMN STRING,
+                CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+            )
+        """).collect()
+    except Exception:
+        pass
+    return session.sql(f"SELECT * FROM {SNOWFLAKE_COLUMN_LINKS_TABLE}").to_pandas()
+
+
+def save_column_link(*, source_region, source_location, source_product, source_column,
+                     target_region, target_location, target_product, target_column):
+    if DATA_SOURCE == "sqlite":
+        import sqlite3
+        ensure_column_links_table_sqlite()
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        conn.execute(
+            f"""INSERT INTO {SQLITE_COLUMN_LINKS_TABLE}
+                (SOURCE_REGION, SOURCE_LOCATION, SOURCE_PRODUCT, SOURCE_COLUMN,
+                 TARGET_REGION, TARGET_LOCATION, TARGET_PRODUCT, TARGET_COLUMN, CREATED_AT)
+                VALUES (?,?,?,?,?,?,?,?, datetime('now'))""",
+            (source_region, source_location, source_product, source_column,
+             target_region, target_location, target_product, target_column),
+        )
+        conn.commit()
+        conn.close()
+    else:
+        session = get_snowflake_session()
+        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+
+        def _q(v):
+            return "'" + str(v).replace("'", "''") + "'"
+
+        session.sql(f"""
+            INSERT INTO {SNOWFLAKE_COLUMN_LINKS_TABLE}
+            (SOURCE_REGION, SOURCE_LOCATION, SOURCE_PRODUCT, SOURCE_COLUMN,
+             TARGET_REGION, TARGET_LOCATION, TARGET_PRODUCT, TARGET_COLUMN, CREATED_AT)
+            VALUES ({_q(source_region)},{_q(source_location)},{_q(source_product)},{_q(source_column)},
+                    {_q(target_region)},{_q(target_location)},{_q(target_product)},{_q(target_column)},
+                    CURRENT_TIMESTAMP())
+        """).collect()
+
+    load_column_links_df.clear()
+
+
+def delete_column_link(link_id: int):
+    if DATA_SOURCE == "sqlite":
+        import sqlite3
+        ensure_column_links_table_sqlite()
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        conn.execute(f"DELETE FROM {SQLITE_COLUMN_LINKS_TABLE} WHERE LINK_ID = ?", (int(link_id),))
+        conn.commit()
+        conn.close()
+    else:
+        session = get_snowflake_session()
+        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+        session.sql(f"DELETE FROM {SNOWFLAKE_COLUMN_LINKS_TABLE} WHERE LINK_ID = {int(link_id)}").collect()
+
+    load_column_links_df.clear()
+
+
+def get_column_links_for_product(*, region: str, location: str, product: str) -> list[dict]:
+    """Return all links where the given product is either source or target."""
+    df = load_column_links_df()
+    if df is None or df.empty:
+        return []
+    is_source = (
+        (df["SOURCE_REGION"] == region) &
+        (df["SOURCE_LOCATION"] == location) &
+        (df["SOURCE_PRODUCT"] == product)
+    )
+    is_target = (
+        (df["TARGET_REGION"] == region) &
+        (df["TARGET_LOCATION"] == location) &
+        (df["TARGET_PRODUCT"] == product)
+    )
+    matched = df[is_source | is_target]
+    return matched.to_dict("records")
+
+
 def display_super_admin_panel(*, regions: list[str], active_region: str | None, all_data: pd.DataFrame | None = None):
     st.subheader("Super Admin Configuration")
 
@@ -842,3 +981,89 @@ def display_super_admin_panel(*, regions: list[str], active_region: str | None, 
     else:
         sort_cols = [c for c in ["REGION", "LOCATION", "PRODUCT"] if c in df.columns]
         st.dataframe(df.sort_values(sort_cols, kind="mergesort"), width="stretch", height=260)
+
+    # ── Column Links ──────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### Column Links")
+    st.caption(
+        "Link a column in one product to a column in another product. "
+        "When either side is saved, the value is copied to the linked side for matching dates."
+    )
+
+    # Gather all region/location pairs and products for dropdowns
+    all_pairs = load_region_location_pairs()
+    all_regions = sorted(all_pairs["Region"].dropna().unique().tolist()) if not all_pairs.empty else regions or []
+
+    _lk = "admin_col_link"
+
+    st.markdown("##### Add New Link")
+    col_s, col_t = st.columns(2)
+
+    with col_s:
+        st.markdown("**Source**")
+        src_region = st.selectbox("Region src", options=all_regions, key=f"{_lk}_src_region")
+        src_locs = sorted(
+            all_pairs[all_pairs["Region"] == src_region]["Location"].dropna().unique().tolist()
+        ) if not all_pairs.empty else []
+        src_location = st.selectbox("Location src", options=src_locs or [""], key=f"{_lk}_src_loc")
+        try:
+            from data_loader import load_products_for_admin_scope as _load_prods
+            src_products = _load_prods(region=src_region, location=src_location or None)
+        except Exception:
+            src_products = []
+        src_product = st.selectbox("Product src", options=src_products or [""], key=f"{_lk}_src_prod")
+        src_column = st.selectbox("Column src", options=LINKABLE_COLUMNS, key=f"{_lk}_src_col")
+
+    with col_t:
+        st.markdown("**Target**")
+        tgt_region = st.selectbox("Region tgt", options=all_regions, key=f"{_lk}_tgt_region")
+        tgt_locs = sorted(
+            all_pairs[all_pairs["Region"] == tgt_region]["Location"].dropna().unique().tolist()
+        ) if not all_pairs.empty else []
+        tgt_location = st.selectbox("Location tgt", options=tgt_locs or [""], key=f"{_lk}_tgt_loc")
+        try:
+            tgt_products = _load_prods(region=tgt_region, location=tgt_location or None)
+        except Exception:
+            tgt_products = []
+        tgt_product = st.selectbox("Product tgt", options=tgt_products or [""], key=f"{_lk}_tgt_prod")
+        tgt_column = st.selectbox("Column tgt", options=LINKABLE_COLUMNS, key=f"{_lk}_tgt_col")
+
+    if logged_button("🔗 Add Link", event="admin_add_column_link",
+                     metadata={"src": f"{src_region}/{src_location}/{src_product}/{src_column}",
+                               "tgt": f"{tgt_region}/{tgt_location}/{tgt_product}/{tgt_column}"}):
+        if not src_location or not src_product or not tgt_location or not tgt_product:
+            st.error("Please fill in all source and target fields.")
+        elif (src_region == tgt_region and src_location == tgt_location and
+              src_product == tgt_product and src_column == tgt_column):
+            st.error("Source and target cannot be identical.")
+        else:
+            save_column_link(
+                source_region=src_region, source_location=src_location,
+                source_product=src_product, source_column=src_column,
+                target_region=tgt_region, target_location=tgt_location,
+                target_product=tgt_product, target_column=tgt_column,
+            )
+            st.success("Link added.")
+            st.rerun()
+
+    st.markdown("##### Existing Links")
+    links_df = load_column_links_df()
+    if links_df is None or links_df.empty:
+        st.write("(No column links configured)")
+    else:
+        display_cols = [
+            "LINK_ID", "SOURCE_REGION", "SOURCE_LOCATION", "SOURCE_PRODUCT", "SOURCE_COLUMN",
+            "TARGET_REGION", "TARGET_LOCATION", "TARGET_PRODUCT", "TARGET_COLUMN",
+        ]
+        display_cols = [c for c in display_cols if c in links_df.columns]
+        st.dataframe(links_df[display_cols], width="stretch", height=220)
+
+        del_id = st.number_input("Link ID to delete", min_value=0, step=1, value=0, key=f"{_lk}_del_id")
+        if logged_button("Delete Link", event="admin_delete_column_link",
+                         metadata={"link_id": int(del_id)}):
+            if int(del_id) > 0 and int(del_id) in links_df["LINK_ID"].values:
+                delete_column_link(int(del_id))
+                st.success(f"Link {int(del_id)} deleted.")
+                st.rerun()
+            else:
+                st.error("Invalid Link ID.")

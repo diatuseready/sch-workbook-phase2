@@ -15,6 +15,8 @@ GLOBAL_INTRANSIT_FALLBACK = 0
 RAW_INVENTORY_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_INVENTORY"
 SNOWFLAKE_ADMIN_CONFIG_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_SUPERADMIN_CONFIG"
 SQLITE_ADMIN_CONFIG_TABLE = "APP_SUPERADMIN_CONFIG"
+SQLITE_COLUMN_LINKS_TABLE = "APP_COLUMN_LINKS"
+SNOWFLAKE_COLUMN_LINKS_TABLE = "CONSUMPTION.HFS_COMMERCIAL_INVENTORY.APP_COLUMN_LINKS"
 
 DATA_SOURCE = "sqlite"  # "snowflake"
 
@@ -83,7 +85,7 @@ COL_CALCULATED_RECEIPT = "Calculated Receipt"  # = Today Available − Yesterday
 # --- Misc columns  (user-editable; no direct impact on Closing Inventory) ---
 COL_STORAGE = "Storage"            # user-entered; drives Accounting Inventory
 COL_VESSEL = "Vessel"              # user-entered; free-text vessel name
-COL_VESSEL_VOLUME = "Vessel Volume" # user-entered; vessel volume (BBL)
+COL_VESSEL_VOLUME = "Vessel Volume"  # user-entered; vessel volume (BBL)
 COL_BATCH = "Batch"                # free-text batch label
 COL_NOTES = "Notes"                # free-text notes
 COL_TULSA = "Tulsa"                # receipts sub-breakdown

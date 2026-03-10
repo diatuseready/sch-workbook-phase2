@@ -610,15 +610,14 @@ def persist_details_rows(
         "Transfers": "TRANSFERS_BBL",
         "Adjustments": "ADJUSTMENTS_BBL",
         "Gain/Loss": "GAIN_LOSS_BBL",
-            # Phase-2 user-editable persisted columns
-            "Storage": "STORAGE_BBL",
-            "Vessel Volume": "VESSEL_VOLUME_BBL",
-            "Tulsa": "TULSA_BBL",
-            "El Dorado": "EL_DORADO_BBL",
-            "Other": "OTHER_BBL",
-            "Offline": "OFFLINE_BBL",
-            "Argentine": "OFFLINE_BBL",
-            "From 327 Receipt": "FROM_327_RECEIPT_BBL",
+        "Storage": "STORAGE_BBL",
+        "Vessel Volume": "VESSEL_VOLUME_BBL",
+        "Tulsa": "TULSA_BBL",
+        "El Dorado": "EL_DORADO_BBL",
+        "Other": "OTHER_BBL",
+        "Offline": "OFFLINE_BBL",
+        "Argentine": "OFFLINE_BBL",
+        "From 327 Receipt": "FROM_327_RECEIPT_BBL",
         "Adjustments Fact": "FACT_ADJUSTMENTS_BBL",
         "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
     }
@@ -685,9 +684,9 @@ def persist_details_rows(
         _date_for_st = pd.to_datetime(r.get("Date"), errors="coerce")
         _today_for_st = pd.Timestamp.today().normalize()
         if (
-            source_type == "forecast"
-            and pd.notna(_date_for_st)
-            and _date_for_st.normalize() >= _today_for_st
+            source_type == "forecast" and
+            pd.notna(_date_for_st) and
+            _date_for_st.normalize() >= _today_for_st
         ):
             source_type = "user"
 
@@ -983,6 +982,14 @@ def persist_details_rows(
 
         rows_written = total_written
 
+    # Propagate column links after saving the current product.
+    _propagate_column_links(
+        df_details=df_details,
+        region=region_s,
+        location=location_s,
+        product=product_s_filter,
+    )
+
     # Invalidate caches so the updated rows can be fetched.
     _load_inventory_data_cached.clear()
     _load_inventory_data_filtered_cached.clear()
@@ -992,6 +999,184 @@ def persist_details_rows(
     load_regions.clear()
 
     return int(locals().get("rows_written", len(rows)))
+
+
+# ---------------------------------------------------------------------------
+# Column link propagation
+# ---------------------------------------------------------------------------
+
+# Display column name → DB column name (for linkable numeric columns)
+_DISPLAY_TO_DB_COL: dict[str, str] = {
+    "Receipts": "RECEIPTS_BBL",
+    "Deliveries": "DELIVERIES_BBL",
+    "Rack/Lifting": "RACK_LIFTINGS_BBL",
+    "Pipeline In": "PIPELINE_IN_BBL",
+    "Pipeline Out": "PIPELINE_OUT_BBL",
+    "RMPL Pipeline Out": "RMPL_PIPELINE_OUT",
+    "Seminoe Pipeline Out": "SEMINOE_PIPELINE_OUT",
+    "Medicine Pipeline Out": "MEDICINE_PIPELINE_OUT",
+    "Pioneer Pipeline Out": "PIONEER_PIPELINE_OUT",
+    "PTO": "PTO",
+    "Production": "PRODUCTION_BBL",
+    "Adjustments": "ADJUSTMENTS_BBL",
+    "Gain/Loss": "GAIN_LOSS_BBL",
+    "Transfers": "TRANSFERS_BBL",
+    "Tulsa": "TULSA_BBL",
+    "El Dorado": "EL_DORADO_BBL",
+    "Other": "OTHER_BBL",
+    "Offline": "OFFLINE_BBL",
+    "From 327 Receipt": "FROM_327_RECEIPT_BBL",
+    "Available": "AVAILABLE_BBL",
+    "Intransit": "INTRANSIT_BBL",
+    "Storage": "STORAGE_BBL",
+    "Vessel Volume": "VESSEL_VOLUME_BBL",
+}
+
+
+def _propagate_column_links(
+    *,
+    df_details: pd.DataFrame,
+    region: str,
+    location: str,
+    product: str | None,
+) -> None:
+    """After saving, copy linked column values to the other side of each link."""
+    if df_details is None or df_details.empty or not product or not location:
+        return
+
+    from admin_config import get_column_links_for_product
+
+    links = get_column_links_for_product(region=region, location=location, product=product)
+    if not links:
+        return
+
+    # Build date→value lookup from saved df for each relevant display column
+    df = df_details.copy()
+    if "Date" in df.columns:
+        df["_date_str"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    else:
+        return
+
+    for link in links:
+        # Determine which side is "me" and which is "other"
+        src_match = (
+            link["SOURCE_REGION"] == region and
+            link["SOURCE_LOCATION"] == location and
+            link["SOURCE_PRODUCT"] == product
+        )
+        tgt_match = (
+            link["TARGET_REGION"] == region and
+            link["TARGET_LOCATION"] == location and
+            link["TARGET_PRODUCT"] == product
+        )
+
+        if src_match:
+            my_col = link["SOURCE_COLUMN"]
+            other_region = link["TARGET_REGION"]
+            other_location = link["TARGET_LOCATION"]
+            other_product = link["TARGET_PRODUCT"]
+            other_col = link["TARGET_COLUMN"]
+        elif tgt_match:
+            my_col = link["TARGET_COLUMN"]
+            other_region = link["SOURCE_REGION"]
+            other_location = link["SOURCE_LOCATION"]
+            other_product = link["SOURCE_PRODUCT"]
+            other_col = link["SOURCE_COLUMN"]
+        else:
+            continue
+
+        # my_col is display name; check it exists in the saved df
+        if my_col not in df.columns:
+            continue
+        other_db_col = _DISPLAY_TO_DB_COL.get(other_col)
+        if not other_db_col:
+            continue
+
+        # Build date→value pairs from saved data
+        date_values: list[tuple[str, float]] = []
+        for _, row in df.iterrows():
+            d = row.get("_date_str")
+            if not d or pd.isna(d):
+                continue
+            val = row.get(my_col)
+            try:
+                val_f = float(val) if val is not None and not (isinstance(val, float) and pd.isna(val)) else 0.0
+            except (ValueError, TypeError):
+                val_f = 0.0
+            date_values.append((d, val_f))
+
+        if not date_values:
+            continue
+
+        # Update the target product's rows in the DB
+        if DATA_SOURCE == "sqlite":
+            _propagate_links_sqlite(
+                date_values=date_values,
+                target_region=other_region,
+                target_location=other_location,
+                target_product=other_product,
+                target_db_col=other_db_col,
+            )
+        else:
+            _propagate_links_snowflake(
+                date_values=date_values,
+                target_region=other_region,
+                target_location=other_location,
+                target_product=other_product,
+                target_db_col=other_db_col,
+            )
+
+
+def _propagate_links_sqlite(
+    *,
+    date_values: list[tuple[str, float]],
+    target_region: str,
+    target_location: str,
+    target_product: str,
+    target_db_col: str,
+) -> None:
+    import sqlite3
+    conn = sqlite3.connect(SQLITE_DB_PATH)
+    cur = conn.cursor()
+    for date_s, val in date_values:
+        cur.execute(
+            f"""UPDATE {SQLITE_TABLE}
+                SET {target_db_col} = ?, UPDATED_AT = datetime('now')
+                WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) = ?
+                  AND REGION_CODE = ?
+                  AND LOCATION_CODE = ?
+                  AND PRODUCT_DESCRIPTION = ?""",
+            (val, date_s, target_region, target_location, target_product),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _propagate_links_snowflake(
+    *,
+    date_values: list[tuple[str, float]],
+    target_region: str,
+    target_location: str,
+    target_product: str,
+    target_db_col: str,
+) -> None:
+    session = get_snowflake_session()
+    session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+
+    def _q(v):
+        return "'" + str(v).replace("'", "''") + "'"
+
+    for date_s, val in date_values:
+        sql = f"""
+            UPDATE {RAW_INVENTORY_TABLE}
+            SET {target_db_col} = {val},
+                UPDATED_AT = CURRENT_TIMESTAMP()
+            WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) = {_q(date_s)}
+              AND REGION_CODE = {_q(target_region)}
+              AND LOCATION_CODE = {_q(target_location)}
+              AND PRODUCT_DESCRIPTION = {_q(target_product)}
+        """
+        session.sql(sql).collect()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
