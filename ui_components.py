@@ -451,8 +451,7 @@ def display_data_freshness_cards(
                     """,
                     unsafe_allow_html=True,
                 )
-                    
-                
+
             else:
                 st.markdown(
                     f"""

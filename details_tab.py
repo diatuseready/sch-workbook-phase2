@@ -441,6 +441,8 @@ def _recalculate_calculated_receipt(
     out = out.sort_values(sort_cols, kind="mergesort")
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.date
     return out
+
+
 def _fill_rack_averages_per_row(df: pd.DataFrame, df_hist: pd.DataFrame) -> pd.DataFrame:
     """Compute per-row 7-day and MTD rack averages from historical data."""
     if df is None or df.empty:
@@ -945,7 +947,7 @@ def _build_editor_df(df_display: pd.DataFrame) -> pd.DataFrame:
     if COL_VESSEL not in out.columns:
         out[COL_VESSEL] = ""
     else:
-        out[COL_VESSEL] = out[COL_VESSEL].fillna("")     
+        out[COL_VESSEL] = out[COL_VESSEL].fillna("")
     if COL_BATCH_BREAKDOWN not in out.columns:
         out[COL_BATCH_BREAKDOWN] = ""
     else:
@@ -1201,7 +1203,7 @@ def _save_result_dialog(*, result: dict) -> None:
         unsafe_allow_html=True,
     )
     ok = bool(result.get("ok"))
-    n = int(result.get("n") or 0)
+    # n = int(result.get("n") or 0)
     err = str(result.get("error") or "")
 
     if ok:
@@ -1261,7 +1263,7 @@ def display_location_details(
     visible = get_visible_columns(region=active_region, location=str(selected_loc))
 
     # Terminal Feed toggle + location label + Reset / Formulas icons
-    c_toggle, c_loc, c_live_loc,c_reset_loc, c_formulas_loc = st.columns([4.2, 4.2,1.8, 0.5, 0.5])
+    c_toggle, c_loc, c_live_loc, c_reset_loc, c_formulas_loc = st.columns([4.2, 4.2, 1.8, 0.5, 0.5])
     with c_toggle:
         show_fact = st.toggle(
             "Show Terminal Feed",
@@ -1282,7 +1284,7 @@ def display_location_details(
             key=live_calc_loc_key,
             disabled=(get_user_role() == ROLE_DISPLAY),
             help="Apply current edits and recalculate values.",
-        )    
+        )
     with c_reset_loc:
         st.markdown('<div class="transparent-icon"></div>', unsafe_allow_html=True)
         reset_clicked = st.button(
@@ -1332,7 +1334,7 @@ def display_location_details(
 
         st.session_state.pop("details_save_stage", None)
         st.session_state.pop("details_save_payload", None)
-        st.session_state.pop("details_save_result", None)        
+        st.session_state.pop("details_save_result", None)
         st.rerun()
 
     for i, tab in enumerate(st.tabs(products)):
@@ -1353,8 +1355,7 @@ def display_location_details(
             base_key = f"{state_key}__base_v{ver}"  # stable snapshot passed to editor this version
             widget_key = f"{state_key}__editor_v{ver}"
             orig_key = f"{state_key}orig"
-            enable_state_key = f"{state_key}enable_state"
-
+            # enable_state_key = f"{state_key}enable_state"
 
             # ── View File dialog ─────────────────────────────────────────────
             vf_payload = st.session_state.get("details_view_file_payload")
@@ -1403,7 +1404,7 @@ def display_location_details(
                 enable_save = st.toggle(
                     "Enable Save", value=False, key=enable_widget_key,
                     disabled=(get_user_role() == ROLE_DISPLAY),
-                    help="Toggle ON before saving to ensure the last edited cell commits.",                   
+                    help="Toggle ON before saving to ensure the last edited cell commits.",
                 )
 
             with c_save:
@@ -1453,7 +1454,7 @@ def display_location_details(
 
             if orig_key not in st.session_state:
                 st.session_state[orig_key] = st.session_state[df_key].copy().reset_index(drop=True)
-    
+
             # Backward compatibility: existing session state may predate
             # Calculated Receipt backfill/computation wiring.
             if COL_CALCULATED_RECEIPT not in st.session_state[df_key].columns:
@@ -1468,7 +1469,7 @@ def display_location_details(
                 st.session_state[base_key] = st.session_state[df_key].copy().reset_index(drop=True)
 
             if COL_VESSEL in st.session_state[df_key].columns:
-                st.session_state[df_key][COL_VESSEL] = st.session_state[df_key][COL_VESSEL].fillna("").astype(str).replace("nan", "")    
+                st.session_state[df_key][COL_VESSEL] = st.session_state[df_key][COL_VESSEL].fillna("").astype(str).replace("nan", "")
 
             base_df = st.session_state[base_key]
 
@@ -1522,14 +1523,11 @@ def display_location_details(
                 st.session_state[base_key] = recomputed.copy()
                 st.session_state[live_calc_state_key] = True
                 st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
-                
+
                 st.rerun()
 
             if not curr_live_calc and prev_live_calc:
                 st.session_state[live_calc_state_key] = False
-
-
-
 
             _pre_sync_text: dict = {}
             for _snap_col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]:
@@ -1566,17 +1564,17 @@ def display_location_details(
             if edited is not None and not edited.empty and base_key in st.session_state:
                 for _col in _TEXT_COLS:
                     if _col in edited.columns and _col in st.session_state[base_key].columns:
-                        st.session_state[base_key][_col] = edited[_col].values 
+                        st.session_state[base_key][_col] = edited[_col].values
             _text_cols_changed = edited is not None and not edited.empty and any(
-                col in edited.columns
-                and col in _pre_sync_text
-                and not np.array_equal(
+                col in edited.columns and
+                col in _pre_sync_text and
+                not np.array_equal(
                     _pre_sync_text[col], edited[col].fillna("").values
                 )
                 for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
             )
             if _text_cols_changed:
-                st.rerun()            
+                st.rerun()
 
             # ── Handle "View File" checkbox action ───────────────────────────
             if COL_VIEW_FILE in recomputed.columns:
@@ -1595,8 +1593,6 @@ def display_location_details(
                     st.session_state[ver_key] = ver + 1
                     st.rerun()
 
-
-
             if _needs_inventory_rerun(edited, recomputed):
                 canonical = st.session_state[df_key].copy().reset_index(drop=True)
                 if canonical.shape[0] == recomputed.shape[0]:
@@ -1607,7 +1603,7 @@ def display_location_details(
                 if st.session_state.get(live_calc_state_key, False):
                     st.session_state[base_key] = canonical.copy()
                     st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
-                    st.rerun() 
+                    st.rerun()
 
             # ── Save flow ────────────────────────────────────────────────────
             if save_clicked:
@@ -1668,7 +1664,7 @@ def display_location_details(
                     )
                     st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
                 finally:
-                    
+
                     st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
                     st.session_state["details_save_overlay_removal_pending"] = None
                     st.session_state[enable_ver_key] = int(st.session_state.get(enable_ver_key, 0)) + 1
