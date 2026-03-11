@@ -711,7 +711,10 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     if "FILE_LOCATION" in df.columns:
         agg_map["FILE_LOCATION"] = "last"
 
-    return df.groupby(group_cols, as_index=False).agg(agg_map)
+    result = df.groupby(group_cols, as_index=False).agg(agg_map)
+    if COL_VESSEL in result.columns:
+        result[COL_VESSEL] = result[COL_VESSEL].fillna("")
+    return result
 
 
 def _ensure_lineage_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -941,6 +944,8 @@ def _build_editor_df(df_display: pd.DataFrame) -> pd.DataFrame:
         out[COL_VESSEL_VOLUME] = np.nan
     if COL_VESSEL not in out.columns:
         out[COL_VESSEL] = ""
+    else:
+        out[COL_VESSEL] = out[COL_VESSEL].fillna("")     
     if COL_BATCH_BREAKDOWN not in out.columns:
         out[COL_BATCH_BREAKDOWN] = ""
     else:
@@ -1440,6 +1445,8 @@ def display_location_details(
                         df_display[bid] = ""
 
                 editor_df = _build_editor_df(df_display)
+                if COL_VESSEL in editor_df.columns:
+                    editor_df[COL_VESSEL] = editor_df[COL_VESSEL].fillna("").astype(str).replace("nan", "")
                 st.session_state[df_key] = _recalculate_inventory_metrics(
                     editor_df, id_col="Location", safefill=safefill, bottom=bottom, df_hist=df_prod,
                 )
@@ -1459,6 +1466,9 @@ def display_location_details(
             if base_key not in st.session_state:
                 st.session_state.pop(f"{state_key}__base_v{ver - 1}", None)  # clean up previous
                 st.session_state[base_key] = st.session_state[df_key].copy().reset_index(drop=True)
+
+            if COL_VESSEL in st.session_state[df_key].columns:
+                st.session_state[df_key][COL_VESSEL] = st.session_state[df_key][COL_VESSEL].fillna("").astype(str).replace("nan", "")    
 
             base_df = st.session_state[base_key]
 
