@@ -394,7 +394,7 @@ def _recalculate_calculated_receipt(
         h = h[h["Date"].notna()]
         # Exclude forecast rows from the reference data
         if "SOURCE_TYPE" in h.columns:
-            h = h[h["SOURCE_TYPE"].astype(str).str.lower() != "forecast"]
+            h = h[~h["SOURCE_TYPE"].astype(str).str.lower().isin({"forecast", "forecast_user"})]
         h[COL_AVAILABLE] = pd.to_numeric(h[COL_AVAILABLE], errors="coerce").fillna(0.0)
         id_col_h = id_col if id_col in h.columns else None
         prod_col_h = "Product" if "Product" in h.columns else None
@@ -459,7 +459,7 @@ def _fill_rack_averages_per_row(df: pd.DataFrame, df_hist: pd.DataFrame) -> pd.D
     hist = df_hist.copy()
     hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
     if "SOURCE_TYPE" in hist.columns:
-        hist = hist[hist["SOURCE_TYPE"].astype(str).str.lower() != "forecast"]
+        hist = hist[~hist["SOURCE_TYPE"].astype(str).str.lower().isin({"forecast", "forecast_user"})]
     hist = hist.dropna(subset=["Date"])
     hist[rack_col] = pd.to_numeric(hist[rack_col], errors="coerce")
     today = pd.Timestamp.today().normalize()
@@ -834,16 +834,15 @@ def _extend_with_30d_forecast(
     daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce")
     hist_daily = daily[daily["Date"] < today].copy()
 
-    # Preserve future rows that were explicitly saved by a user so they survive
-    # page reload.  A future row is considered user-saved when its SOURCE_TYPE is
-    # 'user' OR its updated/MANUAL_OVERRIDE_FLAG was set to 1 on save.
+    if "SOURCE_TYPE" in hist_daily.columns and COL_RACK_LIFTINGS_RAW in hist_daily.columns and not hist_daily.empty:
+        _fc_mask = hist_daily["SOURCE_TYPE"].astype(str).str.strip().str.lower().eq("forecast")
+        hist_daily.loc[_fc_mask, COL_RACK_LIFTINGS_RAW] = 0.0
+
     future_db = daily[daily["Date"] >= today].copy()
-    if not future_db.empty:
-        _src = future_db.get("SOURCE_TYPE", pd.Series(dtype=str)).astype(str).str.strip().str.lower()
-        _upd = future_db.get("updated", pd.Series(0, index=future_db.index)).fillna(0).astype(int)
-        saved_future = future_db[_src.eq("user") | _upd.eq(1)].copy()
-    else:
-        saved_future = pd.DataFrame()
+
+    if "SOURCE_TYPE" in future_db.columns and not future_db.empty:
+        future_db = future_db[future_db["SOURCE_TYPE"].astype(str).str.strip().str.lower().eq("forecast_user")]
+    saved_future = future_db if not future_db.empty else pd.DataFrame()
 
     # Build lookup of (id_val, product, normalized_date) already covered by
     # user-saved future rows so we skip re-generating those dates.
@@ -1631,6 +1630,7 @@ def display_location_details(
                         location=payload.get("location"),
                         system=payload.get("system"),
                         product=payload.get("product"),
+                        df_original=st.session_state.get(orig_key),
                     )
                     log_audit(
                         event="details_save_success",

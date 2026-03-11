@@ -140,6 +140,17 @@ COL_SAFE_FILL_LIMIT = "Safe Fill Limit"
 # Used for admin config UI (group labels, ordering) and editor locking logic.
 # =============================================================================
 
+_EDITABLE_COMPARE_COLS = [
+    "Receipts", "Deliveries", "Rack/Lifting",
+    "Pipeline In", "Pipeline Out",
+    "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out",
+    "PTO", "Production", "Adjustments", "Gain/Loss", "Transfers",
+    "Available", "Intransit", "Storage", "Vessel Volume",
+    "Tulsa", "El Dorado", "Other", "Offline", "From 327 Receipt",
+    "Notes", "Batch", "Batch Breakdown", "Vessel",
+    "RMPL Batch ID", "Seminoe Batch ID", "Medicine Batch ID", "Pioneer Batch ID",
+]
+
 # Input — Incoming: added to Closing Inventory
 INPUT_INCOMING_COLS: tuple[str, ...] = (
     COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION,

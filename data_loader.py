@@ -83,6 +83,8 @@ from config import (
     # Fact inventory metrics (optional UI display)
     COL_AVAILABLE_FACT,
     COL_INTRANSIT_FACT,
+
+    _EDITABLE_COMPARE_COLS
 )
 
 
@@ -551,6 +553,30 @@ def _product_code(product_description: str) -> str:
     return s.upper().replace(" ", "_")[:50]
 
 
+def _row_was_edited(current_row: pd.Series, orig_row: pd.Series) -> bool:
+    """Return True if any editable column differs between current and original."""
+    for col in _EDITABLE_COMPARE_COLS:
+        if col not in current_row.index or col not in orig_row.index:
+            continue
+        cv = current_row.get(col)
+        ov = orig_row.get(col)
+        # Normalize NaN / None / empty-string to comparable values
+        cv_is_na = cv is None or (isinstance(cv, float) and pd.isna(cv))
+        ov_is_na = ov is None or (isinstance(ov, float) and pd.isna(ov))
+        if cv_is_na and ov_is_na:
+            continue
+        if cv_is_na != ov_is_na:
+            return True
+        # Numeric comparison with tolerance
+        try:
+            if abs(float(cv) - float(ov)) > 0.005:
+                return True
+        except (ValueError, TypeError):
+            if str(cv).strip() != str(ov).strip():
+                return True
+    return False
+
+
 def persist_details_rows(
     df_details: pd.DataFrame,
     *,
@@ -558,8 +584,10 @@ def persist_details_rows(
     location: str | None,
     system: str | None = None,
     product: str | None = None,
+    df_original: pd.DataFrame | None = None,
 ) -> int:
     """Persist the Details-grid rows back to the underlying inventory table.
+    For today+ rows, only rows where the user actually changed a value are saved.
     """
 
     if df_details is None or df_details.empty:
@@ -589,6 +617,29 @@ def persist_details_rows(
 
     if not location_s:
         raise ValueError("Location scope is required to save details")
+
+    # Build a date-keyed lookup from the original snapshot so we can
+    # distinguish user-edited future rows ('forecast_user') from
+    # untouched ones ('forecast').
+    _today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
+    _orig_by_date: dict[str, pd.Series] = {}
+    if df_original is not None and not df_original.empty:
+        orig = df_original.copy()
+        if "Date" in orig.columns:
+            orig["_date_str"] = pd.to_datetime(orig["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+            for _, orow in orig.iterrows():
+                ds = orow.get("_date_str")
+                if ds:
+                    _orig_by_date[ds] = orow
+
+    # Build a set of date strings where the user actually edited something
+    _edited_dates: set[str] = set()
+    if _orig_by_date:
+        for _, row in df.iterrows():
+            date_s = str(row.get("Date") or "")
+            if date_s >= _today_str and date_s in _orig_by_date:
+                if _row_was_edited(row, _orig_by_date[date_s]):
+                    _edited_dates.add(date_s)
 
     # Map UI/display columns back to storage columns.
     NUM_MAP = {
@@ -675,20 +726,17 @@ def persist_details_rows(
             # Details UI always has Product, but don't hard-crash if missing.
             prod_desc = "Unknown"
 
-        source_type = str(r.get("SOURCE_TYPE") or "").strip().lower()
-        if source_type not in {"system", "user", "forecast"}:
-            source_type = "user"
-        # When a user explicitly saves a forecast row, promote it to 'user' so
-        # that on reload it is preserved in _extend_with_30d_forecast rather than
-        # being discarded and overwritten by a freshly generated estimate.
+        # Rows before today → 'user'
+        # Today and after → 'forecast_user' if edited, 'forecast' if not
         _date_for_st = pd.to_datetime(r.get("Date"), errors="coerce")
         _today_for_st = pd.Timestamp.today().normalize()
-        if (
-            source_type == "forecast" and
-            pd.notna(_date_for_st) and
-            _date_for_st.normalize() >= _today_for_st
-        ):
+        date_s_for_st = str(r.get("Date") or "")
+        if pd.notna(_date_for_st) and _date_for_st.normalize() < _today_for_st:
             source_type = "user"
+        elif date_s_for_st in _edited_dates:
+            source_type = "forecast_user"
+        else:
+            source_type = "forecast"
 
         date_val = r.get("Date")
         date_s = None if pd.isna(date_val) else str(date_val)
@@ -881,21 +929,6 @@ def persist_details_rows(
         session = get_snowflake_session()
         session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
-        # # Auto-migrate: add new columns to Snowflake table if they don't exist yet.
-        # _new_sf_cols = [
-        #     ("STORAGE_BBL", "FLOAT"),
-        #     ("TULSA_BBL", "FLOAT"),
-        #     ("EL_DORADO_BBL", "FLOAT"),
-        #     ("OTHER_BBL", "FLOAT"),
-        #     ("OFFLINE_BBL", "FLOAT"),
-        #     ("FROM_327_RECEIPT_BBL", "FLOAT"),
-        # ]
-        # for _sf_col, _sf_type in _new_sf_cols:
-        #     try:
-        #         session.sql(f"ALTER TABLE {RAW_INVENTORY_TABLE} ADD COLUMN IF NOT EXISTS {_sf_col} {_sf_type}").collect()
-        #     except Exception:
-        #         pass  # Column already exists or DDL not supported; continue
-
         stage = pd.DataFrame(rows)
 
         # Build MERGE (Snowflake identifiers are uppercased by default).
@@ -981,14 +1014,6 @@ def persist_details_rows(
             total_written += int(len(chunk))
 
         rows_written = total_written
-
-    # Propagate column links after saving the current product.
-    _propagate_column_links(
-        df_details=df_details,
-        region=region_s,
-        location=location_s,
-        product=product_s_filter,
-    )
 
     # Invalidate caches so the updated rows can be fetched.
     _load_inventory_data_cached.clear()
@@ -1647,7 +1672,7 @@ def _load_inventory_data_filtered_cached(
         # DB query is too narrow the averages and the forecast values change
         # every time the user adjusts the start date, which is confusing.
         # The display grid is trimmed to the user's actual start date AFTER
-        # the data is loaded (see display_details_tab in details_tab.py).
+        # the data is loaded
         _today_ts = pd.Timestamp.today().normalize()
         _training_start = min(pd.Timestamp(start_ts), _today_ts - pd.Timedelta(days=90))
         start_s = _training_start.strftime("%Y-%m-%d")
