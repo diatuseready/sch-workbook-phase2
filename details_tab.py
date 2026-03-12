@@ -52,6 +52,8 @@ from config import (
     COL_PIPELINE_OUT,
     COL_PIPELINE_OUT_FACT,
     COL_PTO,
+    COL_RECON_FROM_191,
+    COL_RECON_TO_182,
     COL_PRODUCT,
     COL_PRODUCTION,
     COL_PRODUCTION_FACT,
@@ -110,6 +112,8 @@ DETAILS_COLS = [
     COL_MEDICINE_PIPELINE_OUT,
     COL_PIONEER_PIPELINE_OUT,
     COL_PTO,
+    COL_RECON_FROM_191,
+    COL_RECON_TO_182,
     COL_GAIN_LOSS,
     COL_TRANSFERS,
     COL_PRODUCTION,
@@ -171,6 +175,8 @@ DISPLAY_OUTFLOW_COLS = [
     COL_PIONEER_PIPELINE_OUT,
     COL_PTO,
     COL_OFFLINE,
+    COL_RECON_FROM_191,
+    COL_RECON_TO_182,
     COL_VESSEL_VOLUME,
 ]
 DISPLAY_NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
@@ -698,6 +704,8 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         COL_MEDICINE_PIPELINE_OUT,
         COL_PIONEER_PIPELINE_OUT,
         COL_PTO,
+        COL_RECON_FROM_191,
+        COL_RECON_TO_182,
     ]:
         if sub in df.columns:
             agg_map[sub] = "sum"
@@ -745,6 +753,7 @@ def _fill_missing_internal_dates(
     zero_fill_cols = [
         "Open Inv", "Close Inv", COL_AVAILABLE, COL_INTRANSIT, *flow_cols,
         *[c for c in out.columns if str(c).endswith(" Fact")],
+        COL_RECON_FROM_191, COL_RECON_TO_182,
     ]
     zero_fill_cols = [c for c in zero_fill_cols if c in out.columns]
 
@@ -965,6 +974,14 @@ def _build_editor_df(df_display: pd.DataFrame) -> pd.DataFrame:
         out[COL_PTO] = 0.0
     else:
         out[COL_PTO] = _to_numeric_series(out[COL_PTO]).fillna(0.0)
+    if COL_RECON_FROM_191 not in out.columns:
+        out[COL_RECON_FROM_191] = 0.0
+    else:
+        out[COL_RECON_FROM_191] = _to_numeric_series(out[COL_RECON_FROM_191]).fillna(0.0)
+    if COL_RECON_TO_182 not in out.columns:
+        out[COL_RECON_TO_182] = 0.0
+    else:
+        out[COL_RECON_TO_182] = _to_numeric_series(out[COL_RECON_TO_182]).fillna(0.0)
     # Keep Calculated Receipt as a display-only column even when not computed.
     if COL_CALCULATED_RECEIPT not in out.columns:
         out[COL_CALCULATED_RECEIPT] = np.nan

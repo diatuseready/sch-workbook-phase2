@@ -76,6 +76,7 @@ _ALL_CONFIGURABLE_COLS: list[str] = [
     # Input – Outgoing
     "Deliveries", "Rack/Lifting", "Pipeline Out",
     "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out", "PTO",
+    "Recon From 191", "Recon To 182",
     # Input – Adjustment
     "Adjustments", "Gain/Loss", "Transfers",
     # Misc
@@ -117,6 +118,8 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Medicine Pipeline Out",
     "Pioneer Pipeline Out",
     "PTO",
+    "Recon From 191",
+    "Recon To 182",
     "Gain/Loss",
     "Transfers",
     "Production",
@@ -176,6 +179,9 @@ def ensure_admin_config_table_sqlite():
             needs_migration = True
         elif set(pk_cols) == {"REGION", "LOCATION"}:
             needs_migration = True
+        # elif not pk_cols:
+        #     # Table exists but was created without any PRIMARY KEY — must recreate
+        #     needs_migration = True
 
     if needs_migration:
         old = f"{SQLITE_ADMIN_CONFIG_TABLE}__OLD"
@@ -321,29 +327,46 @@ def _persist_sqlite(row: dict):
     ensure_admin_config_table_sqlite()
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cur = conn.cursor()
-    cur.execute(
-        f"""
-        INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
-        (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE,
-         DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(REGION, LOCATION, PRODUCT) DO UPDATE SET
-            VISIBLE_COLUMNS_JSON=excluded.VISIBLE_COLUMNS_JSON,
-            BOTTOM=excluded.BOTTOM,
-            SAFEFILL=excluded.SAFEFILL,
-            NOTE=excluded.NOTE,
-            DEFAULT_START_DAYS=excluded.DEFAULT_START_DAYS,
-            DEFAULT_END_DAYS=excluded.DEFAULT_END_DAYS,
-            RACK_LIFTING_FORECAST_METHOD=excluded.RACK_LIFTING_FORECAST_METHOD,
-            UPDATED_AT=datetime('now')
-        """,
-        (
-            row["REGION"], row["LOCATION"], row["PRODUCT"],
-            row.get("VISIBLE_COLUMNS_JSON"), row.get("BOTTOM"), row.get("SAFEFILL"),
-            row.get("NOTE"), row.get("DEFAULT_START_DAYS"), row.get("DEFAULT_END_DAYS"),
-            row.get("RACK_LIFTING_FORECAST_METHOD"),
-        ),
-    )
+    # exists = cur.execute(
+    #     f"SELECT 1 FROM {SQLITE_ADMIN_CONFIG_TABLE} WHERE REGION=? AND LOCATION=? AND PRODUCT=?",
+    #     (row["REGION"], row["LOCATION"], row["PRODUCT"]),
+    # ).fetchone()
+    # if exists:
+    #     cur.execute(
+    #         f"""
+    #         UPDATE {SQLITE_ADMIN_CONFIG_TABLE} SET
+    #             VISIBLE_COLUMNS_JSON=?,
+    #             BOTTOM=?,
+    #             SAFEFILL=?,
+    #             NOTE=?,
+    #             DEFAULT_START_DAYS=?,
+    #             DEFAULT_END_DAYS=?,
+    #             RACK_LIFTING_FORECAST_METHOD=?,
+    #             UPDATED_AT=datetime('now')
+    #         WHERE REGION=? AND LOCATION=? AND PRODUCT=?
+    #         """,
+    #         (
+    #             row.get("VISIBLE_COLUMNS_JSON"), row.get("BOTTOM"), row.get("SAFEFILL"),
+    #             row.get("NOTE"), row.get("DEFAULT_START_DAYS"), row.get("DEFAULT_END_DAYS"),
+    #             row.get("RACK_LIFTING_FORECAST_METHOD"),
+    #             row["REGION"], row["LOCATION"], row["PRODUCT"],
+    #         ),
+    #     )
+    # else:
+    #     cur.execute(
+    #         f"""
+    #         INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
+    #         (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE,
+    #          DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
+    #         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    #         """,
+    #         (
+    #             row["REGION"], row["LOCATION"], row["PRODUCT"],
+    #             row.get("VISIBLE_COLUMNS_JSON"), row.get("BOTTOM"), row.get("SAFEFILL"),
+    #             row.get("NOTE"), row.get("DEFAULT_START_DAYS"), row.get("DEFAULT_END_DAYS"),
+    #             row.get("RACK_LIFTING_FORECAST_METHOD"),
+    #         ),
+    #     )
     conn.commit()
     conn.close()
 

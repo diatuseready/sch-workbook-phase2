@@ -61,6 +61,8 @@ from config import (
     COL_OTHER,
     COL_OFFLINE,
     COL_FROM_327_RECEIPT,
+    COL_RECON_FROM_191,
+    COL_RECON_TO_182,
 
     # Capacity/threshold columns
     COL_TANK_CAPACITY,
@@ -174,6 +176,8 @@ NUMERIC_COLUMN_MAP = {
     COL_OTHER: "OTHER_BBL",
     COL_OFFLINE: "OFFLINE_BBL",
     COL_FROM_327_RECEIPT: "FROM_327_RECEIPT_BBL",
+    COL_RECON_FROM_191: "RECON_FROM_191",
+    COL_RECON_TO_182: "RECON_TO_182",
 
     # Fact columns (optional UI display)
     COL_OPEN_INV_FACT_RAW: "FACT_OPENING_INVENTORY_BBL",
@@ -669,6 +673,8 @@ def persist_details_rows(
         "Offline": "OFFLINE_BBL",
         "Argentine": "OFFLINE_BBL",
         "From 327 Receipt": "FROM_327_RECEIPT_BBL",
+        "Recon From 191": "RECON_FROM_191",
+        "Recon To 182": "RECON_TO_182",
         "Adjustments Fact": "FACT_ADJUSTMENTS_BBL",
         "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
     }
@@ -843,6 +849,8 @@ def persist_details_rows(
                     "OTHER_BBL",
                     "OFFLINE_BBL",
                     "FROM_327_RECEIPT_BBL",
+                    "RECON_FROM_191",
+                    "RECON_TO_182",
                     "FACT_OPENING_INVENTORY_BBL",
                     "FACT_CLOSING_INVENTORY_BBL",
                     "FACT_AVAILABLE_BBL",
@@ -879,6 +887,7 @@ def persist_details_rows(
                     "PTO",
                     "RMPL_PIPELINE_OUT", "SEMINOE_PIPELINE_OUT",
                     "MEDICINE_PIPELINE_OUT", "PIONEER_PIPELINE_OUT",
+                    "RECON_FROM_191", "RECON_TO_182",
                 ]
                 _existing_cols = {r[1] for r in cur.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
                 for _c in _new_bbl_cols:
@@ -898,6 +907,8 @@ def persist_details_rows(
                     "SEMINOE_PIPELINE_OUT",
                     "MEDICINE_PIPELINE_OUT",
                     "PIONEER_PIPELINE_OUT",
+                    "RECON_FROM_191",
+                    "RECON_TO_182",
                 }
                 for c in write_cols:
                     row.setdefault(c, 0.0 if (c.endswith("_BBL") or c in numeric_default_cols) else None)
@@ -1051,6 +1062,8 @@ _DISPLAY_TO_DB_COL: dict[str, str] = {
     "Other": "OTHER_BBL",
     "Offline": "OFFLINE_BBL",
     "From 327 Receipt": "FROM_327_RECEIPT_BBL",
+    "Recon From 191": "RECON_FROM_191",
+    "Recon To 182": "RECON_TO_182",
     "Available": "AVAILABLE_BBL",
     "Intransit": "INTRANSIT_BBL",
     "Storage": "STORAGE_BBL",
@@ -1284,6 +1297,8 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(OTHER_BBL, 0) AS FLOAT) as OTHER_BBL,
         CAST(COALESCE(OFFLINE_BBL, 0) AS FLOAT) as OFFLINE_BBL,
         CAST(COALESCE(FROM_327_RECEIPT_BBL, 0) AS FLOAT) as FROM_327_RECEIPT_BBL,
+        CAST(COALESCE(RECON_FROM_191, 0) AS FLOAT) as RECON_FROM_191,
+        CAST(COALESCE(RECON_TO_182, 0) AS FLOAT) as RECON_TO_182,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
         SOURCE_TYPE,
@@ -1795,6 +1810,8 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(OTHER_BBL, 0) AS FLOAT) as OTHER_BBL,
         CAST(COALESCE(OFFLINE_BBL, 0) AS FLOAT) as OFFLINE_BBL,
         CAST(COALESCE(FROM_327_RECEIPT_BBL, 0) AS FLOAT) as FROM_327_RECEIPT_BBL,
+        CAST(COALESCE(RECON_FROM_191, 0) AS FLOAT) as RECON_FROM_191,
+        CAST(COALESCE(RECON_TO_182, 0) AS FLOAT) as RECON_TO_182,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
         SOURCE_TYPE,

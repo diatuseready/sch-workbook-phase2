@@ -100,6 +100,8 @@ COL_SEMINOE_PIPELINE_OUT = "Seminoe Pipeline Out"
 COL_MEDICINE_PIPELINE_OUT = "Medicine Pipeline Out"
 COL_PIONEER_PIPELINE_OUT = "Pioneer Pipeline Out"
 COL_PTO = "PTO"
+COL_RECON_FROM_191 = "Recon From 191"   # outgoing: deducted from Close Inv
+COL_RECON_TO_182 = "Recon To 182"       # outgoing: deducted from Close Inv
 COL_RMPL_BATCH_ID = "RMPL Batch ID"
 COL_SEMINOE_BATCH_ID = "Seminoe Batch ID"
 COL_MEDICINE_BATCH_ID = "Medicine Batch ID"
@@ -144,7 +146,8 @@ _EDITABLE_COMPARE_COLS = [
     "Receipts", "Deliveries", "Rack/Lifting",
     "Pipeline In", "Pipeline Out",
     "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out",
-    "PTO", "Production", "Adjustments", "Gain/Loss", "Transfers",
+    "PTO", "Recon From 191", "Recon To 182",
+    "Production", "Adjustments", "Gain/Loss", "Transfers",
     "Available", "Intransit", "Storage", "Vessel Volume",
     "Tulsa", "El Dorado", "Other", "Offline", "From 327 Receipt",
     "Notes", "Batch", "Batch Breakdown", "Vessel",
@@ -168,6 +171,8 @@ INPUT_OUTGOING_COLS: tuple[str, ...] = (
     COL_PIONEER_PIPELINE_OUT,
     COL_PTO,
     COL_OFFLINE,
+    COL_RECON_FROM_191,
+    COL_RECON_TO_182,
 )
 
 # Input — Adjustments: net effect on Closing Inventory
