@@ -1353,350 +1353,357 @@ def display_location_details(
         st.session_state.pop("details_save_result", None)
         st.rerun()
 
-    for i, tab in enumerate(st.tabs(products)):
-        prod_name = products[i]
-        with tab:
-            # ── State keys ──────────────────────────────────────────────────
-            # show_fact is intentionally excluded from state_key so the editor
-            # widget key stays the same when the Terminal Feed toggle changes.
-            # Toggling only updates column_order, preserving unsaved edits.
-            state_key = (
-                f"{active_region}_{selected_loc}_{prod_name}"
-                f"|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
-                f"|m={forecast_method}|edit"
+    selected_product = st.segmented_control(
+        "",
+        options=products,
+        default=products[0],
+        key=f"details_product_selector|{active_region}|{selected_loc}",
+    )    
+    if not selected_product:
+        return
+    prod_name = selected_product
+    if prod_name:
+        # ── State keys ──────────────────────────────────────────────────
+        # show_fact is intentionally excluded from state_key so the editor
+        # widget key stays the same when the Terminal Feed toggle changes.
+        # Toggling only updates column_order, preserving unsaved edits.
+        state_key = (
+            f"{active_region}_{selected_loc}_{prod_name}"
+            f"|{pd.Timestamp(start_ts).date()}|{pd.Timestamp(end_ts).date()}"
+            f"|m={forecast_method}|edit"
+        )
+        df_key = f"{state_key}__df"           # canonical DataFrame in session state
+        ver_key = f"{state_key}__ver"          # version counter; increment forces editor remount
+        ver = int(st.session_state.get(ver_key, 0))
+        base_key = f"{state_key}__base_v{ver}"  # stable snapshot passed to editor this version
+        widget_key = f"{state_key}__editor_v{ver}"
+        orig_key = f"{state_key}orig"
+        # enable_state_key = f"{state_key}enable_state"
+
+        # ── View File dialog ─────────────────────────────────────────────
+        vf_payload = st.session_state.get("details_view_file_payload")
+        if isinstance(vf_payload, dict) and vf_payload.get("df_key") == df_key:
+            _view_files_dialog(
+                file_locations=vf_payload.get("file_locations"),
+                context={
+                    "date": vf_payload.get("date"),
+                    "location": vf_payload.get("location"),
+                    "product": vf_payload.get("product"),
+                },
             )
-            df_key = f"{state_key}__df"           # canonical DataFrame in session state
-            ver_key = f"{state_key}__ver"          # version counter; increment forces editor remount
-            ver = int(st.session_state.get(ver_key, 0))
-            base_key = f"{state_key}__base_v{ver}"  # stable snapshot passed to editor this version
-            widget_key = f"{state_key}__editor_v{ver}"
-            orig_key = f"{state_key}orig"
-            # enable_state_key = f"{state_key}enable_state"
+            st.session_state["details_view_file_payload"] = None
 
-            # ── View File dialog ─────────────────────────────────────────────
-            vf_payload = st.session_state.get("details_view_file_payload")
-            if isinstance(vf_payload, dict) and vf_payload.get("df_key") == df_key:
-                _view_files_dialog(
-                    file_locations=vf_payload.get("file_locations"),
-                    context={
-                        "date": vf_payload.get("date"),
-                        "location": vf_payload.get("location"),
-                        "product": vf_payload.get("product"),
-                    },
-                )
-                st.session_state["details_view_file_payload"] = None
+        # ── Save overlay ─────────────────────────────────────────────────
+        overlay = st.session_state.get("details_save_overlay") or {}
+        if overlay.get("on") and overlay.get("df_key") == df_key:
+            _render_blocking_overlay(True, message="Saving…")
+        if (
+            st.session_state.get("details_save_stage") is None and
+            st.session_state.get("details_save_overlay_removal_pending") == df_key and
+            overlay.get("on")
+        ):
+            st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
+            st.session_state["details_save_overlay_removal_pending"] = None
+            st.rerun()
 
-            # ── Save overlay ─────────────────────────────────────────────────
-            overlay = st.session_state.get("details_save_overlay") or {}
-            if overlay.get("on") and overlay.get("df_key") == df_key:
-                _render_blocking_overlay(True, message="Saving…")
-            if (
-                st.session_state.get("details_save_stage") is None and
-                st.session_state.get("details_save_overlay_removal_pending") == df_key and
-                overlay.get("on")
-            ):
-                st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
-                st.session_state["details_save_overlay_removal_pending"] = None
-                st.rerun()
+        # ── Thresholds ───────────────────────────────────────────────────
+        bottom, safefill, note = _threshold_values(
+            region=active_region, location=str(selected_loc), product=str(prod_name),
+        )
 
-            # ── Thresholds ───────────────────────────────────────────────────
-            bottom, safefill, note = _threshold_values(
-                region=active_region, location=str(selected_loc), product=str(prod_name),
+        # ── Header row: threshold cards + Enable Save + Save button ──
+        c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([1.75, 1.75, 2.7, 1.2, 1.3, 2.3])
+        _render_threshold_cards(
+            bottom=bottom, safefill=safefill, note=note,
+            c_safefill=c_sf, c_bottom=c_bt, c_note=c_note, c_info=c_info,
+            display_forecast_method=forecast_method,
+        )
+
+        enable_key = f"details_enable_save|{active_region}|{selected_loc}|{prod_name}"
+        enable_ver_key = f"{enable_key}__ver"
+        enable_widget_key = f"{enable_key}__v{int(st.session_state.get(enable_ver_key, 0))}"
+
+        with c_enable:
+            enable_save = st.toggle(
+                "Enable Save", value=False, key=enable_widget_key,
+                disabled=(get_user_role() == ROLE_DISPLAY),
+                help="Toggle ON before saving to ensure the last edited cell commits.",
             )
 
-            # ── Header row: threshold cards + Enable Save + Save button ──
-            c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([1.75, 1.75, 2.7, 1.2, 1.3, 2.3])
-            _render_threshold_cards(
-                bottom=bottom, safefill=safefill, note=note,
-                c_safefill=c_sf, c_bottom=c_bt, c_note=c_note, c_info=c_info,
-                display_forecast_method=forecast_method,
+        with c_save:
+            save_clicked = logged_button(
+                f"Save {prod_name} Data",
+                key=f"save_{active_region}_{selected_loc}_{prod_name}",
+                type="primary",
+                disabled=not bool(enable_save),
+                event="details_save_clicked",
+                metadata={"region": active_region, "scope": "location",
+                            "location": selected_loc, "product": prod_name},
+            )
+        # ── Load and prepare data (only on first render for this state_key) ──
+        df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
+
+        if df_key not in st.session_state:
+            df_all = _extend_with_30d_forecast(
+                df_prod, id_col="Location", region=active_region,
+                location=str(selected_loc), history_start=start_ts, forecast_end=end_ts,
+            )
+            df_display = build_details_view(df_all, id_col="Location")
+            df_display = df_display[
+                df_display["Date"] >= pd.Timestamp(start_ts).normalize().date()
+            ].reset_index(drop=True)
+
+            # Add sub-breakdown columns if configured but absent from source data
+            for sub in [COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_OFFLINE, COL_FROM_327_RECEIPT]:
+                if sub in visible and sub not in df_display.columns:
+                    df_display[sub] = 0.0
+            for pcol in [COL_RMPL_PIPELINE_OUT, COL_SEMINOE_PIPELINE_OUT, COL_MEDICINE_PIPELINE_OUT, COL_PIONEER_PIPELINE_OUT]:
+                if pcol in visible and pcol not in df_display.columns:
+                    df_display[pcol] = 0.0
+            if COL_PTO in visible and COL_PTO not in df_display.columns:
+                df_display[COL_PTO] = 0.0
+            if COL_BATCH_BREAKDOWN in visible and COL_BATCH_BREAKDOWN not in df_display.columns:
+                df_display[COL_BATCH_BREAKDOWN] = ""
+            for bid in [COL_RMPL_BATCH_ID, COL_SEMINOE_BATCH_ID, COL_MEDICINE_BATCH_ID, COL_PIONEER_BATCH_ID]:
+                if bid in visible and bid not in df_display.columns:
+                    df_display[bid] = ""
+
+            editor_df = _build_editor_df(df_display)
+            if COL_VESSEL in editor_df.columns:
+                editor_df[COL_VESSEL] = editor_df[COL_VESSEL].fillna("").astype(str).replace("nan", "")
+            st.session_state[df_key] = _recalculate_inventory_metrics(
+                editor_df, id_col="Location", safefill=safefill, bottom=bottom, df_hist=df_prod,
             )
 
-            enable_key = f"details_enable_save|{active_region}|{selected_loc}|{prod_name}"
-            enable_ver_key = f"{enable_key}__ver"
-            enable_widget_key = f"{enable_key}__v{int(st.session_state.get(enable_ver_key, 0))}"
+        if orig_key not in st.session_state:
+            st.session_state[orig_key] = st.session_state[df_key].copy().reset_index(drop=True)
 
-            with c_enable:
-                enable_save = st.toggle(
-                    "Enable Save", value=False, key=enable_widget_key,
-                    disabled=(get_user_role() == ROLE_DISPLAY),
-                    help="Toggle ON before saving to ensure the last edited cell commits.",
-                )
+        # Backward compatibility: existing session state may predate
+        # Calculated Receipt backfill/computation wiring.
+        if COL_CALCULATED_RECEIPT not in st.session_state[df_key].columns:
+            st.session_state[df_key][COL_CALCULATED_RECEIPT] = np.nan
 
-            with c_save:
-                save_clicked = logged_button(
-                    f"Save {prod_name} Data",
-                    key=f"save_{active_region}_{selected_loc}_{prod_name}",
-                    type="primary",
-                    disabled=not bool(enable_save),
-                    event="details_save_clicked",
-                    metadata={"region": active_region, "scope": "location",
-                              "location": selected_loc, "product": prod_name},
-                )
-            # ── Load and prepare data (only on first render for this state_key) ──
-            df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
+        # ── Stable snapshot for this editor version ──────────────────────
+        # The snapshot is created once per version and passed as the editor's
+        # baseline on every render. Changing column_order (e.g., show_fact)
+        # does NOT create a new snapshot — the editor preserves its edits.
+        if base_key not in st.session_state:
+            st.session_state.pop(f"{state_key}__base_v{ver - 1}", None)  # clean up previous
+            st.session_state[base_key] = st.session_state[df_key].copy().reset_index(drop=True)
 
-            if df_key not in st.session_state:
-                df_all = _extend_with_30d_forecast(
-                    df_prod, id_col="Location", region=active_region,
-                    location=str(selected_loc), history_start=start_ts, forecast_end=end_ts,
-                )
-                df_display = build_details_view(df_all, id_col="Location")
-                df_display = df_display[
-                    df_display["Date"] >= pd.Timestamp(start_ts).normalize().date()
-                ].reset_index(drop=True)
+        if COL_VESSEL in st.session_state[df_key].columns:
+            st.session_state[df_key][COL_VESSEL] = st.session_state[df_key][COL_VESSEL].fillna("").astype(str).replace("nan", "")
 
-                # Add sub-breakdown columns if configured but absent from source data
-                for sub in [COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_OFFLINE, COL_FROM_327_RECEIPT]:
-                    if sub in visible and sub not in df_display.columns:
-                        df_display[sub] = 0.0
-                for pcol in [COL_RMPL_PIPELINE_OUT, COL_SEMINOE_PIPELINE_OUT, COL_MEDICINE_PIPELINE_OUT, COL_PIONEER_PIPELINE_OUT]:
-                    if pcol in visible and pcol not in df_display.columns:
-                        df_display[pcol] = 0.0
-                if COL_PTO in visible and COL_PTO not in df_display.columns:
-                    df_display[COL_PTO] = 0.0
-                if COL_BATCH_BREAKDOWN in visible and COL_BATCH_BREAKDOWN not in df_display.columns:
-                    df_display[COL_BATCH_BREAKDOWN] = ""
-                for bid in [COL_RMPL_BATCH_ID, COL_SEMINOE_BATCH_ID, COL_MEDICINE_BATCH_ID, COL_PIONEER_BATCH_ID]:
-                    if bid in visible and bid not in df_display.columns:
-                        df_display[bid] = ""
+        base_df = st.session_state[base_key]
 
-                editor_df = _build_editor_df(df_display)
-                if COL_VESSEL in editor_df.columns:
-                    editor_df[COL_VESSEL] = editor_df[COL_VESSEL].fillna("").astype(str).replace("nan", "")
-                st.session_state[df_key] = _recalculate_inventory_metrics(
-                    editor_df, id_col="Location", safefill=safefill, bottom=bottom, df_hist=df_prod,
-                )
+        # ── Column order: changes with show_fact but NOT the editor key ──
+        column_order = _build_column_order(base_df, visible=visible, show_fact=show_fact)
+        column_config = _column_config(base_df, column_order, "Location")
 
-            if orig_key not in st.session_state:
-                st.session_state[orig_key] = st.session_state[df_key].copy().reset_index(drop=True)
+        # ── Render editor ────────────────────────────────────────────────
+        styled = _style_source_cells(base_df, safefill=safefill, bottom=bottom)
+        edited = dynamic_input_data_editor(
+            styled,
+            num_rows="fixed",
+            width="stretch",
+            height=DETAILS_EDITOR_HEIGHT_PX,
+            hide_index=True,
+            column_order=column_order,
+            key=widget_key,
+            column_config=column_config,
+        )
+        live_calc_state_key = f"{state_key}live_calc_state"
+        prev_live_calc = bool(st.session_state.get(live_calc_state_key, False))
+        curr_live_calc = bool(live_calc_clicked)
 
-            # Backward compatibility: existing session state may predate
-            # Calculated Receipt backfill/computation wiring.
-            if COL_CALCULATED_RECEIPT not in st.session_state[df_key].columns:
-                st.session_state[df_key][COL_CALCULATED_RECEIPT] = np.nan
+        if curr_live_calc and not prev_live_calc:
+            current_input = edited if edited is not None and not edited.empty else st.session_state[df_key].copy()
 
-            # ── Stable snapshot for this editor version ──────────────────────
-            # The snapshot is created once per version and passed as the editor's
-            # baseline on every render. Changing column_order (e.g., show_fact)
-            # does NOT create a new snapshot — the editor preserves its edits.
-            if base_key not in st.session_state:
-                st.session_state.pop(f"{state_key}__base_v{ver - 1}", None)  # clean up previous
-                st.session_state[base_key] = st.session_state[df_key].copy().reset_index(drop=True)
-
-            if COL_VESSEL in st.session_state[df_key].columns:
-                st.session_state[df_key][COL_VESSEL] = st.session_state[df_key][COL_VESSEL].fillna("").astype(str).replace("nan", "")
-
-            base_df = st.session_state[base_key]
-
-            # ── Column order: changes with show_fact but NOT the editor key ──
-            column_order = _build_column_order(base_df, visible=visible, show_fact=show_fact)
-            column_config = _column_config(base_df, column_order, "Location")
-
-            # ── Render editor ────────────────────────────────────────────────
-            styled = _style_source_cells(base_df, safefill=safefill, bottom=bottom)
-            edited = dynamic_input_data_editor(
-                styled,
-                num_rows="fixed",
-                width="stretch",
-                height=DETAILS_EDITOR_HEIGHT_PX,
-                hide_index=True,
-                column_order=column_order,
-                key=widget_key,
-                column_config=column_config,
+            raw_for_forecast = _overlay_rack_edits(df_prod, current_input)
+            rebuilt = _extend_with_30d_forecast(
+                raw_for_forecast,
+                id_col="Location",
+                region=active_region,
+                location=str(selected_loc),
+                history_start=start_ts,
+                forecast_end=end_ts,
             )
-            live_calc_state_key = f"{state_key}live_calc_state"
-            prev_live_calc = bool(st.session_state.get(live_calc_state_key, False))
-            curr_live_calc = bool(live_calc_clicked)
 
-            if curr_live_calc and not prev_live_calc:
-                current_input = edited if edited is not None and not edited.empty else st.session_state[df_key].copy()
-
-                raw_for_forecast = _overlay_rack_edits(df_prod, current_input)
-                rebuilt = _extend_with_30d_forecast(
-                    raw_for_forecast,
-                    id_col="Location",
-                    region=active_region,
-                    location=str(selected_loc),
-                    history_start=start_ts,
-                    forecast_end=end_ts,
-                )
-
-                recomputed = build_details_view(rebuilt, id_col="Location")
-                recomputed = recomputed[
-                    recomputed["Date"] >= pd.Timestamp(start_ts).normalize().date()
-                ].reset_index(drop=True)
-                recomputed = _build_editor_df(recomputed)
-                recomputed = _recalculate_inventory_metrics(
-                    recomputed,
-                    id_col="Location",
-                    safefill=safefill,
-                    bottom=bottom,
-                    df_hist=raw_for_forecast,
-                ).reset_index(drop=True)
-
-                st.session_state[df_key] = recomputed.copy()
-                st.session_state[base_key] = recomputed.copy()
-                st.session_state[live_calc_state_key] = True
-                st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
-
-                st.rerun()
-
-            if not curr_live_calc and prev_live_calc:
-                st.session_state[live_calc_state_key] = False
-
-            _pre_sync_text: dict = {}
-            for _snap_col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]:
-                if base_key in st.session_state and _snap_col in st.session_state[base_key].columns:
-                    _pre_sync_text[_snap_col] = (
-                        st.session_state[base_key][_snap_col].fillna("").values.copy()
-                    )
-            _TEXT_COLS = [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
-            if edited is not None and not edited.empty:
-                for col in _TEXT_COLS:
-                    if col in edited.columns:
-                        vals = edited[col].fillna("").values
-
-                        if df_key in st.session_state and col in st.session_state[df_key].columns:
-                            st.session_state[df_key][col] = vals
-
-                        if base_key in st.session_state and col in st.session_state[base_key].columns:
-                            st.session_state[base_key][col] = vals
-
-            # ── Recalculate derived columns from the current editor state ────
-            df_hist_for_avg = _overlay_rack_edits(df_prod, edited)
+            recomputed = build_details_view(rebuilt, id_col="Location")
+            recomputed = recomputed[
+                recomputed["Date"] >= pd.Timestamp(start_ts).normalize().date()
+            ].reset_index(drop=True)
+            recomputed = _build_editor_df(recomputed)
             recomputed = _recalculate_inventory_metrics(
-                edited, id_col="Location", safefill=safefill, bottom=bottom,
-                df_hist=df_hist_for_avg,
+                recomputed,
+                id_col="Location",
+                safefill=safefill,
+                bottom=bottom,
+                df_hist=raw_for_forecast,
             ).reset_index(drop=True)
 
-            # ── Merge recomputed values back into canonical df ───────────────
+            st.session_state[df_key] = recomputed.copy()
+            st.session_state[base_key] = recomputed.copy()
+            st.session_state[live_calc_state_key] = True
+            st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
+
+            st.rerun()
+
+        if not curr_live_calc and prev_live_calc:
+            st.session_state[live_calc_state_key] = False
+
+        _pre_sync_text: dict = {}
+        for _snap_col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]:
+            if base_key in st.session_state and _snap_col in st.session_state[base_key].columns:
+                _pre_sync_text[_snap_col] = (
+                    st.session_state[base_key][_snap_col].fillna("").values.copy()
+                )
+        _TEXT_COLS = [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
+        if edited is not None and not edited.empty:
+            for col in _TEXT_COLS:
+                if col in edited.columns:
+                    vals = edited[col].fillna("").values
+
+                    if df_key in st.session_state and col in st.session_state[df_key].columns:
+                        st.session_state[df_key][col] = vals
+
+                    if base_key in st.session_state and col in st.session_state[base_key].columns:
+                        st.session_state[base_key][col] = vals
+
+        # ── Recalculate derived columns from the current editor state ────
+        df_hist_for_avg = _overlay_rack_edits(df_prod, edited)
+        recomputed = _recalculate_inventory_metrics(
+            edited, id_col="Location", safefill=safefill, bottom=bottom,
+            df_hist=df_hist_for_avg,
+        ).reset_index(drop=True)
+
+        # ── Merge recomputed values back into canonical df ───────────────
+        canonical = st.session_state[df_key].copy().reset_index(drop=True)
+        if canonical.shape[0] == recomputed.shape[0]:
+            for c in recomputed.columns:
+                canonical[c] = recomputed[c].values
+            st.session_state[df_key] = canonical
+
+        if edited is not None and not edited.empty and base_key in st.session_state:
+            for _col in _TEXT_COLS:
+                if _col in edited.columns and _col in st.session_state[base_key].columns:
+                    st.session_state[base_key][_col] = edited[_col].values
+        _text_cols_changed = edited is not None and not edited.empty and any(
+            col in edited.columns and
+            col in _pre_sync_text and
+            not np.array_equal(
+                _pre_sync_text[col], edited[col].fillna("").values
+            )
+            for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
+        )
+        if _text_cols_changed:
+            st.rerun()
+
+        # ── Handle "View File" checkbox action ───────────────────────────
+        if COL_VIEW_FILE in recomputed.columns:
+            view_mask = recomputed[COL_VIEW_FILE].fillna(False).astype(bool)
+            if view_mask.any():
+                idx = int(view_mask[view_mask].index[0])
+                file_locs = recomputed.at[idx, "FILE_LOCATION"] if "FILE_LOCATION" in recomputed.columns else []
+                st.session_state[df_key].at[idx, COL_VIEW_FILE] = False
+                st.session_state["details_view_file_payload"] = {
+                    "df_key": df_key, "row": idx,
+                    "date": str(recomputed.at[idx, "Date"]) if "Date" in recomputed.columns else None,
+                    "location": str(selected_loc),
+                    "product": str(prod_name),
+                    "file_locations": file_locs,
+                }
+                st.session_state[ver_key] = ver + 1
+                st.rerun()
+
+        if _needs_inventory_rerun(edited, recomputed):
             canonical = st.session_state[df_key].copy().reset_index(drop=True)
             if canonical.shape[0] == recomputed.shape[0]:
                 for c in recomputed.columns:
                     canonical[c] = recomputed[c].values
-                st.session_state[df_key] = canonical
+            st.session_state[df_key] = canonical
 
-            if edited is not None and not edited.empty and base_key in st.session_state:
-                for _col in _TEXT_COLS:
-                    if _col in edited.columns and _col in st.session_state[base_key].columns:
-                        st.session_state[base_key][_col] = edited[_col].values
-            _text_cols_changed = edited is not None and not edited.empty and any(
-                col in edited.columns and
-                col in _pre_sync_text and
-                not np.array_equal(
-                    _pre_sync_text[col], edited[col].fillna("").values
-                )
-                for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
-            )
-            if _text_cols_changed:
+            if st.session_state.get(live_calc_state_key, False):
+                st.session_state[base_key] = canonical.copy()
+                st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
                 st.rerun()
 
-            # ── Handle "View File" checkbox action ───────────────────────────
-            if COL_VIEW_FILE in recomputed.columns:
-                view_mask = recomputed[COL_VIEW_FILE].fillna(False).astype(bool)
-                if view_mask.any():
-                    idx = int(view_mask[view_mask].index[0])
-                    file_locs = recomputed.at[idx, "FILE_LOCATION"] if "FILE_LOCATION" in recomputed.columns else []
-                    st.session_state[df_key].at[idx, COL_VIEW_FILE] = False
-                    st.session_state["details_view_file_payload"] = {
-                        "df_key": df_key, "row": idx,
-                        "date": str(recomputed.at[idx, "Date"]) if "Date" in recomputed.columns else None,
-                        "location": str(selected_loc),
-                        "product": str(prod_name),
-                        "file_locations": file_locs,
-                    }
-                    st.session_state[ver_key] = ver + 1
-                    st.rerun()
+        # ── Save flow ────────────────────────────────────────────────────
+        if save_clicked:
+            log_audit(
+                event="details_save_dialog_opened",
+                metadata={"region": active_region, "scope": "location",
+                            "location": selected_loc, "product": prod_name},
+            )
+            _confirm_save_dialog(payload={
+                "df_key": df_key,
+                "region": active_region,
+                "location": selected_loc,
+                "system": None,
+                "product": prod_name,
+                "scope_label": f"{selected_loc} / {prod_name}",
+            })
 
-            if _needs_inventory_rerun(edited, recomputed):
-                canonical = st.session_state[df_key].copy().reset_index(drop=True)
-                if canonical.shape[0] == recomputed.shape[0]:
-                    for c in recomputed.columns:
-                        canonical[c] = recomputed[c].values
-                st.session_state[df_key] = canonical
-
-                if st.session_state.get(live_calc_state_key, False):
-                    st.session_state[base_key] = canonical.copy()
-                    st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
-                    st.rerun()
-
-            # ── Save flow ────────────────────────────────────────────────────
-            if save_clicked:
-                log_audit(
-                    event="details_save_dialog_opened",
-                    metadata={"region": active_region, "scope": "location",
-                              "location": selected_loc, "product": prod_name},
+        # Execute save after confirm dialog triggers a rerun with overlay visible
+        payload = st.session_state.get("details_save_payload") or {}
+        if st.session_state.get("details_save_stage") == "pre_save" and payload.get("df_key") == df_key:
+            try:
+                n = persist_details_rows(
+                    st.session_state[df_key],
+                    region=str(payload.get("region") or active_region),
+                    location=payload.get("location"),
+                    system=payload.get("system"),
+                    product=payload.get("product"),
+                    df_original=st.session_state.get(orig_key),
                 )
-                _confirm_save_dialog(payload={
-                    "df_key": df_key,
-                    "region": active_region,
-                    "location": selected_loc,
-                    "system": None,
-                    "product": prod_name,
-                    "scope_label": f"{selected_loc} / {prod_name}",
+                log_audit(
+                    event="details_save_success",
+                    metadata={"region": str(payload.get("region") or active_region),
+                                "location": payload.get("location"),
+                                "product": payload.get("product"),
+                                "rows_saved": int(n)},
+                )
+                _load_inventory_data_filtered_cached.clear()
+                details_cache_key = f"df_details|{active_region}"
+                st.session_state[details_cache_key] = load_filtered_inventory_data({
+                    "active_region": active_region,
+                    "start_ts": start_ts,
+                    "end_ts": end_ts,
+                    "selected_loc": selected_loc,
+                    "loc_col": "Location",
                 })
+                loc_prefix = f"{active_region}_{selected_loc}_"
+                for k in list(st.session_state.keys()):
+                    if str(k).startswith(loc_prefix):
+                        st.session_state.pop(k, None)
+                st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
 
-            # Execute save after confirm dialog triggers a rerun with overlay visible
-            payload = st.session_state.get("details_save_payload") or {}
-            if st.session_state.get("details_save_stage") == "pre_save" and payload.get("df_key") == df_key:
-                try:
-                    n = persist_details_rows(
-                        st.session_state[df_key],
-                        region=str(payload.get("region") or active_region),
-                        location=payload.get("location"),
-                        system=payload.get("system"),
-                        product=payload.get("product"),
-                        df_original=st.session_state.get(orig_key),
-                    )
-                    log_audit(
-                        event="details_save_success",
-                        metadata={"region": str(payload.get("region") or active_region),
-                                  "location": payload.get("location"),
-                                  "product": payload.get("product"),
-                                  "rows_saved": int(n)},
-                    )
-                    _load_inventory_data_filtered_cached.clear()
-                    details_cache_key = f"df_details|{active_region}"
-                    st.session_state[details_cache_key] = load_filtered_inventory_data({
-                        "active_region": active_region,
-                        "start_ts": start_ts,
-                        "end_ts": end_ts,
-                        "selected_loc": selected_loc,
-                        "loc_col": "Location",
-                    })
-                    loc_prefix = f"{active_region}_{selected_loc}_"
-                    for k in list(st.session_state.keys()):
-                        if str(k).startswith(loc_prefix):
-                            st.session_state.pop(k, None)
-                    st.session_state["details_save_result"] = {"ok": True, "n": int(n), "df_key": df_key}
+            except Exception as e:
+                log_audit(
+                    event="details_save_failed",
+                    metadata={"region": str(payload.get("region") or active_region),
+                                "location": payload.get("location"),
+                                "product": payload.get("product"),
+                                "error": str(e)},
+                )
+                st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
+            finally:
 
-                except Exception as e:
-                    log_audit(
-                        event="details_save_failed",
-                        metadata={"region": str(payload.get("region") or active_region),
-                                  "location": payload.get("location"),
-                                  "product": payload.get("product"),
-                                  "error": str(e)},
-                    )
-                    st.session_state["details_save_result"] = {"ok": False, "error": str(e), "df_key": df_key}
-                finally:
+                st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
+                st.session_state["details_save_overlay_removal_pending"] = None
+                st.session_state[enable_ver_key] = int(st.session_state.get(enable_ver_key, 0)) + 1
+                st.session_state.pop(enable_widget_key, None)
+                st.session_state["details_save_stage"] = "result"
+                st.rerun()
 
-                    st.session_state["details_save_overlay"] = {"on": False, "df_key": None}
-                    st.session_state["details_save_overlay_removal_pending"] = None
-                    st.session_state[enable_ver_key] = int(st.session_state.get(enable_ver_key, 0)) + 1
-                    st.session_state.pop(enable_widget_key, None)
-                    st.session_state["details_save_stage"] = "result"
-                    st.rerun()
-
-            # Show save result dialog
-            result = st.session_state.get("details_save_result")
-            if (
-                st.session_state.get("details_save_stage") == "result" and
-                isinstance(result, dict) and
-                result.get("df_key") == df_key
-            ):
-                _save_result_dialog(result=result)
+        # Show save result dialog
+        result = st.session_state.get("details_save_result")
+        if (
+            st.session_state.get("details_save_stage") == "result" and
+            isinstance(result, dict) and
+            result.get("df_key") == df_key
+        ):
+            _save_result_dialog(result=result)
 
 
 def display_details_tab(
