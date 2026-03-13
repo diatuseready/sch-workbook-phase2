@@ -1011,7 +1011,8 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
         "Batch": st.column_config.TextColumn("Batch"),
-        COL_BATCH_BREAKDOWN: st.column_config.TextColumn(COL_BATCH_BREAKDOWN),
+        COL_BATCH_BREAKDOWN: st.column_config.TextColumn(COL_BATCH_BREAKDOWN, width="small",
+                                                         help="Batch Breakdown details for this row, if applicable."),
         "Notes": st.column_config.TextColumn("Notes"),
         COL_STORAGE: st.column_config.NumberColumn(
             COL_STORAGE, disabled=False, format=NUM_FMT,
@@ -1055,6 +1056,7 @@ def _style_source_cells(
     yesterday = today - timedelta(days=1)
     cols = list(df.columns)
     fact_cols = {c for c in cols if str(c).endswith(" Fact")}
+    col_index = {c: i for i, c in enumerate(cols)}
 
     def _to_date(v):
         if v is None:
@@ -1075,12 +1077,13 @@ def _style_source_cells(
 
     def _row_style(row: pd.Series) -> list[str]:
         row_date = _to_date(row.get("Date") if "Date" in row.index else None)
+        is_today = row_date == today
         yesterday_bg = (MATCH_BG if _close_inv_matches(row) else MISMATCH_BG) if row_date == yesterday else ""
 
         styles = []
         for c in cols:
             if c in fact_cols:
-                styles.append(f"background-color: {FACT_BG};")
+                styles.append(f"background-color: {FACT_BG}; font-weight: bold;" if is_today else f"background-color: {FACT_BG};")
             elif row_date == today:
                 styles.append(f"background-color: {TODAY_BG};" if c == "Date" else "")
             elif row_date == yesterday:
@@ -1094,10 +1097,10 @@ def _style_source_cells(
         if row_date is not None and row_date > today:
             for target_col in {"Close Inv", "Total Closing Inv", "Loadable","Available Space"}:
                 if target_col in cols:
-                    raw_val = row.get(target_col) if target_col in row.index else None
+                    raw_val = row.get(target_col) #if target_col in row.index else None
                     if raw_val is not None and not (isinstance(raw_val, float) and pd.isna(raw_val)):
                         val = _to_float(raw_val)
-                        idx = cols.index(target_col)
+                        idx = col_index[target_col]
                         if safefill is not None and val > safefill:
                             styles[idx] = f"background-color: {CLOSE_INV_ABOVE_SAFEFILL_BG};"
                         elif bottom is not None and val < bottom:

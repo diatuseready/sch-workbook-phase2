@@ -1162,6 +1162,7 @@ def _propagate_column_links(
                 target_location=other_location,
                 target_product=other_product,
                 target_db_col=other_db_col,
+                source_type="linked_row",
             )
         else:
             _propagate_links_snowflake(
@@ -1170,6 +1171,7 @@ def _propagate_column_links(
                 target_location=other_location,
                 target_product=other_product,
                 target_db_col=other_db_col,
+                source_type="linked_row",
             )
 
 
@@ -1180,11 +1182,16 @@ def _propagate_links_sqlite(
     target_location: str,
     target_product: str,
     target_db_col: str,
+    source_type: str = "linked_row",
 ) -> None:
     import sqlite3
+
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cur = conn.cursor()
+
     for date_s, val in date_values:
+
+        # Try update first
         cur.execute(
             f"""UPDATE {SQLITE_TABLE}
                 SET {target_db_col} = ?, UPDATED_AT = datetime('now')
@@ -1194,6 +1201,30 @@ def _propagate_links_sqlite(
                   AND PRODUCT_DESCRIPTION = ?""",
             (val, date_s, target_region, target_location, target_product),
         )
+
+        # If no row updated → insert new row
+        if cur.rowcount == 0:
+            cur.execute(
+                f"""INSERT INTO {SQLITE_TABLE} (
+                        REGION_CODE,
+                        LOCATION_CODE,
+                        PRODUCT_DESCRIPTION,
+                        OPERATIONAL_DATE,
+                        {target_db_col},
+                        SOURCE_TYPE,
+                        UPDATED_AT
+                    )
+                    VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+                (
+                    target_region,
+                    target_location,
+                    target_product,
+                    date_s,
+                    val,
+                    source_type
+                ),
+            )
+
     conn.commit()
     conn.close()
 
@@ -1205,6 +1236,7 @@ def _propagate_links_snowflake(
     target_location: str,
     target_product: str,
     target_db_col: str,
+    source_type: str = "linked_row",
 ) -> None:
     session = get_snowflake_session()
     session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
@@ -1214,13 +1246,45 @@ def _propagate_links_snowflake(
 
     for date_s, val in date_values:
         sql = f"""
-            UPDATE {RAW_INVENTORY_TABLE}
-            SET {target_db_col} = {val},
+        MERGE INTO {RAW_INVENTORY_TABLE} t
+        USING (
+            SELECT
+                {_q(target_region)} AS REGION_CODE,
+                {_q(target_location)} AS LOCATION_CODE,
+                {_q(target_product)} AS PRODUCT_DESCRIPTION,
+                {_q(date_s)} AS OPERATIONAL_DATE,
+                {val} AS {target_db_col},
+                {_q(source_type)} AS SOURCE_TYPE
+        ) s
+        ON COALESCE(t.OPERATIONAL_DATE, t.DATA_DATE) = s.OPERATIONAL_DATE
+           AND t.REGION_CODE = s.REGION_CODE
+           AND t.LOCATION_CODE = s.LOCATION_CODE
+           AND t.PRODUCT_DESCRIPTION = s.PRODUCT_DESCRIPTION
+
+        WHEN MATCHED THEN
+            UPDATE SET
+                {target_db_col} = s.{target_db_col},
                 UPDATED_AT = CURRENT_TIMESTAMP()
-            WHERE COALESCE(OPERATIONAL_DATE, DATA_DATE) = {_q(date_s)}
-              AND REGION_CODE = {_q(target_region)}
-              AND LOCATION_CODE = {_q(target_location)}
-              AND PRODUCT_DESCRIPTION = {_q(target_product)}
+
+        WHEN NOT MATCHED THEN
+            INSERT (
+                REGION_CODE,
+                LOCATION_CODE,
+                PRODUCT_DESCRIPTION,
+                OPERATIONAL_DATE,
+                {target_db_col},
+                SOURCE_TYPE,
+                UPDATED_AT
+            )
+            VALUES (
+                s.REGION_CODE,
+                s.LOCATION_CODE,
+                s.PRODUCT_DESCRIPTION,
+                s.OPERATIONAL_DATE,
+                s.{target_db_col},
+                s.SOURCE_TYPE,
+                CURRENT_TIMESTAMP()
+            )
         """
         session.sql(sql).collect()
 
