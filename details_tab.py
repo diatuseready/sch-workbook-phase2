@@ -246,6 +246,15 @@ LOCKED_BASE_COLS = [
     "Opening Inv",
 ]
 
+# ---------------------------------------------------------------------------
+# Data Editor Height Calculation
+# ---------------------------------------------------------------------------
+
+def _calculate_editor_height(num_rows: int) -> int:
+    """Calculate the height of the data editor based on the number of rows, with a max cap."""
+    visible_rows = max(num_rows, DETAILS_EDITOR_VISIBLE_ROWS)
+    return DETAILS_EDITOR_HEADER_PX + (visible_rows * DETAILS_EDITOR_ROW_PX)
+
 
 # ---------------------------------------------------------------------------
 # Inventory calculations
@@ -1509,7 +1518,7 @@ def display_location_details(
             styled,
             num_rows="fixed",
             width="stretch",
-            height=DETAILS_EDITOR_HEIGHT_PX,
+            height=_calculate_editor_height(len(base_df)),
             hide_index=True,
             column_order=column_order,
             key=widget_key,
