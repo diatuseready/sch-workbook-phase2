@@ -576,7 +576,8 @@ LINKABLE_COLUMNS: list[str] = [
     "Receipts", "Deliveries", "Rack/Lifting",
     "Pipeline In", "Pipeline Out",
     "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out",
-    "PTO", "Production", "Adjustments", "Gain/Loss", "Transfers",
+    "PTO", "Recon From 191", "Recon To 182",
+    "Production", "Adjustments", "Gain/Loss", "Transfers",
     "Tulsa", "El Dorado", "Other", "Offline", "From 327 Receipt",
     "Available", "Intransit", "Storage", "Vessel Volume",
 ]

@@ -1034,6 +1034,14 @@ def persist_details_rows(
     load_region_location_pairs.clear()
     load_regions.clear()
 
+    # Propagate column links to any linked products.
+    _propagate_column_links(
+        df_details=df_details,
+        region=region_s,
+        location=location_s or "",
+        product=product_s_filter,
+    )
+
     return int(locals().get("rows_written", len(rows)))
 
 
