@@ -1092,7 +1092,7 @@ def _style_source_cells(
 
         # Threshold color for future rows
         if row_date is not None and row_date > today:
-            for target_col in {"Close Inv", "Total Closing Inv", "Loadable"}:
+            for target_col in {"Close Inv", "Total Closing Inv", "Loadable","Available Space"}:
                 if target_col in cols:
                     raw_val = row.get(target_col) if target_col in row.index else None
                     if raw_val is not None and not (isinstance(raw_val, float) and pd.isna(raw_val)):
