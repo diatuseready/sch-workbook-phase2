@@ -1546,6 +1546,25 @@ def display_location_details(
                 recomputed["Date"] >= pd.Timestamp(start_ts).normalize().date()
             ].reset_index(drop=True)
             recomputed = _build_editor_df(recomputed)
+
+            
+            if (
+                COL_RACK_LIFTING in recomputed.columns
+                and COL_RACK_LIFTING in current_input.columns
+            ):
+
+                ci_rack = current_input.copy()
+                ci_rack["Date"] = pd.to_datetime(ci_rack["Date"], errors="coerce").dt.date
+                recomputed["Date"] = pd.to_datetime(recomputed["Date"], errors="coerce").dt.date
+                rack_map: dict = (
+                    ci_rack.set_index("Date")[COL_RACK_LIFTING]
+                    .apply(lambda v: float(v) if pd.notna(v) else 0.0)
+                    .to_dict()
+                )
+                recomputed[COL_RACK_LIFTING] = recomputed["Date"].map(rack_map).fillna(
+                    recomputed[COL_RACK_LIFTING]
+                )
+
             recomputed = _recalculate_inventory_metrics(
                 recomputed,
                 id_col="Location",
