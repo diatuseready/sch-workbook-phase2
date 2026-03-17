@@ -166,7 +166,7 @@ def apply_custom_css():
         background: transparent !important;
     }}
 
-    /* ── Segmented Control – bigger & green ── */
+    /* ── Segmented Control  ── */
     [data-baseweb="button-group"] {{
         gap: 4px !important;
     }}
