@@ -1308,7 +1308,7 @@ def display_location_details(
     with c_live_loc:
         live_calc_clicked = st.toggle(
             "Live Calculation",
-            value=False,
+            value=True,
             key=live_calc_loc_key,
             disabled=(get_user_role() == ROLE_DISPLAY),
             help="Apply current edits and recalculate values.",
