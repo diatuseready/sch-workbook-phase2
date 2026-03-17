@@ -1238,55 +1238,71 @@ def _propagate_links_snowflake(
     target_db_col: str,
     source_type: str = "linked_row",
 ) -> None:
+    if not date_values:
+        return
+
+    # Reuse the session already created by persist_details_rows — no extra
+    # USE WAREHOUSE needed since the warehouse is already active.
     session = get_snowflake_session()
-    session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
 
     def _q(v):
         return "'" + str(v).replace("'", "''") + "'"
 
+    # Build a single batched MERGE (one VALUES row per date) instead of N
+    # individual MERGE statements — avoids N Snowflake round-trips.
+    values_rows = []
     for date_s, val in date_values:
-        sql = f"""
-        MERGE INTO {RAW_INVENTORY_TABLE} t
-        USING (
-            SELECT
-                {_q(target_region)} AS REGION_CODE,
-                {_q(target_location)} AS LOCATION_CODE,
-                {_q(target_product)} AS PRODUCT_DESCRIPTION,
-                {_q(date_s)} AS OPERATIONAL_DATE,
-                {val} AS {target_db_col},
-                {_q(source_type)} AS SOURCE_TYPE
-        ) s
-        ON COALESCE(t.OPERATIONAL_DATE, t.DATA_DATE) = s.OPERATIONAL_DATE
-           AND t.REGION_CODE = s.REGION_CODE
-           AND t.LOCATION_CODE = s.LOCATION_CODE
-           AND t.PRODUCT_DESCRIPTION = s.PRODUCT_DESCRIPTION
+        float_val = 0.0 if val is None or (isinstance(val, float) and pd.isna(val)) else float(val)
+        values_rows.append(f"({_q(date_s)}, {float_val})")
 
-        WHEN MATCHED THEN
-            UPDATE SET
-                {target_db_col} = s.{target_db_col},
-                UPDATED_AT = CURRENT_TIMESTAMP()
+    values_sql = ",\n            ".join(values_rows)
 
-        WHEN NOT MATCHED THEN
-            INSERT (
-                REGION_CODE,
-                LOCATION_CODE,
-                PRODUCT_DESCRIPTION,
-                OPERATIONAL_DATE,
-                {target_db_col},
-                SOURCE_TYPE,
-                UPDATED_AT
-            )
-            VALUES (
-                s.REGION_CODE,
-                s.LOCATION_CODE,
-                s.PRODUCT_DESCRIPTION,
-                s.OPERATIONAL_DATE,
-                s.{target_db_col},
-                s.SOURCE_TYPE,
-                CURRENT_TIMESTAMP()
-            )
-        """
-        session.sql(sql).collect()
+    sql = f"""
+    MERGE INTO {RAW_INVENTORY_TABLE} t
+    USING (
+        SELECT
+            TO_DATE(s_raw.OPERATIONAL_DATE) AS OPERATIONAL_DATE,
+            CAST(s_raw.val AS DOUBLE) AS {target_db_col},
+            {_q(target_region)} AS REGION_CODE,
+            {_q(target_location)} AS LOCATION_CODE,
+            {_q(target_product)} AS PRODUCT_DESCRIPTION,
+            {_q(source_type)} AS SOURCE_TYPE
+        FROM VALUES
+            {values_sql}
+        AS s_raw(OPERATIONAL_DATE, val)
+    ) s
+    ON COALESCE(t.OPERATIONAL_DATE, t.DATA_DATE) = s.OPERATIONAL_DATE
+       AND t.REGION_CODE = s.REGION_CODE
+       AND t.LOCATION_CODE = s.LOCATION_CODE
+       AND t.PRODUCT_DESCRIPTION = s.PRODUCT_DESCRIPTION
+
+    WHEN MATCHED THEN
+        UPDATE SET
+            {target_db_col} = s.{target_db_col},
+            UPDATED_AT = CURRENT_TIMESTAMP()
+
+    WHEN NOT MATCHED THEN
+        INSERT (
+            REGION_CODE,
+            LOCATION_CODE,
+            PRODUCT_DESCRIPTION,
+            OPERATIONAL_DATE,
+            {target_db_col},
+            SOURCE_TYPE,
+            UPDATED_AT
+        )
+        VALUES (
+            s.REGION_CODE,
+            s.LOCATION_CODE,
+            s.PRODUCT_DESCRIPTION,
+            s.OPERATIONAL_DATE,
+            s.{target_db_col},
+            s.SOURCE_TYPE,
+            CURRENT_TIMESTAMP()
+        )
+    """
+    session.sql(sql).collect()
+
 
 
 @st.cache_data(ttl=300, show_spinner=False)
