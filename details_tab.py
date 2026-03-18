@@ -1023,7 +1023,8 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
     locked = set(_locked_cols(id_col, cols))
     locked.update({c for c in cols if str(c).endswith(" Fact")})
     locked.add("SOURCE_TYPE")
-    NUM_FMT = "accounting"
+    # NUM_FMT = "accounting"
+    NUM_FMT = "%.0f"
 
     cfg: dict = {
         "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD"),
@@ -1058,7 +1059,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
         if c in cfg:
             continue
         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format=NUM_FMT)
+            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format=NUM_FMT,width="small",help=c )
         elif c in locked:
             cfg[c] = st.column_config.TextColumn(c, disabled=True)
 
