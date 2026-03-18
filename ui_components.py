@@ -452,9 +452,17 @@ def display_data_freshness_cards(
         df = df[system_series.astype(str) == selected_loc_s]
 
     if df.empty:
-        st.info(
-            f"No freshness data is configured for '{selected_loc_s}'. "
-            "This location may be a manual entry location with no automated data feed."
+        color = "#718096"
+        st.markdown(
+            f"""
+            <div class="card" style="border:1px dashed {color}; max-width:280px;">
+                <h4 style="color:{color}; margin-bottom:0.2rem;">{selected_loc_s}</h4>
+                <p style="margin:0; font-size:0.9rem; color:{TEXT_DARK};">
+                    This may be a manual location with no automated status.<br>
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
         return
 
