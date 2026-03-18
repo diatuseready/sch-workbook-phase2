@@ -47,6 +47,8 @@ from config import (
     COL_ADJUSTMENTS,
     COL_GAIN_LOSS,
     COL_TRANSFERS,
+    COL_TRANSFER_IN,
+    COL_TRANSFER_OUT,
 
     # Additional inventory metrics
     COL_AVAILABLE,
@@ -178,6 +180,8 @@ NUMERIC_COLUMN_MAP = {
     COL_FROM_327_RECEIPT: "FROM_327_RECEIPT_BBL",
     COL_RECON_FROM_191: "RECON_FROM_191",
     COL_RECON_TO_182: "RECON_TO_182",
+    COL_TRANSFER_IN: "TRANSFER_IN_BBL",
+    COL_TRANSFER_OUT: "TRANSFER_OUT_BBL",
 
     # Fact columns (optional UI display)
     COL_OPEN_INV_FACT_RAW: "FACT_OPENING_INVENTORY_BBL",
@@ -675,6 +679,8 @@ def persist_details_rows(
         "From 327 Receipt": "FROM_327_RECEIPT_BBL",
         "Recon From 191": "RECON_FROM_191",
         "Recon To 182": "RECON_TO_182",
+        "Transfer In": "TRANSFER_IN_BBL",
+        "Transfer Out": "TRANSFER_OUT_BBL",
         "Adjustments Fact": "FACT_ADJUSTMENTS_BBL",
         "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
     }
@@ -709,7 +715,7 @@ def persist_details_rows(
         "Total Closing Inv",
         # Purely derived display columns
         "Total Inventory",       # Close Inv + Bottoms threshold
-        "Accounting Inventory",  # Close Inv - Storage
+        "Accounting Inventory",  # Total Inventory - Storage
         "7 Day Avg",             # 7-day rolling avg of Rack/Lifting
         "MTD Avg",               # Month-to-date avg of Rack/Lifting
         "Calculated Receipt",    # Today Available - Yesterday Available + Today Rack/Lifting
@@ -851,6 +857,8 @@ def persist_details_rows(
                     "FROM_327_RECEIPT_BBL",
                     "RECON_FROM_191",
                     "RECON_TO_182",
+                    "TRANSFER_IN_BBL",
+                    "TRANSFER_OUT_BBL",
                     "FACT_OPENING_INVENTORY_BBL",
                     "FACT_CLOSING_INVENTORY_BBL",
                     "FACT_AVAILABLE_BBL",
@@ -888,6 +896,7 @@ def persist_details_rows(
                     "RMPL_PIPELINE_OUT", "SEMINOE_PIPELINE_OUT",
                     "MEDICINE_PIPELINE_OUT", "PIONEER_PIPELINE_OUT",
                     "RECON_FROM_191", "RECON_TO_182",
+                    "TRANSFER_IN_BBL", "TRANSFER_OUT_BBL",
                 ]
                 _existing_cols = {r[1] for r in cur.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
                 for _c in _new_bbl_cols:
@@ -1072,6 +1081,8 @@ _DISPLAY_TO_DB_COL: dict[str, str] = {
     "From 327 Receipt": "FROM_327_RECEIPT_BBL",
     "Recon From 191": "RECON_FROM_191",
     "Recon To 182": "RECON_TO_182",
+    "Transfer In": "TRANSFER_IN_BBL",
+    "Transfer Out": "TRANSFER_OUT_BBL",
     "Available": "AVAILABLE_BBL",
     "Intransit": "INTRANSIT_BBL",
     "Storage": "STORAGE_BBL",
@@ -1387,6 +1398,8 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(FROM_327_RECEIPT_BBL, 0) AS FLOAT) as FROM_327_RECEIPT_BBL,
         CAST(COALESCE(RECON_FROM_191, 0) AS FLOAT) as RECON_FROM_191,
         CAST(COALESCE(RECON_TO_182, 0) AS FLOAT) as RECON_TO_182,
+        CAST(COALESCE(TRANSFER_IN_BBL, 0) AS FLOAT) as TRANSFER_IN_BBL,
+        CAST(COALESCE(TRANSFER_OUT_BBL, 0) AS FLOAT) as TRANSFER_OUT_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
         SOURCE_TYPE,
@@ -1900,6 +1913,8 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(FROM_327_RECEIPT_BBL, 0) AS FLOAT) as FROM_327_RECEIPT_BBL,
         CAST(COALESCE(RECON_FROM_191, 0) AS FLOAT) as RECON_FROM_191,
         CAST(COALESCE(RECON_TO_182, 0) AS FLOAT) as RECON_TO_182,
+        CAST(COALESCE(TRANSFER_IN_BBL, 0) AS FLOAT) as TRANSFER_IN_BBL,
+        CAST(COALESCE(TRANSFER_OUT_BBL, 0) AS FLOAT) as TRANSFER_OUT_BBL,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
         SOURCE_TYPE,

@@ -77,13 +77,15 @@ COL_TOTAL_CLOSING_INV = "Total Closing Inv"   # = Available + Intransit
 COL_AVAILABLE_SPACE = "Available Space"        # = SafeFill − Close Inv
 COL_LOADABLE = "Loadable"                      # = Close Inv − Bottom
 COL_TOTAL_INVENTORY = "Total Inventory"        # = Close Inv + Bottom
-COL_ACCOUNTING_INV = "Accounting Inventory"    # = Close Inv − Storage
+COL_ACCOUNTING_INV = "Accounting Inventory"    # = Total Inventory − Storage
 COL_7DAY_AVG_RACK = "7 Day Avg"               # 7-day rolling average of Rack/Lifting
 COL_MTD_AVG_RACK = "MTD Avg"                  # month-to-date average of Rack/Lifting
 COL_CALCULATED_RECEIPT = "Calculated Receipt"  # = Today Available − Yesterday Available + Today Rack/Lifting
 
 # --- Misc columns  (user-editable; no direct impact on Closing Inventory) ---
 COL_STORAGE = "Storage"            # user-entered; drives Accounting Inventory
+COL_TRANSFER_IN = "Transfer In"    # user-entered; added to Close Inv (delivery family)
+COL_TRANSFER_OUT = "Transfer Out"  # user-entered; subtracted from Close Inv (delivery family)
 COL_VESSEL = "Vessel"              # user-entered; free-text vessel name
 COL_VESSEL_VOLUME = "Vessel Volume"  # user-entered; vessel volume (BBL)
 COL_BATCH = "Batch"                # free-text batch label
@@ -147,6 +149,7 @@ _EDITABLE_COMPARE_COLS = [
     "Pipeline In", "Pipeline Out",
     "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out",
     "PTO", "Recon From 191", "Recon To 182",
+    "Transfer In", "Transfer Out",
     "Production", "Adjustments", "Gain/Loss", "Transfers",
     "Available", "Intransit", "Storage", "Vessel Volume",
     "Tulsa", "El Dorado", "Other", "Offline", "From 327 Receipt",
@@ -158,6 +161,7 @@ _EDITABLE_COMPARE_COLS = [
 INPUT_INCOMING_COLS: tuple[str, ...] = (
     COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION,
     COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_FROM_327_RECEIPT,
+    COL_TRANSFER_IN,
 )
 
 # Input — Outgoing: subtracted from Closing Inventory
@@ -173,6 +177,7 @@ INPUT_OUTGOING_COLS: tuple[str, ...] = (
     COL_OFFLINE,
     COL_RECON_FROM_191,
     COL_RECON_TO_182,
+    COL_TRANSFER_OUT,
 )
 
 # Input — Adjustments: net effect on Closing Inventory

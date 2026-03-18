@@ -452,7 +452,10 @@ def display_data_freshness_cards(
         df = df[system_series.astype(str) == selected_loc_s]
 
     if df.empty:
-        st.info(f"No source status rows found for {loc_col}: '{selected_loc_s}'")
+        st.info(
+            f"No freshness data is configured for '{selected_loc_s}'. "
+            "This location may be a manual entry location with no automated data feed."
+        )
         return
 
     if "LAST_UPDATED_AT" in df.columns:

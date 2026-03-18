@@ -67,6 +67,8 @@ from config import (
     COL_TOTAL_CLOSING_INV,
     COL_TOTAL_INVENTORY,
     COL_TRANSFERS,
+    COL_TRANSFER_IN,
+    COL_TRANSFER_OUT,
     COL_TRANSFERS_FACT,
     COL_SEMINOE_BATCH_ID,
     COL_SEMINOE_PIPELINE_OUT,
@@ -114,6 +116,8 @@ DETAILS_COLS = [
     COL_PTO,
     COL_RECON_FROM_191,
     COL_RECON_TO_182,
+    COL_TRANSFER_IN,
+    COL_TRANSFER_OUT,
     COL_GAIN_LOSS,
     COL_TRANSFERS,
     COL_PRODUCTION,
@@ -156,15 +160,18 @@ FORECAST_FLOW_COLS = [
     COL_ADJUSTMENTS,
     COL_GAIN_LOSS,
     COL_TRANSFERS,
+    COL_TRANSFER_IN,
+    COL_TRANSFER_OUT,
 ]
 
-INFLOW_COLS = [COL_BATCH_IN_RAW, COL_PIPELINE_IN, COL_PRODUCTION]
-OUTFLOW_COLS = [COL_BATCH_OUT_RAW, COL_RACK_LIFTINGS_RAW, COL_PIPELINE_OUT]
+INFLOW_COLS = [COL_BATCH_IN_RAW, COL_PIPELINE_IN, COL_PRODUCTION, COL_TRANSFER_IN]
+OUTFLOW_COLS = [COL_BATCH_OUT_RAW, COL_RACK_LIFTINGS_RAW, COL_PIPELINE_OUT, COL_TRANSFER_OUT]
 NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
 
 # Post-rename display names — used in _recalculate_open_close_inv
 DISPLAY_INFLOW_COLS = [COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION,
-                       COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_FROM_327_RECEIPT]
+                       COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_FROM_327_RECEIPT,
+                       COL_TRANSFER_IN]
 DISPLAY_OUTFLOW_COLS = [
     COL_BATCH_OUT,
     COL_RACK_LIFTING,
@@ -178,6 +185,7 @@ DISPLAY_OUTFLOW_COLS = [
     COL_RECON_FROM_191,
     COL_RECON_TO_182,
     COL_VESSEL_VOLUME,
+    COL_TRANSFER_OUT,
 ]
 DISPLAY_NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
 
@@ -351,15 +359,18 @@ def _recalculate_total_inventory(df: pd.DataFrame, *, bottom: float | None) -> p
 
 
 def _recalculate_accounting_inv(df: pd.DataFrame) -> pd.DataFrame:
-    """Accounting Inventory = Close Inv − Storage."""
-    if df is None or df.empty or "Close Inv" not in df.columns:
+    """Accounting Inventory = Total Inventory − Storage."""
+    if df is None or df.empty:
         return df
     out = df.copy()
     if COL_STORAGE not in out.columns:
         out[COL_STORAGE] = np.nan
-    close = _to_numeric_series(out["Close Inv"]).fillna(0.0)
+    if COL_TOTAL_INVENTORY not in out.columns:
+        out[COL_ACCOUNTING_INV] = np.nan
+        return out
+    total_inv = _to_numeric_series(out[COL_TOTAL_INVENTORY]).fillna(0.0)
     storage = _to_numeric_series(out[COL_STORAGE]).fillna(0.0)
-    out[COL_ACCOUNTING_INV] = (close.astype(float) - storage.astype(float)).round(2)
+    out[COL_ACCOUNTING_INV] = (total_inv.astype(float) - storage.astype(float)).round(2)
     return out
 
 
@@ -1327,17 +1338,17 @@ def display_location_details(
                 "| Column | Formula |\n"
                 "|---|---|\n"
                 "| **Opening Inv** | Previous day's Close Inv |\n"
-                "| **Close Inv** | Opening Inv + Receipts + Pipeline In + Production "
+                "| **Close Inv** | Opening Inv + Receipts + Pipeline In + Production + Transfer In "
                 "− Deliveries − Rack/Lifting − Pipeline Out "
                 "− RMPL Pipeline Out − Seminoe Pipeline Out − Medicine Pipeline Out − Pioneer Pipeline Out "
-                "− PTO "
+                "− PTO − Transfer Out "
                 "+ Adjustments + Gain/Loss + Transfers "
                 "+ Tulsa + El Dorado + Other − Offline + From 327 Receipt |\n"
                 "| **Total Closing Inv** | Available + Intransit |\n"
                 "| **Available Space** | SafeFill − Close Inv |\n"
                 "| **Loadable** | Close Inv − Bottom |\n"
                 "| **Total Inventory** | Close Inv + Bottom |\n"
-                "| **Accounting Inv** | Close Inv − Storage |\n"
+                "| **Accounting Inv** | Total Inventory − Storage |\n"
                 "| **7 Day Avg** | 7-day rolling average of Rack/Lifting |\n"
                 "| **MTD Avg** | Month-to-date average of Rack/Lifting |\n"
                 "| **Calculated Receipt** | Today's Available − Yesterday's Available + Today's Rack/Lifting (display KPI only; does not affect Close Inv) |",

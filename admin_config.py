@@ -73,10 +73,11 @@ _ALL_CONFIGURABLE_COLS: list[str] = [
     "Calculated Receipt",
     # Input – Incoming
     "Receipts", "Pipeline In", "Production",
+    "Transfer In",
     # Input – Outgoing
     "Deliveries", "Rack/Lifting", "Pipeline Out",
     "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out", "PTO",
-    "Recon From 191", "Recon To 182",
+    "Recon From 191", "Recon To 182", "Transfer Out",
     # Input – Adjustment
     "Adjustments", "Gain/Loss", "Transfers",
     # Misc
@@ -120,6 +121,8 @@ DEFAULT_VISIBLE_COLUMNS = [
     "PTO",
     "Recon From 191",
     "Recon To 182",
+    "Transfer In",
+    "Transfer Out",
     "Gain/Loss",
     "Transfers",
     "Production",
@@ -327,46 +330,49 @@ def _persist_sqlite(row: dict):
     ensure_admin_config_table_sqlite()
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cur = conn.cursor()
-    # exists = cur.execute(
-    #     f"SELECT 1 FROM {SQLITE_ADMIN_CONFIG_TABLE} WHERE REGION=? AND LOCATION=? AND PRODUCT=?",
-    #     (row["REGION"], row["LOCATION"], row["PRODUCT"]),
-    # ).fetchone()
-    # if exists:
-    #     cur.execute(
-    #         f"""
-    #         UPDATE {SQLITE_ADMIN_CONFIG_TABLE} SET
-    #             VISIBLE_COLUMNS_JSON=?,
-    #             BOTTOM=?,
-    #             SAFEFILL=?,
-    #             NOTE=?,
-    #             DEFAULT_START_DAYS=?,
-    #             DEFAULT_END_DAYS=?,
-    #             RACK_LIFTING_FORECAST_METHOD=?,
-    #             UPDATED_AT=datetime('now')
-    #         WHERE REGION=? AND LOCATION=? AND PRODUCT=?
-    #         """,
-    #         (
-    #             row.get("VISIBLE_COLUMNS_JSON"), row.get("BOTTOM"), row.get("SAFEFILL"),
-    #             row.get("NOTE"), row.get("DEFAULT_START_DAYS"), row.get("DEFAULT_END_DAYS"),
-    #             row.get("RACK_LIFTING_FORECAST_METHOD"),
-    #             row["REGION"], row["LOCATION"], row["PRODUCT"],
-    #         ),
-    #     )
-    # else:
-    #     cur.execute(
-    #         f"""
-    #         INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
-    #         (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE,
-    #          DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
-    #         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    #         """,
-    #         (
-    #             row["REGION"], row["LOCATION"], row["PRODUCT"],
-    #             row.get("VISIBLE_COLUMNS_JSON"), row.get("BOTTOM"), row.get("SAFEFILL"),
-    #             row.get("NOTE"), row.get("DEFAULT_START_DAYS"), row.get("DEFAULT_END_DAYS"),
-    #             row.get("RACK_LIFTING_FORECAST_METHOD"),
-    #         ),
-    #     )
+
+    exists = cur.execute(
+        f"SELECT 1 FROM {SQLITE_ADMIN_CONFIG_TABLE} WHERE REGION=? AND LOCATION=? AND PRODUCT=?",
+        (row["REGION"], row["LOCATION"], row["PRODUCT"]),
+    ).fetchone()
+
+    if exists:
+        cur.execute(
+            f"""
+            UPDATE {SQLITE_ADMIN_CONFIG_TABLE} SET
+                VISIBLE_COLUMNS_JSON=?,
+                BOTTOM=?,
+                SAFEFILL=?,
+                NOTE=?,
+                DEFAULT_START_DAYS=?,
+                DEFAULT_END_DAYS=?,
+                RACK_LIFTING_FORECAST_METHOD=?,
+                UPDATED_AT=datetime('now')
+            WHERE REGION=? AND LOCATION=? AND PRODUCT=?
+            """,
+            (
+                row.get("VISIBLE_COLUMNS_JSON"), row.get("BOTTOM"), row.get("SAFEFILL"),
+                row.get("NOTE"), row.get("DEFAULT_START_DAYS"), row.get("DEFAULT_END_DAYS"),
+                row.get("RACK_LIFTING_FORECAST_METHOD"),
+                row["REGION"], row["LOCATION"], row["PRODUCT"],
+            ),
+        )
+    else:
+        cur.execute(
+            f"""
+            INSERT INTO {SQLITE_ADMIN_CONFIG_TABLE}
+            (REGION, LOCATION, PRODUCT, VISIBLE_COLUMNS_JSON, BOTTOM, SAFEFILL, NOTE,
+             DEFAULT_START_DAYS, DEFAULT_END_DAYS, RACK_LIFTING_FORECAST_METHOD, UPDATED_AT)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                row["REGION"], row["LOCATION"], row["PRODUCT"],
+                row.get("VISIBLE_COLUMNS_JSON"), row.get("BOTTOM"), row.get("SAFEFILL"),
+                row.get("NOTE"), row.get("DEFAULT_START_DAYS"), row.get("DEFAULT_END_DAYS"),
+                row.get("RACK_LIFTING_FORECAST_METHOD"),
+            ),
+        )
+
     conn.commit()
     conn.close()
 
