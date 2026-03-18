@@ -95,8 +95,8 @@ def apply_custom_css():
         border-bottom: 3px solid {ACCENT_GREEN} !important;
     }}
 
-    div.stButton > button,
-    div[data-testid="stButton"] > button,
+    div.stButton > button:not([data-baseweb]),
+    div[data-testid="stButton"] > button:not([data-baseweb]),
     button[kind="primary"],
     button[kind="secondary"] {{
         background: {PRIMARY_GREEN} !important;
@@ -165,6 +165,39 @@ def apply_custom_css():
         opacity: 0.6 !important;
         background: transparent !important;
     }}
+
+    /* ── Segmented Control  ── */
+    [data-baseweb="button-group"] {{
+        gap: 4px !important;
+    }}
+
+    [data-baseweb="button-group"] button {{
+        background-color: white !important;
+        color: {PRIMARY_GREEN} !important;
+        border: 2px solid {PRIMARY_GREEN} !important;
+        border-radius: 8px !important;
+        font-weight: 700 !important;
+        font-size: 1rem !important;
+        padding: 0.45rem 1.4rem !important;
+        min-height: 2.4rem !important;
+        transition: background 0.2s !important;
+    }}
+
+    [data-baseweb="button-group"] button:hover {{
+        background-color: {ACCENT_GREEN} !important;
+        color: white !important;
+        border-color: {ACCENT_GREEN} !important;
+        opacity: 1 !important;
+    }}
+
+    [data-baseweb="button-group"] button[kind="segmented_controlActive"] {{
+        background-color: {PRIMARY_GREEN} !important;
+        color: white !important;
+        border-color: {PRIMARY_GREEN} !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+    }}
+
+
     </style>
     """
     st.markdown(css_style, unsafe_allow_html=True)
