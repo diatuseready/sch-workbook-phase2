@@ -68,22 +68,24 @@ _ADMIN_GROUP_MAP["View File"] = "Misc"
 # All columns the admin can configure (Date is always forced first — excluded here)
 _ALL_CONFIGURABLE_COLS: list[str] = [
     # Calculated
-    "Opening Inv", "Close Inv", "Total Closing Inv", "Available Space",
+    "Opening Inv", "Close Inv", "Total Closing Inv", "Total Balance", "Available Space",
     "Loadable", "Total Inventory", "Accounting Inventory", "7 Day Avg", "MTD Avg",
     "Calculated Receipt",
     # Input – Incoming
     "Receipts", "Pipeline In", "Production",
-    "Transfer In",
+    "Transfer To",
+    "Aurora Pipeline In", "Dupont Pipeline In", "Med Bow Pipeline In",
     # Input – Outgoing
     "Deliveries", "Rack/Lifting", "Pipeline Out",
     "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out", "PTO",
-    "Recon From 191", "Recon To 182", "Transfer Out",
+    "Recon From 191", "Recon To 182", "Transfer From",
     # Input – Adjustment
     "Adjustments", "Gain/Loss", "Transfers",
     # Misc
     "Available", "Intransit", "Storage", "Vessel Volume", "Vessel",
     "View File", "Batch", "Batch Breakdown", "Notes",
     "RMPL Batch ID", "Seminoe Batch ID", "Medicine Batch ID", "Pioneer Batch ID",
+    "Aurora Batch ID", "Dupont Batch ID", "Med Bow Batch ID",
     "Tulsa", "El Dorado", "Other", "Offline", "From 327 Receipt",
 ]
 
@@ -98,6 +100,7 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Intransit",
     "Close Inv",
     "Total Closing Inv",
+    "Total Balance",
     "Available Space",
     "Loadable",
     "Total Inventory",
@@ -121,8 +124,8 @@ DEFAULT_VISIBLE_COLUMNS = [
     "PTO",
     "Recon From 191",
     "Recon To 182",
-    "Transfer In",
-    "Transfer Out",
+    "Transfer To",
+    "Transfer From",
     "Gain/Loss",
     "Transfers",
     "Production",
@@ -138,6 +141,12 @@ DEFAULT_VISIBLE_COLUMNS = [
     "Seminoe Batch ID",
     "Medicine Batch ID",
     "Pioneer Batch ID",
+    "Aurora Batch ID",
+    "Aurora Pipeline In",
+    "Dupont Batch ID",
+    "Dupont Pipeline In",
+    "Med Bow Batch ID",
+    "Med Bow Pipeline In",
     "Notes",
 ]
 
@@ -529,6 +538,8 @@ def get_visible_columns(*, region: str, location: str | None) -> list[str]:
         "Batch In Fact": "Receipts Fact",
         "Batch Out Fact": "Deliveries Fact",
         "Argentine": "Offline",
+        "Transfer In": "Transfer To",
+        "Transfer Out": "Transfer From",
     }
     out = [rename.get(str(c), str(c)) for c in cols]
 

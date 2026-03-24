@@ -66,6 +66,14 @@ from config import (
     COL_RECON_FROM_191,
     COL_RECON_TO_182,
 
+    # Aurora / Dupont / Med Bow pipeline and batch columns
+    COL_AURORA_BATCH_ID,
+    COL_AURORA_PIPELINE_IN,
+    COL_DUPONT_BATCH_ID,
+    COL_DUPONT_PIPELINE_IN,
+    COL_MED_BOW_BATCH_ID,
+    COL_MED_BOW_PIPELINE_IN,
+
     # Capacity/threshold columns
     COL_TANK_CAPACITY,
     COL_SAFE_FILL_LIMIT,
@@ -182,6 +190,9 @@ NUMERIC_COLUMN_MAP = {
     COL_RECON_TO_182: "RECON_TO_182",
     COL_TRANSFER_IN: "TRANSFER_IN_BBL",
     COL_TRANSFER_OUT: "TRANSFER_OUT_BBL",
+    COL_AURORA_PIPELINE_IN: "AURORA_PIPELINE_IN_BBL",
+    COL_DUPONT_PIPELINE_IN: "DUPONT_PIPELINE_IN_BBL",
+    COL_MED_BOW_PIPELINE_IN: "MED_BOW_PIPELINE_IN_BBL",
 
     # Fact columns (optional UI display)
     COL_OPEN_INV_FACT_RAW: "FACT_OPENING_INVENTORY_BBL",
@@ -328,6 +339,9 @@ def _normalize_inventory_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df[COL_SEMINOE_BATCH_ID] = _col(raw_df, "SEMINOE_BATCH_ID", "").fillna("").astype(str)
     df[COL_MEDICINE_BATCH_ID] = _col(raw_df, "MEDICINE_BATCH_ID", "").fillna("").astype(str)
     df[COL_PIONEER_BATCH_ID] = _col(raw_df, "PIONEER_BATCH_ID", "").fillna("").astype(str)
+    df[COL_AURORA_BATCH_ID] = _col(raw_df, "AURORA_BATCH_ID", "").fillna("").astype(str)
+    df[COL_DUPONT_BATCH_ID] = _col(raw_df, "DUPONT_BATCH_ID", "").fillna("").astype(str)
+    df[COL_MED_BOW_BATCH_ID] = _col(raw_df, "MED_BOW_BATCH_ID", "").fillna("").astype(str)
     df[COL_VESSEL] = _col(raw_df, "VESSEL", "").fillna("").astype(str)
 
     if "updated" in raw_df.columns:
@@ -679,8 +693,13 @@ def persist_details_rows(
         "From 327 Receipt": "FROM_327_RECEIPT_BBL",
         "Recon From 191": "RECON_FROM_191",
         "Recon To 182": "RECON_TO_182",
-        "Transfer In": "TRANSFER_IN_BBL",
-        "Transfer Out": "TRANSFER_OUT_BBL",
+        "Transfer In": "TRANSFER_IN_BBL",    # backward-compat (old display name)
+        "Transfer To": "TRANSFER_IN_BBL",    # current display name
+        "Transfer Out": "TRANSFER_OUT_BBL",  # backward-compat (old display name)
+        "Transfer From": "TRANSFER_OUT_BBL", # current display name
+        "Aurora Pipeline In": "AURORA_PIPELINE_IN_BBL",
+        "Dupont Pipeline In": "DUPONT_PIPELINE_IN_BBL",
+        "Med Bow Pipeline In": "MED_BOW_PIPELINE_IN_BBL",
         "Adjustments Fact": "FACT_ADJUSTMENTS_BBL",
         "Gain/Loss Fact": "FACT_GAIN_LOSS_BBL",
     }
@@ -691,6 +710,9 @@ def persist_details_rows(
         COL_SEMINOE_BATCH_ID: "SEMINOE_BATCH_ID",
         COL_MEDICINE_BATCH_ID: "MEDICINE_BATCH_ID",
         COL_PIONEER_BATCH_ID: "PIONEER_BATCH_ID",
+        COL_AURORA_BATCH_ID: "AURORA_BATCH_ID",
+        COL_DUPONT_BATCH_ID: "DUPONT_BATCH_ID",
+        COL_MED_BOW_BATCH_ID: "MED_BOW_BATCH_ID",
     }
 
     # Fact (terminal-feed) columns — display name → DB column name.
@@ -713,6 +735,7 @@ def persist_details_rows(
     UI_ONLY_COLS = {
         "Available Space",
         "Total Closing Inv",
+        "Total Balance",
         # Purely derived display columns
         "Total Inventory",       # Close Inv + Bottoms threshold
         "Accounting Inventory",  # Total Inventory - Storage
@@ -859,6 +882,9 @@ def persist_details_rows(
                     "RECON_TO_182",
                     "TRANSFER_IN_BBL",
                     "TRANSFER_OUT_BBL",
+                    "AURORA_PIPELINE_IN_BBL",
+                    "DUPONT_PIPELINE_IN_BBL",
+                    "MED_BOW_PIPELINE_IN_BBL",
                     "FACT_OPENING_INVENTORY_BBL",
                     "FACT_CLOSING_INVENTORY_BBL",
                     "FACT_AVAILABLE_BBL",
@@ -881,6 +907,9 @@ def persist_details_rows(
                     "SEMINOE_BATCH_ID",
                     "MEDICINE_BATCH_ID",
                     "PIONEER_BATCH_ID",
+                    "AURORA_BATCH_ID",
+                    "DUPONT_BATCH_ID",
+                    "MED_BOW_BATCH_ID",
                     "VESSEL",
                 ]
 
@@ -897,6 +926,7 @@ def persist_details_rows(
                     "MEDICINE_PIPELINE_OUT", "PIONEER_PIPELINE_OUT",
                     "RECON_FROM_191", "RECON_TO_182",
                     "TRANSFER_IN_BBL", "TRANSFER_OUT_BBL",
+                    "AURORA_PIPELINE_IN_BBL", "DUPONT_PIPELINE_IN_BBL", "MED_BOW_PIPELINE_IN_BBL",
                 ]
                 _existing_cols = {r[1] for r in cur.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
                 for _c in _new_bbl_cols:
@@ -905,6 +935,7 @@ def persist_details_rows(
                 _new_text_cols = [
                     "VESSEL", "BATCH_BREAKDOWN",
                     "RMPL_BATCH_ID", "SEMINOE_BATCH_ID", "MEDICINE_BATCH_ID", "PIONEER_BATCH_ID",
+                    "AURORA_BATCH_ID", "DUPONT_BATCH_ID", "MED_BOW_BATCH_ID",
                 ]
                 for _c in _new_text_cols:
                     if _c not in _existing_cols:
@@ -1081,8 +1112,13 @@ _DISPLAY_TO_DB_COL: dict[str, str] = {
     "From 327 Receipt": "FROM_327_RECEIPT_BBL",
     "Recon From 191": "RECON_FROM_191",
     "Recon To 182": "RECON_TO_182",
-    "Transfer In": "TRANSFER_IN_BBL",
-    "Transfer Out": "TRANSFER_OUT_BBL",
+    "Transfer In": "TRANSFER_IN_BBL",   # backward-compat
+    "Transfer To": "TRANSFER_IN_BBL",   # current name
+    "Transfer Out": "TRANSFER_OUT_BBL", # backward-compat
+    "Transfer From": "TRANSFER_OUT_BBL", # current name
+    "Aurora Pipeline In": "AURORA_PIPELINE_IN_BBL",
+    "Dupont Pipeline In": "DUPONT_PIPELINE_IN_BBL",
+    "Med Bow Pipeline In": "MED_BOW_PIPELINE_IN_BBL",
     "Available": "AVAILABLE_BBL",
     "Intransit": "INTRANSIT_BBL",
     "Storage": "STORAGE_BBL",
@@ -1400,6 +1436,12 @@ def _load_inventory_data_cached(source: str, sqlite_db_path: str, sqlite_table: 
         CAST(COALESCE(RECON_TO_182, 0) AS FLOAT) as RECON_TO_182,
         CAST(COALESCE(TRANSFER_IN_BBL, 0) AS FLOAT) as TRANSFER_IN_BBL,
         CAST(COALESCE(TRANSFER_OUT_BBL, 0) AS FLOAT) as TRANSFER_OUT_BBL,
+        CAST(COALESCE(AURORA_PIPELINE_IN_BBL, 0) AS FLOAT) as AURORA_PIPELINE_IN_BBL,
+        CAST(COALESCE(DUPONT_PIPELINE_IN_BBL, 0) AS FLOAT) as DUPONT_PIPELINE_IN_BBL,
+        CAST(COALESCE(MED_BOW_PIPELINE_IN_BBL, 0) AS FLOAT) as MED_BOW_PIPELINE_IN_BBL,
+        CAST(COALESCE(AURORA_BATCH_ID, '') AS STRING) as AURORA_BATCH_ID,
+        CAST(COALESCE(DUPONT_BATCH_ID, '') AS STRING) as DUPONT_BATCH_ID,
+        CAST(COALESCE(MED_BOW_BATCH_ID, '') AS STRING) as MED_BOW_BATCH_ID,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
         SOURCE_TYPE,
@@ -1915,6 +1957,12 @@ def _load_inventory_data_filtered_cached(
         CAST(COALESCE(RECON_TO_182, 0) AS FLOAT) as RECON_TO_182,
         CAST(COALESCE(TRANSFER_IN_BBL, 0) AS FLOAT) as TRANSFER_IN_BBL,
         CAST(COALESCE(TRANSFER_OUT_BBL, 0) AS FLOAT) as TRANSFER_OUT_BBL,
+        CAST(COALESCE(AURORA_PIPELINE_IN_BBL, 0) AS FLOAT) as AURORA_PIPELINE_IN_BBL,
+        CAST(COALESCE(DUPONT_PIPELINE_IN_BBL, 0) AS FLOAT) as DUPONT_PIPELINE_IN_BBL,
+        CAST(COALESCE(MED_BOW_PIPELINE_IN_BBL, 0) AS FLOAT) as MED_BOW_PIPELINE_IN_BBL,
+        CAST(COALESCE(AURORA_BATCH_ID, '') AS STRING) as AURORA_BATCH_ID,
+        CAST(COALESCE(DUPONT_BATCH_ID, '') AS STRING) as DUPONT_BATCH_ID,
+        CAST(COALESCE(MED_BOW_BATCH_ID, '') AS STRING) as MED_BOW_BATCH_ID,
         INVENTORY_KEY,
         SOURCE_FILE_ID,
         SOURCE_TYPE,

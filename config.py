@@ -81,11 +81,12 @@ COL_ACCOUNTING_INV = "Accounting Inventory"    # = Total Inventory − Storage
 COL_7DAY_AVG_RACK = "7 Day Avg"               # 7-day rolling average of Rack/Lifting
 COL_MTD_AVG_RACK = "MTD Avg"                  # month-to-date average of Rack/Lifting
 COL_CALCULATED_RECEIPT = "Calculated Receipt"  # = Today Available − Yesterday Available + Today Rack/Lifting
+COL_TOTAL_BALANCE = "Total Balance"            # = Close Inv + Intransit
 
 # --- Misc columns  (user-editable; no direct impact on Closing Inventory) ---
 COL_STORAGE = "Storage"            # user-entered; drives Accounting Inventory
-COL_TRANSFER_IN = "Transfer In"    # user-entered; added to Close Inv (delivery family)
-COL_TRANSFER_OUT = "Transfer Out"  # user-entered; subtracted from Close Inv (delivery family)
+COL_TRANSFER_IN = "Transfer To"    # user-entered; added to Close Inv (receipt family → inventory)
+COL_TRANSFER_OUT = "Transfer From"  # user-entered; subtracted from Close Inv (delivery family)
 COL_VESSEL = "Vessel"              # user-entered; free-text vessel name
 COL_VESSEL_VOLUME = "Vessel Volume"  # user-entered; vessel volume (BBL)
 COL_BATCH = "Batch"                # free-text batch label
@@ -93,7 +94,7 @@ COL_NOTES = "Notes"                # free-text notes
 COL_TULSA = "Tulsa"                # receipts sub-breakdown
 COL_EL_DORADO = "El Dorado"        # receipts sub-breakdown
 COL_OTHER = "Other"                # receipts sub-breakdown
-COL_OFFLINE = "Offline"            # renamed from Argentine; maps to OFFLINE_BBL in DB
+COL_OFFLINE = "Offline"            # renamed from Argentine; ADDED to Close Inv; maps to OFFLINE_BBL in DB
 COL_ARGENTINE = COL_OFFLINE         # backward-compatible alias
 COL_FROM_327_RECEIPT = "From 327 Receipt"  # receipts sub-breakdown
 COL_BATCH_BREAKDOWN = "Batch Breakdown"    # free-text batch breakdown
@@ -102,12 +103,20 @@ COL_SEMINOE_PIPELINE_OUT = "Seminoe Pipeline Out"
 COL_MEDICINE_PIPELINE_OUT = "Medicine Pipeline Out"
 COL_PIONEER_PIPELINE_OUT = "Pioneer Pipeline Out"
 COL_PTO = "PTO"
-COL_RECON_FROM_191 = "Recon From 191"   # outgoing: deducted from Close Inv
+COL_RECON_FROM_191 = "Recon From 191"   # incoming: ADDED to Close Inv
 COL_RECON_TO_182 = "Recon To 182"       # outgoing: deducted from Close Inv
 COL_RMPL_BATCH_ID = "RMPL Batch ID"
 COL_SEMINOE_BATCH_ID = "Seminoe Batch ID"
 COL_MEDICINE_BATCH_ID = "Medicine Batch ID"
 COL_PIONEER_BATCH_ID = "Pioneer Batch ID"
+
+# --- Aurora / Dupont / Med Bow pipeline and batch columns ---
+COL_AURORA_BATCH_ID = "Aurora Batch ID"
+COL_AURORA_PIPELINE_IN = "Aurora Pipeline In"
+COL_DUPONT_BATCH_ID = "Dupont Batch ID"
+COL_DUPONT_PIPELINE_IN = "Dupont Pipeline In"
+COL_MED_BOW_BATCH_ID = "Med Bow Batch ID"
+COL_MED_BOW_PIPELINE_IN = "Med Bow Pipeline In"
 
 # --- Fact / Terminal Feed columns  (paired read-only columns; toggled via UI) ---
 COL_OPEN_INV_FACT_RAW = "Open Inv Fact"
@@ -149,19 +158,23 @@ _EDITABLE_COMPARE_COLS = [
     "Pipeline In", "Pipeline Out",
     "RMPL Pipeline Out", "Seminoe Pipeline Out", "Medicine Pipeline Out", "Pioneer Pipeline Out",
     "PTO", "Recon From 191", "Recon To 182",
-    "Transfer In", "Transfer Out",
+    "Transfer To", "Transfer From",
     "Production", "Adjustments", "Gain/Loss", "Transfers",
     "Available", "Intransit", "Storage", "Vessel Volume",
     "Tulsa", "El Dorado", "Other", "Offline", "From 327 Receipt",
     "Notes", "Batch", "Batch Breakdown", "Vessel",
     "RMPL Batch ID", "Seminoe Batch ID", "Medicine Batch ID", "Pioneer Batch ID",
+    "Aurora Batch ID", "Aurora Pipeline In",
+    "Dupont Batch ID", "Dupont Pipeline In",
+    "Med Bow Batch ID", "Med Bow Pipeline In",
 ]
 
 # Input — Incoming: added to Closing Inventory
 INPUT_INCOMING_COLS: tuple[str, ...] = (
     COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION,
     COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_FROM_327_RECEIPT,
-    COL_TRANSFER_IN,
+    COL_TRANSFER_IN, COL_OFFLINE, COL_RECON_FROM_191,
+    COL_AURORA_PIPELINE_IN, COL_DUPONT_PIPELINE_IN, COL_MED_BOW_PIPELINE_IN,
 )
 
 # Input — Outgoing: subtracted from Closing Inventory
@@ -174,8 +187,6 @@ INPUT_OUTGOING_COLS: tuple[str, ...] = (
     COL_MEDICINE_PIPELINE_OUT,
     COL_PIONEER_PIPELINE_OUT,
     COL_PTO,
-    COL_OFFLINE,
-    COL_RECON_FROM_191,
     COL_RECON_TO_182,
     COL_TRANSFER_OUT,
 )
@@ -191,6 +202,7 @@ CALCULATED_COLS: tuple[str, ...] = (
     COL_OPENING_INV,
     COL_CLOSE_INV_RAW,
     COL_TOTAL_CLOSING_INV,
+    COL_TOTAL_BALANCE,
     COL_AVAILABLE_SPACE,
     COL_LOADABLE,
     COL_TOTAL_INVENTORY,
@@ -215,6 +227,9 @@ MISC_COLS: tuple[str, ...] = (
     COL_SEMINOE_BATCH_ID,
     COL_MEDICINE_BATCH_ID,
     COL_PIONEER_BATCH_ID,
+    COL_AURORA_BATCH_ID,
+    COL_DUPONT_BATCH_ID,
+    COL_MED_BOW_BATCH_ID,
 )
 
 

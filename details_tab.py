@@ -64,6 +64,7 @@ from config import (
     COL_RACK_LIFTINGS_FACT_RAW,
     COL_RACK_LIFTINGS_RAW,
     COL_STORAGE,
+    COL_TOTAL_BALANCE,
     COL_TOTAL_CLOSING_INV,
     COL_TOTAL_INVENTORY,
     COL_TRANSFERS,
@@ -76,6 +77,12 @@ from config import (
     COL_VESSEL,
     COL_VESSEL_VOLUME,
     COL_7DAY_AVG_RACK,
+    COL_AURORA_BATCH_ID,
+    COL_AURORA_PIPELINE_IN,
+    COL_DUPONT_BATCH_ID,
+    COL_DUPONT_PIPELINE_IN,
+    COL_MED_BOW_BATCH_ID,
+    COL_MED_BOW_PIPELINE_IN,
     DATA_SOURCE,
     DETAILS_RENAME_MAP,
     ROLE_DISPLAY,
@@ -136,6 +143,13 @@ DETAILS_COLS = [
     COL_SEMINOE_BATCH_ID,
     COL_MEDICINE_BATCH_ID,
     COL_PIONEER_BATCH_ID,
+    COL_AURORA_BATCH_ID,
+    COL_AURORA_PIPELINE_IN,
+    COL_DUPONT_BATCH_ID,
+    COL_DUPONT_PIPELINE_IN,
+    COL_MED_BOW_BATCH_ID,
+    COL_MED_BOW_PIPELINE_IN,
+    COL_TOTAL_BALANCE,
     COL_NOTES,
 ]
 
@@ -171,7 +185,8 @@ NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
 # Post-rename display names — used in _recalculate_open_close_inv
 DISPLAY_INFLOW_COLS = [COL_BATCH_IN, COL_PIPELINE_IN, COL_PRODUCTION,
                        COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_FROM_327_RECEIPT,
-                       COL_TRANSFER_IN]
+                       COL_OFFLINE, COL_RECON_FROM_191,
+                       COL_AURORA_PIPELINE_IN, COL_DUPONT_PIPELINE_IN, COL_MED_BOW_PIPELINE_IN]
 DISPLAY_OUTFLOW_COLS = [
     COL_BATCH_OUT,
     COL_RACK_LIFTING,
@@ -181,13 +196,11 @@ DISPLAY_OUTFLOW_COLS = [
     COL_MEDICINE_PIPELINE_OUT,
     COL_PIONEER_PIPELINE_OUT,
     COL_PTO,
-    COL_OFFLINE,
-    COL_RECON_FROM_191,
     COL_RECON_TO_182,
     COL_VESSEL_VOLUME,
-    COL_TRANSFER_OUT,
 ]
-DISPLAY_NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS]
+# Transfer To / Transfer From are sign-sensitive: positive adds, negative subtracts
+DISPLAY_NET_COLS = [COL_ADJUSTMENTS, COL_GAIN_LOSS, COL_TRANSFERS, COL_TRANSFER_IN, COL_TRANSFER_OUT]
 
 # ---------------------------------------------------------------------------
 # Fact column mappings  (base display name → fact display name)
@@ -248,7 +261,7 @@ DETAILS_EDITOR_HEIGHT_PX = DETAILS_EDITOR_HEADER_PX + (DETAILS_EDITOR_VISIBLE_RO
 # Columns that are always read-only  ({id_col} is substituted at runtime)
 LOCKED_BASE_COLS = [
     "Date", "{id_col}", "Product", "Close Inv",
-    COL_TOTAL_CLOSING_INV, COL_AVAILABLE_SPACE, COL_LOADABLE,
+    COL_TOTAL_CLOSING_INV, COL_TOTAL_BALANCE, COL_AVAILABLE_SPACE, COL_LOADABLE,
     COL_TOTAL_INVENTORY, COL_ACCOUNTING_INV, COL_7DAY_AVG_RACK, COL_MTD_AVG_RACK,
     COL_CALCULATED_RECEIPT,
     "Opening Inv",
@@ -322,6 +335,17 @@ def _recalculate_total_closing_inv(df: pd.DataFrame) -> pd.DataFrame:
     available = _to_numeric_series(out[COL_AVAILABLE]).fillna(0.0) if COL_AVAILABLE in out.columns else pd.Series(0.0, index=out.index)
     intransit = _to_numeric_series(out[COL_INTRANSIT]).fillna(0.0) if COL_INTRANSIT in out.columns else pd.Series(0.0, index=out.index)
     out[COL_TOTAL_CLOSING_INV] = (available.astype(float) + intransit.astype(float)).round(2)
+    return out
+
+
+def _recalculate_total_balance(df: pd.DataFrame) -> pd.DataFrame:
+    """Total Balance = Close Inv + Intransit."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    close = _to_numeric_series(out["Close Inv"]).fillna(0.0) if "Close Inv" in out.columns else pd.Series(0.0, index=out.index)
+    intransit = _to_numeric_series(out[COL_INTRANSIT]).fillna(0.0) if COL_INTRANSIT in out.columns else pd.Series(0.0, index=out.index)
+    out[COL_TOTAL_BALANCE] = (close.astype(float) + intransit.astype(float)).round(2)
     return out
 
 
@@ -545,6 +569,7 @@ def _recalculate_inventory_metrics(
     """Run all derived column calculations in sequence."""
     out = _recalculate_open_close_inv(df, id_col=id_col)
     out = _recalculate_total_closing_inv(out)
+    out = _recalculate_total_balance(out)
     out = _recalculate_available_space(out, safefill=safefill)
     out = _recalculate_loadable(out, bottom=bottom)
     out = _recalculate_total_inventory(out, bottom=bottom)
@@ -560,7 +585,7 @@ def _needs_inventory_rerun(before: pd.DataFrame, after: pd.DataFrame) -> bool:
     """Return True if calculated inventory columns have changed enough to warrant a re-render."""
     if before is None or after is None or before.shape[0] != after.shape[0]:
         return False
-    for c in ["Opening Inv", "Close Inv", COL_ACCOUNTING_INV, COL_CALCULATED_RECEIPT]:
+    for c in ["Opening Inv", "Close Inv", COL_TOTAL_BALANCE, COL_TOTAL_CLOSING_INV, COL_ACCOUNTING_INV, COL_CALCULATED_RECEIPT]:
         if c not in before.columns or c not in after.columns:
             continue
         b = _to_numeric_series(before[c]).fillna(0.0).to_numpy(dtype=float)
@@ -732,6 +757,13 @@ def _aggregate_daily_details(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     for bid in [COL_RMPL_BATCH_ID, COL_SEMINOE_BATCH_ID, COL_MEDICINE_BATCH_ID, COL_PIONEER_BATCH_ID]:
         if bid in df.columns:
             agg_map[bid] = "last"
+    # Aurora / Dupont / Med Bow pipeline (numeric) and batch ID (text) columns
+    for _pin in [COL_AURORA_PIPELINE_IN, COL_DUPONT_PIPELINE_IN, COL_MED_BOW_PIPELINE_IN]:
+        if _pin in df.columns:
+            agg_map[_pin] = "sum"
+    for _bid in [COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]:
+        if _bid in df.columns:
+            agg_map[_bid] = "last"
     if COL_STORAGE in df.columns:
         agg_map[COL_STORAGE] = "last"
     if COL_VESSEL in df.columns:
@@ -948,6 +980,9 @@ def build_details_view(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         COL_SEMINOE_BATCH_ID,
         COL_MEDICINE_BATCH_ID,
         COL_PIONEER_BATCH_ID,
+        COL_AURORA_BATCH_ID,
+        COL_DUPONT_BATCH_ID,
+        COL_MED_BOW_BATCH_ID,
         COL_VESSEL,
         "updated",
         "FILE_LOCATION",
@@ -1002,9 +1037,23 @@ def _build_editor_df(df_display: pd.DataFrame) -> pd.DataFrame:
         out[COL_RECON_TO_182] = 0.0
     else:
         out[COL_RECON_TO_182] = _to_numeric_series(out[COL_RECON_TO_182]).fillna(0.0)
+    # Aurora / Dupont / Med Bow columns
+    for _bid in [COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]:
+        if _bid not in out.columns:
+            out[_bid] = ""
+        else:
+            out[_bid] = out[_bid].fillna("")
+    for _pcol in [COL_AURORA_PIPELINE_IN, COL_DUPONT_PIPELINE_IN, COL_MED_BOW_PIPELINE_IN]:
+        if _pcol not in out.columns:
+            out[_pcol] = 0.0
+        else:
+            out[_pcol] = _to_numeric_series(out[_pcol]).fillna(0.0)
     # Keep Calculated Receipt as a display-only column even when not computed.
     if COL_CALCULATED_RECEIPT not in out.columns:
         out[COL_CALCULATED_RECEIPT] = np.nan
+    # Total Balance is a calculated read-only column
+    if COL_TOTAL_BALANCE not in out.columns:
+        out[COL_TOTAL_BALANCE] = np.nan
     return out.reset_index(drop=True)
 
 
@@ -1339,13 +1388,17 @@ def display_location_details(
                 "| Column | Formula |\n"
                 "|---|---|\n"
                 "| **Opening Inv** | Previous day's Close Inv |\n"
-                "| **Close Inv** | Opening Inv + Receipts + Pipeline In + Production + Transfer In "
+                "| **Close Inv** | Opening Inv + Receipts + Pipeline In + Production "
+                "+ Offline + Recon From 191 "
+                "+ Aurora Pipeline In + Dupont Pipeline In + Med Bow Pipeline In "
                 "− Deliveries − Rack/Lifting − Pipeline Out "
                 "− RMPL Pipeline Out − Seminoe Pipeline Out − Medicine Pipeline Out − Pioneer Pipeline Out "
-                "− PTO − Transfer Out "
+                "− PTO − Recon To 182 "
                 "+ Adjustments + Gain/Loss + Transfers "
-                "+ Tulsa + El Dorado + Other − Offline + From 327 Receipt |\n"
+                "± Transfer To ± Transfer From (sign-sensitive: positive adds, negative subtracts) "
+                "+ Tulsa + El Dorado + Other + From 327 Receipt |\n"
                 "| **Total Closing Inv** | Available + Intransit |\n"
+                "| **Total Balance** | Close Inv + Intransit |\n"
                 "| **Available Space** | SafeFill − Close Inv |\n"
                 "| **Loadable** | Close Inv − Bottom |\n"
                 "| **Total Inventory** | Close Inv + Bottom |\n"
@@ -1491,6 +1544,12 @@ def display_location_details(
             for bid in [COL_RMPL_BATCH_ID, COL_SEMINOE_BATCH_ID, COL_MEDICINE_BATCH_ID, COL_PIONEER_BATCH_ID]:
                 if bid in visible and bid not in df_display.columns:
                     df_display[bid] = ""
+            for _new_bid in [COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]:
+                if _new_bid in visible and _new_bid not in df_display.columns:
+                    df_display[_new_bid] = ""
+            for _new_pin in [COL_AURORA_PIPELINE_IN, COL_DUPONT_PIPELINE_IN, COL_MED_BOW_PIPELINE_IN]:
+                if _new_pin in visible and _new_pin not in df_display.columns:
+                    df_display[_new_pin] = 0.0
 
             editor_df = _build_editor_df(df_display)
             if COL_VESSEL in editor_df.columns:
@@ -1596,12 +1655,14 @@ def display_location_details(
             st.session_state[live_calc_state_key] = False
 
         _pre_sync_text: dict = {}
-        for _snap_col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]:
+        for _snap_col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
+                          COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]:
             if base_key in st.session_state and _snap_col in st.session_state[base_key].columns:
                 _pre_sync_text[_snap_col] = (
                     st.session_state[base_key][_snap_col].fillna("").values.copy()
                 )
-        _TEXT_COLS = [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
+        _TEXT_COLS = [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
+                      COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]
         if edited is not None and not edited.empty:
             for col in _TEXT_COLS:
                 if col in edited.columns:
@@ -1637,7 +1698,8 @@ def display_location_details(
             not np.array_equal(
                 _pre_sync_text[col], edited[col].fillna("").values
             )
-            for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL]
+            for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
+                        COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]
         )
         if _text_cols_changed:
             st.rerun()
