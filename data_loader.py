@@ -761,13 +761,17 @@ def persist_details_rows(
             # Details UI always has Product, but don't hard-crash if missing.
             prod_desc = "Unknown"
 
-        # Rows before today → 'user'
-        # Today and after → 'forecast_user' if edited, 'forecast' if not
+        # Rows before today -> 'user'.
+        # Today and after -> keep existing forecast_user lineage, otherwise
+        # use edit-detection to classify as forecast_user vs forecast.
         _date_for_st = pd.to_datetime(r.get("Date"), errors="coerce")
         _today_for_st = pd.Timestamp.today().normalize()
         date_s_for_st = str(r.get("Date") or "")
+        existing_source_type = str(r.get("SOURCE_TYPE") or "").strip().lower()
         if pd.notna(_date_for_st) and _date_for_st.normalize() < _today_for_st:
             source_type = "user"
+        elif existing_source_type == "forecast_user":
+            source_type = "forecast_user"
         elif date_s_for_st in _edited_dates:
             source_type = "forecast_user"
         else:
