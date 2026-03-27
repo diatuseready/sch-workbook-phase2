@@ -1433,11 +1433,14 @@ def display_location_details(
     selected_product = st.segmented_control(
         "",
         options=products,
-        default=products[0],
+        default=st.session_state.get(f"details_product_selected|{active_region}|{selected_loc}") or products[0],
         key=f"details_product_selector|{active_region}|{selected_loc}",
     )    
     if not selected_product:
         return
+    else:
+        st.session_state[f'details_product_selected|{active_region}|{selected_loc}'] = selected_product
+
     prod_name = selected_product
     if prod_name:
         # ── State keys ──────────────────────────────────────────────────
@@ -1908,6 +1911,8 @@ def render_details_filters(*, regions: list[str], active_region: str | None) -> 
         for k in list(st.session_state.keys()):
             if str(k).startswith("details_show_fact|"):
                 st.session_state[k] = False
+            if str(k).startswith("details_product_selected|"):
+                st.session_state.pop(k, None)
 
     return {
         "active_region": active_region,
