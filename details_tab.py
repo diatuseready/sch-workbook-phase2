@@ -1621,23 +1621,33 @@ def display_location_details(
             ].reset_index(drop=True)
             recomputed = _build_editor_df(recomputed)
 
-            
-            if (
-                COL_RACK_LIFTING in recomputed.columns
-                and COL_RACK_LIFTING in current_input.columns
-            ):
-
-                ci_rack = current_input.copy()
-                ci_rack["Date"] = pd.to_datetime(ci_rack["Date"], errors="coerce").dt.date
-                recomputed["Date"] = pd.to_datetime(recomputed["Date"], errors="coerce").dt.date
-                rack_map: dict = (
-                    ci_rack.set_index("Date")[COL_RACK_LIFTING]
-                    .apply(lambda v: float(v) if pd.notna(v) else 0.0)
-                    .to_dict()
-                )
-                recomputed[COL_RACK_LIFTING] = recomputed["Date"].map(rack_map).fillna(
-                    recomputed[COL_RACK_LIFTING]
-                )
+            # Overlay ALL user-edited (non-calculated, non-Fact) column values from
+            # current_input into recomputed, keyed by Date.  Without this, flipping
+            # on Live Calculation drops every edit except Rack/Lifting because the
+            # rebuild starts from the raw df_prod data, not from what was in the editor.
+            _ci_aligned = current_input.copy()
+            _ci_aligned["Date"] = pd.to_datetime(_ci_aligned["Date"], errors="coerce").dt.date
+            recomputed["Date"] = pd.to_datetime(recomputed["Date"], errors="coerce").dt.date
+            _ci_input_dates = set(_ci_aligned["Date"].dropna())
+            _locked_overlay: set[str] = {
+                "Date", "Location", "Product",
+                "Close Inv", "Opening Inv",
+                COL_TOTAL_CLOSING_INV, COL_TOTAL_BALANCE, COL_AVAILABLE_SPACE,
+                COL_LOADABLE, COL_TOTAL_INVENTORY, COL_ACCOUNTING_INV,
+                COL_7DAY_AVG_RACK, COL_MTD_AVG_RACK, COL_CALCULATED_RECEIPT,
+                "updated", "SOURCE_TYPE", "FILE_LOCATION", COL_VIEW_FILE,
+            }
+            _ci_aligned = _ci_aligned.dropna(subset=["Date"])
+            for _oc in _ci_aligned.columns:
+                if _oc in _locked_overlay:
+                    continue
+                if str(_oc).endswith(" Fact"):
+                    continue
+                if _oc not in recomputed.columns:
+                    continue
+                _val_map = _ci_aligned.groupby("Date")[_oc].last().to_dict()
+                _has_date = recomputed["Date"].isin(_ci_input_dates)
+                recomputed.loc[_has_date, _oc] = recomputed.loc[_has_date, "Date"].map(_val_map)
 
             recomputed = _recalculate_inventory_metrics(
                 recomputed,
