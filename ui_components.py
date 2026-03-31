@@ -351,7 +351,7 @@ def _render_threshold_cards(
             st.session_state[edit_key] = False
         
         if st.session_state[edit_key]:
-            c1, c2 = st.columns([1, 0.2])
+            c1, c2 = st.columns([1, 0.3])
             with c1:
                 new_safefill = st.number_input(
                     "SafeFill",
@@ -360,6 +360,7 @@ def _render_threshold_cards(
                     key=f"{edit_key}_input"
                 )
             with c2:
+                st.markdown("<div style='height:1.7rem;'></div>", unsafe_allow_html=True)
                 if st.button("✓", key=f"{edit_key}_save", help="Confirm", use_container_width=True):
                     # Save the value before closing
                     st.session_state[f"saved_safefill_{scope}"] = new_safefill
@@ -387,7 +388,7 @@ def _render_threshold_cards(
             st.session_state[edit_key] = False
         
         if st.session_state[edit_key]:
-            c1, c2 = st.columns([1, 0.2])
+            c1, c2 = st.columns([1, 0.3])
             with c1:
                 new_bottom = st.number_input(
                     "Bottom",
@@ -396,6 +397,7 @@ def _render_threshold_cards(
                     key=f"{edit_key}_input"
                 )
             with c2:
+                st.markdown("<div style='height:1.7rem;'></div>", unsafe_allow_html=True)  # Spacer
                 if st.button("✓", key=f"{edit_key}_save", help="Confirm", use_container_width=True):
                     # Save the value before closing
                     st.session_state[f"saved_bottom_{scope}"] = new_bottom
@@ -423,7 +425,7 @@ def _render_threshold_cards(
             st.session_state[edit_key] = False
         
         if st.session_state[edit_key]:
-            c1, c2 = st.columns([1, 0.2])
+            c1, c2 = st.columns([1, 0.3])
             with c1:
                 new_note = st.text_area(
                     "Note",
@@ -432,6 +434,7 @@ def _render_threshold_cards(
                     key=f"{edit_key}_input"
                 )
             with c2:
+                st.markdown("<div style='height:1.7rem;'></div>", unsafe_allow_html=True)  # Spacer
                 if st.button("✓", key=f"{edit_key}_save", help="Confirm", use_container_width=True):
                     # Save the value before closing
                     st.session_state[f"saved_note_{scope}"] = new_note
