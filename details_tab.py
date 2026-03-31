@@ -1,13 +1,15 @@
 """Details tab: inventory data grid, editing, and save flow."""
 import time
+import json
 from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method
+from admin_config import get_visible_columns, get_threshold_overrides, get_rack_lifting_forecast_method, save_admin_config
 from app_logging import logged_button, log_audit
+from utils import _to_float_or_none
 from config import (
     COL_ACCOUNTING_INV,
     COL_ADJUSTMENTS,
@@ -1076,7 +1078,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
     NUM_FMT = "%.0f"
 
     cfg: dict = {
-        "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD"),
+        "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD", pinned="left"),
         id_col: st.column_config.TextColumn(id_col, disabled=True),
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
@@ -1262,6 +1264,30 @@ def _threshold_values(
         n = str(note).strip() or None
     return b, s, n
 
+def save_threshold_overrides(
+    region: str,
+    location: str | None,
+    product: str | None,
+    bottom: float | None,
+    safefill: float | None,
+    note: str | None,
+    rl_method: str | None,
+    visible_columns: list[str] | None
+) -> None:
+    """Save threshold overrides for the given scope."""
+    # Convert visible_columns list to JSON string
+    visible_json = json.dumps(visible_columns or DEFAULT_VISIBLE_COLUMNS)
+    
+    updates = {
+        "VISIBLE_COLUMNS_JSON": visible_json,
+        "BOTTOM": (_to_float_or_none(bottom) if product is not None else None),
+        "SAFEFILL": (_to_float_or_none(safefill) if product is not None else None),
+        "NOTE": ((str(note).strip() or None) if product is not None else None),
+        "RACK_LIFTING_FORECAST_METHOD": str(rl_method) if rl_method is not None else None,
+    }
+    save_admin_config(region=region, location=location, product=product, updates=updates)
+    # Don't show success message here - it will show on every rerun
+    return None
 
 # ---------------------------------------------------------------------------
 # Save dialogs (details-tab-specific)
@@ -1493,11 +1519,30 @@ def display_location_details(
 
         # ── Header row: threshold cards + Enable Save + Save button ──
         c_sf, c_bt, c_note, c_info, c_enable, c_save = st.columns([1.75, 1.75, 2.7, 1.2, 1.3, 2.3])
-        _render_threshold_cards(
-            bottom=bottom, safefill=safefill, note=note,
-            c_safefill=c_sf, c_bottom=c_bt, c_note=c_note, c_info=c_info,
-            display_forecast_method=forecast_method,
-        )
+         
+        # Create a unique scope identifier for this product/location/region combination
+        threshold_scope = f"{active_region}|{selected_loc}|{prod_name}"
+        
+        updated_safefill, updated_bottom, updated_note = _render_threshold_cards(
+                            bottom=bottom, safefill=safefill, note=note,
+                            c_safefill=c_sf, c_bottom=c_bt, c_note=c_note, c_info=c_info,
+                            display_forecast_method=forecast_method,
+                            scope=threshold_scope,
+                        )
+        
+        # Check if any thresholds were changed
+        safefill_changed = updated_safefill != safefill
+        bottom_changed = updated_bottom != bottom
+        note_changed = updated_note != note
+        
+        if safefill_changed or bottom_changed or note_changed:
+            bottom, safefill, note = updated_bottom, updated_safefill, updated_note
+            save_threshold_overrides(
+                region=str(active_region), location=str(selected_loc), product=str(prod_name),
+                bottom=bottom, safefill=safefill, note=note,
+                rl_method=forecast_method,
+                visible_columns=visible
+            )
 
         enable_key = f"details_enable_save|{active_region}|{selected_loc}|{prod_name}"
         enable_ver_key = f"{enable_key}__ver"
