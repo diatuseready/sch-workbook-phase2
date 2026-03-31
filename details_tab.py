@@ -587,7 +587,7 @@ def _needs_inventory_rerun(before: pd.DataFrame, after: pd.DataFrame) -> bool:
     """Return True if calculated inventory columns have changed enough to warrant a re-render."""
     if before is None or after is None or before.shape[0] != after.shape[0]:
         return False
-    for c in ["Opening Inv", "Close Inv", COL_TOTAL_BALANCE, COL_TOTAL_CLOSING_INV, COL_ACCOUNTING_INV, COL_CALCULATED_RECEIPT]:
+    for c in ["Opening Inv", "Close Inv", COL_TOTAL_BALANCE, COL_TOTAL_CLOSING_INV, COL_ACCOUNTING_INV, COL_CALCULATED_RECEIPT, COL_AVAILABLE_SPACE, COL_LOADABLE, COL_TOTAL_INVENTORY]:
         if c not in before.columns or c not in after.columns:
             continue
         b = _to_numeric_series(before[c]).fillna(0.0).to_numpy(dtype=float)
