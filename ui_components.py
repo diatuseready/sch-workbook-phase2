@@ -417,7 +417,7 @@ def _render_threshold_cards(
 
     # Note card with inline editing
     with c_note:
-        v_note = "—" if note_val is None or note_val == "" else str(note_val)
+        v_note = "—" if note_val is None or note_val.strip() == "" or note_val.strip() == "None" else str(note_val)
         edit_key = f"edit_note_{scope}"
         if edit_key not in st.session_state:
             st.session_state[edit_key] = False
