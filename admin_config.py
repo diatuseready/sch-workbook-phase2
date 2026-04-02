@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from app_logging import logged_button, log_audit, log_error
+from utils import _to_float_or_none
 
 from config import (
     SQLITE_ADMIN_CONFIG_TABLE,
@@ -25,15 +26,6 @@ from config import (
     MISC_COLS,
 )
 from data_loader import get_snowflake_session, load_region_location_pairs
-
-
-def _to_float_or_none(x):
-    """Best-effort parse to float; return None if blank/invalid."""
-    if isinstance(x, str):
-        x = x.replace(",", "").strip()
-    v = pd.to_numeric(pd.Series([x]), errors="coerce").iloc[0]
-    return None if pd.isna(v) else float(v)
-
 
 def _to_int_or(x, fallback: int):
     """Best-effort parse to int; return fallback if blank/invalid."""

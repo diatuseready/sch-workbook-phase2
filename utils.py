@@ -34,6 +34,12 @@ def _to_float(x) -> float:
     except Exception:
         return 0.0
 
+def _to_float_or_none(x):
+    """Best-effort parse to float; return None if blank/invalid."""
+    if isinstance(x, str):
+        x = x.replace(",", "").strip()
+    v = pd.to_numeric(pd.Series([x]), errors="coerce").iloc[0]
+    return None if pd.isna(v) else float(v)
 
 def _to_numeric_series(s: pd.Series) -> pd.Series:
     """Coerce a Series to numeric, tolerating formatted strings like '1,234.00'."""

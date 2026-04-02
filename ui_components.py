@@ -334,33 +334,128 @@ def _render_threshold_cards(
     c_note,
     c_info,
     display_forecast_method: str | None = None,
-) -> None:
-    """Render SafeFill, Bottom, Note, and Forecast Method mini-cards."""
+    scope: str = "default",
+) -> tuple[float | None, float | None, str | None]:
+    """Render SafeFill, Bottom, Note, and Forecast Method mini-cards with inline editing."""
+    
+    # Get persisted edited values from session state, or use the original values
+    safefill_val = st.session_state.get(f"saved_safefill_{scope}", safefill)
+    bottom_val = st.session_state.get(f"saved_bottom_{scope}", bottom)
+    note_val = st.session_state.get(f"saved_note_{scope}", note)
+    
+    # SafeFill card with inline editing
     with c_safefill:
-        v = "—" if safefill is None else f"{safefill:,.0f}"
-        st.markdown(
-            f'<div class="mini-card" style="margin-bottom:1rem;">'
-            f'<p class="label">SafeFill</p><p class="value">{v}</p></div>',
-            unsafe_allow_html=True,
-        )
+        v_safefill = "—" if safefill_val is None else f"{safefill_val:,.0f}"
+        edit_key = f"edit_safefill_{scope}"
+        if edit_key not in st.session_state:
+            st.session_state[edit_key] = False
+        
+        if st.session_state[edit_key]:
+            c1, c2 = st.columns([1, 0.3])
+            with c1:
+                new_safefill = st.number_input(
+                    "SafeFill",
+                    value=float(safefill_val or 0),
+                    step=1.0,
+                    key=f"{edit_key}_input"
+                )
+            with c2:
+                st.markdown("<div style='height:1.7rem;'></div>", unsafe_allow_html=True)
+                if st.button("✓", key=f"{edit_key}_save", help="Confirm", use_container_width=True):
+                    # Save the value before closing
+                    st.session_state[f"saved_safefill_{scope}"] = new_safefill
+                    safefill_val = new_safefill
+                    st.session_state[edit_key] = False
+                    st.rerun()
+        else:
+            c1, c2 = st.columns([1, 0.2])
+            with c1:
+                st.markdown(
+                    f'<div class="mini-card" style="margin-bottom:1rem;">'
+                    f'<p class="label">SafeFill</p><p class="value">{v_safefill}</p></div>',
+                    unsafe_allow_html=True,
+                )
+            with c2:
+                if st.button("", key=f"{edit_key}_btn", help="Edit SafeFill", use_container_width=True, icon="✏️", type="tertiary"):
+                    st.session_state[edit_key] = True
+                    st.rerun()
 
+    # Bottom card with inline editing
     with c_bottom:
-        v = "—" if bottom is None else f"{bottom:,.0f}"
-        st.markdown(
-            f'<div class="mini-card" style="margin-bottom:1rem;">'
-            f'<p class="label">Bottom</p><p class="value">{v}</p></div>',
-            unsafe_allow_html=True,
-        )
+        v_bottom = "—" if bottom_val is None else f"{bottom_val:,.0f}"
+        edit_key = f"edit_bottom_{scope}"
+        if edit_key not in st.session_state:
+            st.session_state[edit_key] = False
+        
+        if st.session_state[edit_key]:
+            c1, c2 = st.columns([1, 0.3])
+            with c1:
+                new_bottom = st.number_input(
+                    "Bottom",
+                    value=float(bottom_val or 0),
+                    step=1.0,
+                    key=f"{edit_key}_input"
+                )
+            with c2:
+                st.markdown("<div style='height:1.7rem;'></div>", unsafe_allow_html=True)  # Spacer
+                if st.button("✓", key=f"{edit_key}_save", help="Confirm", use_container_width=True):
+                    # Save the value before closing
+                    st.session_state[f"saved_bottom_{scope}"] = new_bottom
+                    bottom_val = new_bottom
+                    st.session_state[edit_key] = False
+                    st.rerun()
+        else:
+            c1, c2 = st.columns([1, 0.2])
+            with c1:
+                st.markdown(
+                    f'<div class="mini-card" style="margin-bottom:1rem;">'
+                    f'<p class="label">Bottom</p><p class="value">{v_bottom}</p></div>',
+                    unsafe_allow_html=True,
+                )
+            with c2:
+                if st.button("", key=f"{edit_key}_btn", help="Edit Bottom", use_container_width=True, icon="✏️", type="tertiary"):
+                    st.session_state[edit_key] = True
+                    st.rerun()
 
+    # Note card with inline editing
     with c_note:
-        v = "—" if note in (None, "") else str(note)
-        st.markdown(
-            f'<div class="mini-card" style="margin-bottom:1rem;">'
-            f'<p class="label">Note</p>'
-            f'<p class="value" style="font-size:0.95rem; font-weight:700;">{v}</p></div>',
-            unsafe_allow_html=True,
-        )
+        v_note = "—" if note_val is None or note_val.strip() == "" or note_val.strip() == "None" else str(note_val)
+        edit_key = f"edit_note_{scope}"
+        if edit_key not in st.session_state:
+            st.session_state[edit_key] = False
+        
+        if st.session_state[edit_key]:
+            c1, c2 = st.columns([1, 0.3])
+            with c1:
+                new_note = st.text_area(
+                    "Note",
+                    value=str(note_val or ""),
+                    height=80,
+                    key=f"{edit_key}_input"
+                )
+            with c2:
+                st.markdown("<div style='height:1.7rem;'></div>", unsafe_allow_html=True)  # Spacer
+                if st.button("✓", key=f"{edit_key}_save", help="Confirm", use_container_width=True):
+                    # Save the value before closing
+                    st.session_state[f"saved_note_{scope}"] = new_note
+                    note_val = new_note
+                    st.session_state[edit_key] = False
+                    st.rerun()
+        else:
+            c1, c2 = st.columns([1, 0.2])
+            with c1:
+                st.markdown(
+                    f'<div class="mini-card" style="margin-bottom:1rem;">'
+                    f'<p class="label">Note</p>'
+                    f'<p class="value" style="font-size:0.95rem; font-weight:700;">{v_note}</p></div>',
+                    unsafe_allow_html=True,
+                )
+            with c2:
+                if st.button("", key=f"{edit_key}_btn", help="Edit Note", use_container_width=True, icon="✏️", type="tertiary"):
+                    st.session_state[edit_key] = True
+                    st.rerun()
 
+    # Forecast method info (read-only)
     with c_info:
         method = "—" if not display_forecast_method else display_forecast_method
         st.markdown(
@@ -369,7 +464,8 @@ def _render_threshold_cards(
             f'<p class="value" style="font-size:0.95rem; font-weight:700;">{method}</p></div>',
             unsafe_allow_html=True,
         )
-
+    
+    return safefill_val, bottom_val, note_val
 
 # ---------------------------------------------------------------------------
 # Source status / data freshness
