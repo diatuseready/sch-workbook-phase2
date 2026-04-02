@@ -12,6 +12,7 @@ from data_loader import (
     get_user_role,
 )
 from summary_tab import display_regional_summary, display_forecast_table
+from midcon_report import display_midcon_inventory_tables, is_midcon
 from details_tab import display_details_tab, render_details_filters
 from admin_config import display_super_admin_panel
 from config import ROLE_CHANGE, ROLE_DISPLAY
@@ -118,6 +119,8 @@ def main():
         df_region = st.session_state.get(cache_key, pd.DataFrame())
         display_regional_summary(df_region, active_region_norm)
         display_forecast_table(df_region, active_region_norm)
+        if is_midcon(active_region_norm):
+            display_midcon_inventory_tables(df_region, active_region_norm)
         return
 
     # -------
