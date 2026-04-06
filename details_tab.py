@@ -1434,8 +1434,11 @@ def display_location_details(
                 "| **Calculated Receipt** | Today's Available − Yesterday's Available + Today's Rack/Lifting (display KPI only; does not affect Close Inv) |",
             )
 
+    selector_key = f"details_product_selector|{active_region}|{selected_loc}"
     # Handle reset at location level (clears all product tabs)
     if reset_clicked:
+        preserved_product = st.session_state.get(selector_key)
+
         _load_inventory_data_filtered_cached.clear()
         details_cache_key = f"df_details|{active_region}"
         fresh_filters = {
@@ -1451,21 +1454,28 @@ def display_location_details(
             if str(k).startswith(loc_prefix):
                 st.session_state.pop(k, None)
 
+        st.session_state["_pending_product_restore"] = preserved_product
+
         st.session_state.pop("details_save_stage", None)
         st.session_state.pop("details_save_payload", None)
         st.session_state.pop("details_save_result", None)
         st.rerun()
 
+    # Restore pending product if any
+    pending = st.session_state.pop("_pending_product_restore", None)
+    if pending is not None and pending in products:
+        st.session_state[selector_key] = pending
+    elif selector_key not in st.session_state:
+        st.session_state[selector_key] = products[0] if products else None
+
     selected_product = st.segmented_control(
         "",
         options=products,
-        default=st.session_state.get(f"details_product_selected|{active_region}|{selected_loc}") or products[0],
-        key=f"details_product_selector|{active_region}|{selected_loc}",
-    )    
+        key=selector_key,          # no default parameter
+    )
+
     if not selected_product:
         return
-    else:
-        st.session_state[f'details_product_selected|{active_region}|{selected_loc}'] = selected_product
 
     prod_name = selected_product
     if prod_name:
