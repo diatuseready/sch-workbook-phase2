@@ -23,7 +23,7 @@ import pandas as pd
 import streamlit as st
 from uuid import uuid4
 
-from config import DATA_SOURCE, SNOWFLAKE_WAREHOUSE, SQLITE_DB_PATH
+from config import DATA_SOURCE, SNOWFLAKE_WAREHOUSE, SQLITE_DB_PATH, RAW_INVENTORY_TABLE, SQLITE_TABLE
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Region detection helper
@@ -259,6 +259,66 @@ def _ensure_sqlite_tables() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Magellan rack total  (denominator for % of Magellan Liftings)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_magellan_rack_total(source: str, sqlite_db_path: str) -> tuple[float, str]:
+    """
+    Return (total_rack_bbl, date_used) where total_rack_bbl is the SUM of
+    RACK_LIFTINGS_BBL for all Midcon + Magellan rows on the prior day (today − 1).
+
+    Why a direct DB query instead of reading df_region?
+    ────────────────────────────────────────────────────
+    data_loader.py maps SOURCE_OPERATOR → df["System"] (not SOURCE_SYSTEM).
+    For Midcon Magellan rows: SOURCE_OPERATOR='OneOk', SOURCE_SYSTEM='Magellan'.
+    So df_region["System"] == 'OneOk', never 'Magellan'.  There is no column in
+    df_region that carries SOURCE_SYSTEM, making it impossible to isolate Magellan
+    rows from df_region alone.
+
+    Date logic:
+    ───────────
+    Always uses prior_day = today − 1.  If no Magellan data exists for that date
+    (e.g. late data load, weekend gap) the SUM returns 0 — the denominator becomes
+    NaN and % of Magellan Liftings shows 0 for every row.  This is intentional:
+    the column should reflect reality for the specific prior date, not silently
+    fall back to a stale MAX date.
+
+    Query (aggregates ALL products + ALL locations for SOURCE_SYSTEM='Magellan'):
+        SELECT SUM(RACK_LIFTINGS_BBL)
+        FROM APP_INVENTORY
+        WHERE REGION_CODE  = 'Midcon'
+          AND SOURCE_SYSTEM = 'Magellan'
+          AND DATA_DATE    = <today − 1>
+    """
+    prior_day     = (pd.Timestamp.today().normalize() - pd.Timedelta(days=1)).date()
+    prior_day_str = str(prior_day)   # e.g. "2026-04-05"
+
+    if source == "sqlite":
+        import sqlite3
+        conn = sqlite3.connect(sqlite_db_path)
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(RACK_LIFTINGS_BBL), 0) FROM {SQLITE_TABLE} "
+            f"WHERE REGION_CODE='Midcon' AND SOURCE_SYSTEM='Magellan' AND DATA_DATE=?",
+            (prior_day_str,),
+        ).fetchone()
+        conn.close()
+        total = float(row[0] or 0.0) if row else 0.0
+    else:
+        from data_loader import get_snowflake_session
+        session = get_snowflake_session()
+        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+        row_df = session.sql(
+            f"SELECT COALESCE(SUM(RACK_LIFTINGS_BBL), 0) AS TOTAL_RACK "
+            f"FROM {RAW_INVENTORY_TABLE} "
+            f"WHERE REGION_CODE='Midcon' AND SOURCE_SYSTEM='Magellan' "
+            f"AND DATA_DATE='{prior_day_str}'"
+        ).to_pandas()
+        total = float(row_df.iloc[0, 0] or 0.0) if not row_df.empty else 0.0
+
+    return total, prior_day_str
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Raw DB loaders  (only input columns — no calculated columns)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -393,28 +453,28 @@ def _add_total_inventory_col(df_r: pd.DataFrame, active_region: str) -> pd.DataF
     prod_col = df_r["Product"].astype(str).str.strip()  if "Product"  in df_r.columns else pd.Series([""] * len(df_r), index=df_r.index)
 
     unique_pairs = set(zip(loc_col, prod_col)) - {("", "")}
-    bottom_lookup: dict = {}  # (loc, prod) → float if configured, None if absent/0
+    bottom_lookup: dict = {}  # (loc, prod) → float if configured, None if absent
     for loc, prod in unique_pairs:
         if not prod:
             continue
         ovr    = get_threshold_overrides(region=active_region, location=loc, product=prod)
         bottom = ovr.get("BOTTOM")
-        # Matches Details tab _recalculate_total_inventory:
-        #   when bottom is None  → Total Inventory = NaN (we show 0)
-        #   when bottom is 0     → no meaningful threshold; show 0
-        #   when bottom > 0     → Total Inventory = Close Inv + Bottom
+        # Align with Details tab _recalculate_total_inventory:
+        #   when bottom is None  → Total Inventory = 0  (no threshold configured)
+        #   when bottom is 0     → Total Inventory = Close Inv + 0  (threshold IS configured)
+        #   when bottom > 0      → Total Inventory = Close Inv + Bottom
         b: float | None = None
         if bottom is not None:
             try:
                 b_val = float(bottom)
-                if not pd.isna(b_val) and b_val != 0.0:
+                if not pd.isna(b_val):
                     b = b_val
             except (TypeError, ValueError):
                 pass
-        bottom_lookup[(loc, prod)] = b  # None  →  show 0
+        bottom_lookup[(loc, prod)] = b  # None  →  no threshold configured
 
     close_inv = pd.to_numeric(df_r["Close Inv"], errors="coerce").fillna(0.0)
-    # Build a parallel boolean mask: True = bottom is configured and > 0
+    # Build a parallel boolean mask: True = bottom is configured (including 0)
     has_bottom = pd.Series(
         [bottom_lookup.get((l, p)) is not None for l, p in zip(loc_col, prod_col)],
         index=df_r.index,
@@ -608,18 +668,11 @@ def _build_oneok_display_df(df_region: pd.DataFrame, db_df: pd.DataFrame) -> pd.
             }
         )
 
-    # Total prior-day rack across ALL Midcon systems — denominator for
-    # % of Magellan Liftings
-    total_prior_rack = 0.0
-    if not df_r.empty and "Date" in df_r.columns:
-        rack_col = next(
-            (c for c in ("Rack/Liftings", "Rack/Lifting") if c in df_r.columns), None
-        )
-        if rack_col:
-            prior_all = df_r[df_r["Date"].dt.date == prior_day]
-            total_prior_rack = float(
-                pd.to_numeric(prior_all[rack_col], errors="coerce").fillna(0).sum()
-            )
+    # Total Magellan rack liftings for Midcon on the most recent available date
+    # — denominator for % of Magellan Liftings.
+    # Queried directly from APP_INVENTORY (SOURCE_SYSTEM = 'Magellan') so that
+    # only Magellan-system rows are summed, not all Midcon operators.
+    total_prior_rack, _magellan_date = _get_magellan_rack_total(DATA_SOURCE, SQLITE_DB_PATH)
 
     live_rows: list[dict] = []
     for location, product in loc_prod_pairs:
@@ -650,7 +703,7 @@ def _build_oneok_display_df(df_region: pd.DataFrame, db_df: pd.DataFrame) -> pd.
         })
 
     if not live_rows:
-        return pd.DataFrame(columns=["Location", "Product"] + ONEOK_DISPLAY_COLS), 0.0
+        return pd.DataFrame(columns=["Location", "Product"] + ONEOK_DISPLAY_COLS), 0.0, ""
 
     live_df = pd.DataFrame(live_rows)
 
@@ -677,9 +730,10 @@ def _build_oneok_display_df(df_region: pd.DataFrame, db_df: pd.DataFrame) -> pd.
 
     denom = total_prior_rack if total_prior_rack > 0 else float("nan")
     mpl_num = pd.to_numeric(merge["Yesterday MPL Rack Loadings"], errors="coerce").fillna(0.0)
-    merge["% of Magellan Liftings"] = ((mpl_num / denom) * 100).round(2).fillna(0.0)
+    # Leave as None (blank cell) when denominator = 0 (no Magellan data for prior day)
+    merge["% of Magellan Liftings"] = ((mpl_num / denom) * 100).round(2)
 
-    return merge[["Location", "Product"] + ONEOK_DISPLAY_COLS].copy(), total_prior_rack
+    return merge[["Location", "Product"] + ONEOK_DISPLAY_COLS].copy(), total_prior_rack, _magellan_date
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -736,7 +790,8 @@ def _recalculate_oneok_calcs(df: pd.DataFrame, total_prior_rack: float) -> pd.Da
 
     df["% of Tank Capacity"]    = ((current / max_cap) * 100).round(2).fillna(0.0)
     denom = total_prior_rack if total_prior_rack > 0 else float("nan")
-    df["% of Magellan Liftings"] = ((mpl / denom) * 100).round(2).fillna(0.0)
+    # Leave as None (blank cell) when denominator = 0 (no Magellan data for prior day)
+    df["% of Magellan Liftings"] = ((mpl / denom) * 100).round(2)
     return df
 
 
@@ -1000,12 +1055,13 @@ def display_midcon_inventory_tables(
        to the DB in one operation, then reruns to show fresh data.
     """
     # ── Session-state keys ───────────────────────────────────────────────────
-    HFS_DB_KEY        = "midcon_hfs_db"
-    ONEOK_DB_KEY      = "midcon_oneok_db"
-    HFS_DISPLAY_KEY   = "midcon_hfs_display"    # live display df (with recalculated cols)
-    ONEOK_DISPLAY_KEY = "midcon_oneok_display"
-    ONEOK_RACK_KEY    = "midcon_oneok_total_rack"  # denominator for % of Magellan Liftings
-    REGION_EXT_KEY    = "midcon_df_region_ext"   # cached forecast-extended df_region
+    HFS_DB_KEY            = "midcon_hfs_db"
+    ONEOK_DB_KEY          = "midcon_oneok_db"
+    HFS_DISPLAY_KEY       = "midcon_hfs_display"       # live display df (with recalculated cols)
+    ONEOK_DISPLAY_KEY     = "midcon_oneok_display"
+    ONEOK_RACK_KEY        = "midcon_oneok_total_rack"  # denominator for % of Magellan Liftings
+    ONEOK_MAGELLAN_DATE_KEY = "midcon_oneok_magellan_date"  # date used for Magellan denominator
+    REGION_EXT_KEY        = "midcon_df_region_ext"    # cached forecast-extended df_region
     SAVE_MSG_KEY      = "midcon_save_msg"
     ENABLE_KEY        = "midcon_enable_save"
 
@@ -1052,19 +1108,43 @@ def display_midcon_inventory_tables(
 
     # Cache the extended dataframe so the expensive forecast extension only
     # runs once per load cycle, not on every render / rerun.
+    # IMPORTANT: extend PER-LOCATION so each location uses its own configured
+    # forecast method (via get_rack_lifting_forecast_method).  Passing
+    # location=None would use only the region-level default, which can differ
+    # from the location-specific method the Details tab uses — causing Gross
+    # Inventory and EOM Projections to diverge from the Details tab values.
     if REGION_EXT_KEY not in st.session_state:
-        st.session_state[REGION_EXT_KEY] = (
-            _extend_with_30d_forecast(
-                df_region,
-                id_col="Location",
-                region=active_region,
-                location=None,
-                forecast_end=_curr_month_end_ts,
-                default_days=30,
+        if df_region is not None and not df_region.empty:
+            _unique_locs = (
+                df_region["Location"]
+                .dropna().astype(str).str.strip()
+                .unique()
+                .tolist()
             )
-            if df_region is not None and not df_region.empty
-            else df_region
-        )
+            _ext_parts: list[pd.DataFrame] = []
+            for _loc in _unique_locs:
+                _loc_df = df_region[
+                    df_region["Location"].astype(str).str.strip() == _loc
+                ]
+                if _loc_df.empty:
+                    continue
+                _ext_parts.append(
+                    _extend_with_30d_forecast(
+                        _loc_df,
+                        id_col="Location",
+                        region=active_region,
+                        location=str(_loc),
+                        forecast_end=_curr_month_end_ts,
+                        default_days=30,
+                    )
+                )
+            st.session_state[REGION_EXT_KEY] = (
+                pd.concat(_ext_parts, ignore_index=True)
+                if _ext_parts
+                else df_region
+            )
+        else:
+            st.session_state[REGION_EXT_KEY] = df_region
     df_region_ext = st.session_state[REGION_EXT_KEY]
 
     # ── Build display dataframes (live calculations overlaid on DB inputs) ────
@@ -1073,14 +1153,32 @@ def display_midcon_inventory_tables(
     # so calculated columns reflect the most recently committed input values.
     if HFS_DISPLAY_KEY not in st.session_state:
         st.session_state[HFS_DISPLAY_KEY] = _build_hfs_display_df(df_region_ext, hfs_db, active_region)
+
+    # ── Always refresh Magellan denominator — never cache across renders ──────
+    # Bug fix: previously total_prior_rack was stored in session state at init
+    # and never refreshed.  If the user added Magellan data to APP_INVENTORY
+    # after the session started (or if MPL was entered before data arrived),
+    # _recalculate_oneok_calcs would use a stale 0 denominator → blank column.
+    # Fix: query _get_magellan_rack_total() on EVERY render so the denominator
+    # is always current, and re-apply the % calculation to the display df so
+    # the column reflects both the current denominator and any saved MPL values.
+    total_prior_rack, _magellan_date_display = _get_magellan_rack_total(DATA_SOURCE, SQLITE_DB_PATH)
+    st.session_state[ONEOK_RACK_KEY]          = total_prior_rack
+    st.session_state[ONEOK_MAGELLAN_DATE_KEY] = _magellan_date_display
+
     if ONEOK_DISPLAY_KEY not in st.session_state:
-        oneok_df, total_rack = _build_oneok_display_df(df_region_ext, oneok_db)
+        oneok_df, _tr, _md = _build_oneok_display_df(df_region_ext, oneok_db)
         st.session_state[ONEOK_DISPLAY_KEY] = oneok_df
-        st.session_state[ONEOK_RACK_KEY]    = total_rack
 
     hfs_display: pd.DataFrame   = st.session_state[HFS_DISPLAY_KEY]
     oneok_display: pd.DataFrame = st.session_state[ONEOK_DISPLAY_KEY]
-    total_prior_rack: float     = st.session_state.get(ONEOK_RACK_KEY, 0.0)
+
+    # Re-apply % of Magellan Liftings with the fresh denominator.
+    # This handles two scenarios:
+    #   (a) Denominator data was added to DB after session was first loaded
+    #   (b) MPL values were saved/entered before denominator data existed
+    oneok_display = _recalculate_oneok_calcs(oneok_display, total_prior_rack)
+    st.session_state[ONEOK_DISPLAY_KEY] = oneok_display
 
     # ── Enable Save toggle + Save button + Formula info icon ────────────────
     # Mirrors details_tab.py column layout: toggle | save | spacer | ℹ️
@@ -1092,7 +1190,6 @@ def display_midcon_inventory_tables(
             value=False,
             help=(
                 "Toggle ON to commit the last edited cell, then click Save. "
-                "This is the same two-step pattern used in the Details tab."
             ),
         )
     with c_save:
@@ -1135,14 +1232,14 @@ def display_midcon_inventory_tables(
                 "| Column | Formula |\n"
                 "|---|---|\n"
                 "| **% of Tank Capacity** | `(Current ÷ Max) × 100` |\n"
-                "| **% of Magellan Liftings** | `(Yesterday MPL Rack Loadings ÷ Total Midcon prior-day rack liftings) × 100` |"
+                "| **% of Magellan Liftings** | `(Yesterday MPL Rack Loadings ÷ SUM Magellan RACK_LIFTINGS_BBL for Midcon) × 100` |"
             )
             st.caption(
                 "**% of Magellan Liftings:** numerator is the user-entered "
-                "*Yesterday MPL Rack Loadings* (Magellan rack for the prior day). "
-                "Denominator is the total rack liftings across **all** Midcon "
-                "systems on the same prior day, derived from the source dataset. "
-                "Max, Current, and Yesterday MPL Rack Loadings are all pure user inputs."
+                "*Yesterday MPL Rack Loadings*. "
+                "Denominator is prior days `SUM(RACK_LIFTINGS_BBL)` "
+                "WHERE `REGION_CODE='Midcon'` AND `SOURCE_SYSTEM='Magellan'` AND `DATA_DATE = today −1`. "
+                
             )
 
     # ── HFS System Inventory table ────────────────────────────────────────────
@@ -1183,9 +1280,14 @@ def display_midcon_inventory_tables(
 
     # ── ONEOK System Inventory table ──────────────────────────────────────────
     st.markdown("### ONEOK System Inventory")
+    _mgl_date_label = (
+        f"  |  Magellan total for: **{_magellan_date_display}** (prior day)"
+        if _magellan_date_display else ""
+    )
     st.caption(
         f"Current as of **{_today_str}**  |  "
         f"Yesterday MPL Rack Loadings: **{_prior_day_str}**"
+        f"{_mgl_date_label}"
     )
 
     oneok_col_cfg = _col_cfg(ONEOK_DISPLAY_COLS, ONEOK_CALC_COLS)
@@ -1228,8 +1330,8 @@ def display_midcon_inventory_tables(
             # cache, and editor delta state so next render starts completely
             # fresh from the database.
             for k in (HFS_DB_KEY, ONEOK_DB_KEY, HFS_DISPLAY_KEY,
-                      ONEOK_DISPLAY_KEY, ONEOK_RACK_KEY, REGION_EXT_KEY,
-                      "midcon_hfs_editor", "midcon_oneok_editor"):
+                      ONEOK_DISPLAY_KEY, ONEOK_RACK_KEY, ONEOK_MAGELLAN_DATE_KEY,
+                      REGION_EXT_KEY, "midcon_hfs_editor", "midcon_oneok_editor"):
                 st.session_state.pop(k, None)
 
             # Reset Enable Save toggle after a successful save — same pattern as
