@@ -47,7 +47,7 @@ SQLITE_ONEOK_TABLE    = "MIDCON_ONEOK_SYSTEM_INVENTORY"
 # ── HFS columns ───────────────────────────────────────────────────────────────
 # Display order shown in the editor
 HFS_DISPLAY_COLS: list[str] = [
-    "Gross Inventory",      # CALCULATED — latest Close Inv per product
+    "Gross Inventory",      # CALCULATED — Close Inv + Bottom on today − 1 (prior day)
     "LIFO Target",          # INPUT       — pure user entry
     "OPS Target",           # INPUT       — pure user entry
     "EOM Vs Ops",           # CALCULATED — EOM Projections − OPS Target
@@ -265,40 +265,40 @@ def _ensure_sqlite_tables() -> None:
 def _get_magellan_rack_total(source: str, sqlite_db_path: str) -> tuple[float, str]:
     """
     Return (total_rack_bbl, date_used) where total_rack_bbl is the SUM of
-    RACK_LIFTINGS_BBL for all Midcon + Magellan rows on the prior day (today − 1).
+    RACK_LIFTINGS_BBL for all Midcon + OneOk (Magellan pipeline) rows on
+    the prior day (today − 1).
 
-    Why a direct DB query instead of reading df_region?
-    ────────────────────────────────────────────────────
-    data_loader.py maps SOURCE_OPERATOR → df["System"] (not SOURCE_SYSTEM).
-    For Midcon Magellan rows: SOURCE_OPERATOR='OneOk', SOURCE_SYSTEM='Magellan'.
-    So df_region["System"] == 'OneOk', never 'Magellan'.  There is no column in
-    df_region that carries SOURCE_SYSTEM, making it impossible to isolate Magellan
-    rows from df_region alone.
+    Filter used: SOURCE_OPERATOR = 'OneOk'
+    ────────────────────────────────────────
+    Magellan pipeline rows in APP_INVENTORY carry SOURCE_OPERATOR='OneOk'.
+    We filter on SOURCE_OPERATOR rather than SOURCE_SYSTEM so that any rows
+    where SOURCE_SYSTEM is NULL or blank are still captured as long as they
+    belong to the OneOk operator.
 
     Date logic:
     ───────────
-    Always uses prior_day = today − 1.  If no Magellan data exists for that date
+    Always uses prior_day = today − 1.  If no OneOk data exists for that date
     (e.g. late data load, weekend gap) the SUM returns 0 — the denominator becomes
-    NaN and % of Magellan Liftings shows 0 for every row.  This is intentional:
+    NaN and % of Magellan Liftings shows blank for every row.  This is intentional:
     the column should reflect reality for the specific prior date, not silently
     fall back to a stale MAX date.
 
-    Query (aggregates ALL products + ALL locations for SOURCE_SYSTEM='Magellan'):
+    Query (aggregates ALL products for SOURCE_OPERATOR='OneOk'):
         SELECT SUM(RACK_LIFTINGS_BBL)
         FROM APP_INVENTORY
-        WHERE REGION_CODE  = 'Midcon'
-          AND SOURCE_SYSTEM = 'Magellan'
-          AND DATA_DATE    = <today − 1>
+        WHERE REGION_CODE     = 'Midcon'
+          AND SOURCE_OPERATOR = 'OneOk'
+          AND DATA_DATE       = <today − 1>
     """
     prior_day     = (pd.Timestamp.today().normalize() - pd.Timedelta(days=1)).date()
-    prior_day_str = str(prior_day)   # e.g. "2026-04-05"
+    prior_day_str = str(prior_day)   # e.g. "2026-04-06"
 
     if source == "sqlite":
         import sqlite3
         conn = sqlite3.connect(sqlite_db_path)
         row = conn.execute(
             f"SELECT COALESCE(SUM(RACK_LIFTINGS_BBL), 0) FROM {SQLITE_TABLE} "
-            f"WHERE REGION_CODE='Midcon' AND SOURCE_SYSTEM='Magellan' AND DATA_DATE=?",
+            f"WHERE REGION_CODE='Midcon' AND SOURCE_OPERATOR='OneOk' AND DATA_DATE=?",
             (prior_day_str,),
         ).fetchone()
         conn.close()
@@ -310,7 +310,7 @@ def _get_magellan_rack_total(source: str, sqlite_db_path: str) -> tuple[float, s
         row_df = session.sql(
             f"SELECT COALESCE(SUM(RACK_LIFTINGS_BBL), 0) AS TOTAL_RACK "
             f"FROM {RAW_INVENTORY_TABLE} "
-            f"WHERE REGION_CODE='Midcon' AND SOURCE_SYSTEM='Magellan' "
+            f"WHERE REGION_CODE='Midcon' AND SOURCE_OPERATOR='OneOk' "
             f"AND DATA_DATE='{prior_day_str}'"
         ).to_pandas()
         total = float(row_df.iloc[0, 0] or 0.0) if not row_df.empty else 0.0
@@ -512,7 +512,7 @@ def _build_hfs_display_df(
                         Bottom is the per-product/location threshold from
                         admin_config (get_threshold_overrides).
 
-    Gross Inventory      = Total Inventory on the most recent row ≤ today
+    Gross Inventory      = Total Inventory (Close Inv + Bottom) on today − 1 (prior day)
     EOM Projections      = Total Inventory on the last day of the current month
                            (falls back to the most recent row ≤ EOM date)
     Prev EOM End Inv     = Total Inventory on the last day of the previous month
@@ -567,8 +567,11 @@ def _build_hfs_display_df(
         # Only rows on or before today (df_region may include future forecasts)
         hist_df = pair_df[pair_df["Date"].dt.date <= today_date].sort_values("Date")
 
-        # Gross Inventory = Total Inventory on the single most-recent row ≤ today
-        gross_inv = float(hist_df["Total Inventory"].iloc[-1]) if not hist_df.empty else 0.0
+        # Gross Inventory = Close Inv + Bottom on today − 1 (prior day).
+        # Uses the exact prior-day row; shows 0 if no data loaded for that date.
+        prior_day_date = (today - pd.Timedelta(days=1)).date()
+        prior_day_rows = hist_df[hist_df["Date"].dt.date == prior_day_date]
+        gross_inv = float(prior_day_rows["Total Inventory"].iloc[0]) if not prior_day_rows.empty else 0.0
 
         # EOM Projections = Total Inventory on the last day of the current month
         eom_rows = pair_df[pair_df["Date"].dt.date == curr_month_end]
@@ -1213,7 +1216,7 @@ def display_midcon_inventory_tables(
             st.markdown(
                 "| Column | Formula |\n"
                 "|---|---|\n"
-                "| **Gross Inventory** | `Close Inv + Bottom` — most recent row on or before today |"
+                "| **Gross Inventory** | `Close Inv + Bottom` — before today |"
                 " (matches *Total Inventory* in the Details tab) |\n"
                 "| **EOM Projections** | `Close Inv + Bottom` — last day of current month |\n"
                 "| **Prev EOM End Inv** | `Close Inv + Bottom` — last day of previous month |\n"
@@ -1222,8 +1225,7 @@ def display_midcon_inventory_tables(
                 "| **Build (Draw) M-O-M** | `EOM Projections − Prev EOM End Inv` |"
             )
             st.caption(
-                "**Bottom** = Required Mins / Heel threshold from Admin Config — "
-                "same value used in the Details tab to compute *Total Inventory*."
+                "**Bottom** = threshold from Admin Config — "
             )
 
             st.markdown("---")
@@ -1237,22 +1239,55 @@ def display_midcon_inventory_tables(
             st.caption(
                 "**% of Magellan Liftings:** numerator is the user-entered "
                 "*Yesterday MPL Rack Loadings*. "
-                "Denominator is prior days `SUM(RACK_LIFTINGS_BBL)` "
-                "WHERE `REGION_CODE='Midcon'` AND `SOURCE_SYSTEM='Magellan'` AND `DATA_DATE = today −1`. "
+                "Denominator is prior days midcon ONEOK `SUM(RACK_LIFTINGS_BBL)` "
                 
             )
+
+    # ── Shared Location + Product filter (applies to both tables) ─────────────
+    _all_loc_prod_pairs = sorted({
+        (str(r["Location"]).strip(), str(r["Product"]).strip())
+        for df_ in (hfs_display, oneok_display)
+        for _, r in df_[["Location", "Product"]].dropna().iterrows()
+        if str(r["Location"]).strip() and str(r["Product"]).strip()
+    })
+    _all_lp_labels = [f"{loc} — {prod}" for loc, prod in _all_loc_prod_pairs]
+    _lp_label_map  = {f"{loc} — {prod}": (loc, prod) for loc, prod in _all_loc_prod_pairs}
+
+    _lp_filter: list[str] = st.multiselect(
+        "Filter by Location — Product:",
+        options=_all_lp_labels,
+        default=[],
+        placeholder="All rows shown — select to filter",
+        key="midcon_locprod_filter",
+    )
+    _selected_pairs = (
+        {_lp_label_map[lbl] for lbl in _lp_filter}
+        if _lp_filter
+        else set(_all_loc_prod_pairs)
+    )
+
+    def _apply_filter(df: pd.DataFrame) -> pd.DataFrame:
+        mask = [
+            (str(r["Location"]).strip(), str(r["Product"]).strip()) in _selected_pairs
+            for _, r in df[["Location", "Product"]].iterrows()
+        ]
+        return df[mask].copy()
+
+    # View-only filtered slices — full dfs remain in session_state unchanged
+    hfs_view   = _apply_filter(hfs_display)
+    oneok_view = _apply_filter(oneok_display)
 
     # ── HFS System Inventory table ────────────────────────────────────────────
     st.markdown("### HFS System Inventory")
     st.caption(
-        f"Gross Inventory & Current Vs Ops as of **{_today_str}**  |  "
+        f"Gross Inventory & Current Vs Ops: **{_prior_day_str}** (yesterday)  |  "
         f"EOM Projections: **{_curr_month_end_str}**  |  "
         f"Prev EOM: **{_last_month_end_str}**"
     )
 
     hfs_col_cfg = _col_cfg(HFS_DISPLAY_COLS, HFS_CALC_COLS)
     hfs_edited: pd.DataFrame = st.data_editor(
-        hfs_display,
+        hfs_view,
         key="midcon_hfs_editor",
         column_config=hfs_col_cfg,
         num_rows="fixed",
@@ -1261,13 +1296,17 @@ def display_midcon_inventory_tables(
     )
     # ── Live recalculation: update session_state and clear δ-state when any
     # input column changes so the next render shows clean base data.
+    # Merge edited (filtered) rows back into the full session-state df so
+    # unfiltered rows are never lost.
     if hfs_edited is not None and not hfs_edited.empty:
         hfs_recalculated = _recalculate_hfs_calcs(hfs_edited)
-        st.session_state[HFS_DISPLAY_KEY] = hfs_recalculated
+        _hfs_full = st.session_state[HFS_DISPLAY_KEY].set_index(["Location", "Product"])
+        _hfs_full.update(hfs_recalculated.set_index(["Location", "Product"]))
+        st.session_state[HFS_DISPLAY_KEY] = _hfs_full.reset_index()[["Location", "Product"] + HFS_DISPLAY_COLS]
         _hfs_changed = False
         for _col in ("LIFO Target", "OPS Target", "Prev EOM End Inv"):
-            if _col in hfs_edited.columns and _col in hfs_display.columns:
-                _old = pd.to_numeric(hfs_display[_col], errors="coerce").fillna(0).round(2)
+            if _col in hfs_edited.columns and _col in hfs_view.columns:
+                _old = pd.to_numeric(hfs_view[_col], errors="coerce").fillna(0).round(2)
                 _new = pd.to_numeric(hfs_edited[_col], errors="coerce").fillna(0).round(2)
                 if not _old.reset_index(drop=True).equals(_new.reset_index(drop=True)):
                     _hfs_changed = True
@@ -1292,7 +1331,7 @@ def display_midcon_inventory_tables(
 
     oneok_col_cfg = _col_cfg(ONEOK_DISPLAY_COLS, ONEOK_CALC_COLS)
     oneok_edited: pd.DataFrame = st.data_editor(
-        oneok_display,
+        oneok_view,
         key="midcon_oneok_editor",
         column_config=oneok_col_cfg,
         num_rows="fixed",
@@ -1301,13 +1340,17 @@ def display_midcon_inventory_tables(
     )
     # ── Live recalculation: update session_state and clear δ-state when any
     # input column changes so the next render shows clean base data.
+    # Merge edited (filtered) rows back into the full session-state df so
+    # unfiltered rows are never lost.
     if oneok_edited is not None and not oneok_edited.empty:
         oneok_recalculated = _recalculate_oneok_calcs(oneok_edited, total_prior_rack)
-        st.session_state[ONEOK_DISPLAY_KEY] = oneok_recalculated
+        _oneok_full = st.session_state[ONEOK_DISPLAY_KEY].set_index(["Location", "Product"])
+        _oneok_full.update(oneok_recalculated.set_index(["Location", "Product"]))
+        st.session_state[ONEOK_DISPLAY_KEY] = _oneok_full.reset_index()[["Location", "Product"] + ONEOK_DISPLAY_COLS]
         _oneok_changed = False
         for _col in ("Max", "Current", "EOM Y-O-Y", "Yesterday MPL Rack Loadings", "Nustar System Inventory"):
-            if _col in oneok_edited.columns and _col in oneok_display.columns:
-                _old = pd.to_numeric(oneok_display[_col], errors="coerce").fillna(0).round(2)
+            if _col in oneok_edited.columns and _col in oneok_view.columns:
+                _old = pd.to_numeric(oneok_view[_col], errors="coerce").fillna(0).round(2)
                 _new = pd.to_numeric(oneok_edited[_col], errors="coerce").fillna(0).round(2)
                 if not _old.reset_index(drop=True).equals(_new.reset_index(drop=True)):
                     _oneok_changed = True
