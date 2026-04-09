@@ -540,6 +540,15 @@ def _build_hfs_display_df(
     if not df_r.empty and "Date" in df_r.columns:
         df_r["Date"] = pd.to_datetime(df_r["Date"], errors="coerce")
 
+    # ── Exclude forecast rows so only real (system/user) data feeds into
+    # current-state HFS columns (Gross Inventory, EOM, Prev EOM).
+    if not df_r.empty and "SOURCE_TYPE" in df_r.columns:
+        df_r = df_r[
+            ~df_r["SOURCE_TYPE"].astype(str).str.strip().str.lower().isin(
+                {"forecast", "forecast_user"}
+            )
+        ].copy()
+
     # ── (Location, Product) pairs — one row per pair ─────────────────────────
     loc_prod_pairs: list[tuple[str, str]] = []
     if not df_r.empty and "Location" in df_r.columns and "Product" in df_r.columns:
@@ -551,12 +560,25 @@ def _build_hfs_display_df(
             }
         )
 
-    # ── Add Total Inventory column to df_r — same formula as the Details tab ─
-    # Total Inventory = Close Inv + Bottom (Required Mins/Heel from admin_config)
-    # We do this once upfront so the per-pair loop just reads the column.
-    df_r = _add_total_inventory_col(df_r, active_region)
+    # ── Helper: get Close Inv for a target date, fallback to most recent ────
+    def _close_on(pair_df: pd.DataFrame, target) -> float:
+        exact = pair_df[pair_df["Date"].dt.date == target]
+        if not exact.empty:
+            v = pd.to_numeric(exact["Close Inv"].iloc[-1], errors="coerce")
+            if pd.notna(v) and float(v) != 0.0:
+                return float(v)
+        before = pair_df[pair_df["Date"].dt.date <= target].sort_values("Date")
+        if not before.empty:
+            vals = pd.to_numeric(before["Close Inv"], errors="coerce")
+            good = before[vals.notna() & (vals != 0.0)]
+            if not good.empty:
+                return float(pd.to_numeric(good["Close Inv"].iloc[-1], errors="coerce"))
+        return 0.0
 
-    # ── Per-(Location, Product) live values ──────────────────────────────────
+    # ── Per-(Location, Product): Close Inv + Bottom — same as Details tab ────
+    from admin_config import get_threshold_overrides
+
+    prior_day_date = (today - pd.Timedelta(days=1)).date()
     live_rows: list[dict] = []
     for location, product in loc_prod_pairs:
         pair_df = df_r[
@@ -564,30 +586,25 @@ def _build_hfs_display_df(
             (df_r["Product"].astype(str).str.strip() == product)
         ].copy()
 
-        # Only rows on or before today (df_region may include future forecasts)
-        hist_df = pair_df[pair_df["Date"].dt.date <= today_date].sort_values("Date")
+        # Bottom from admin_config — same call as Details tab
+        ovr = get_threshold_overrides(region=active_region, location=location, product=product)
+        bottom_raw = ovr.get("BOTTOM")
+        bottom: float | None = None
+        if bottom_raw is not None:
+            try:
+                bv = float(bottom_raw)
+                if not pd.isna(bv):
+                    bottom = bv
+            except (TypeError, ValueError):
+                pass
 
-        # Gross Inventory = Close Inv + Bottom on today − 1 (prior day).
-        # Uses the exact prior-day row; shows 0 if no data loaded for that date.
-        prior_day_date = (today - pd.Timedelta(days=1)).date()
-        prior_day_rows = hist_df[hist_df["Date"].dt.date == prior_day_date]
-        gross_inv = float(prior_day_rows["Total Inventory"].iloc[0]) if not prior_day_rows.empty else 0.0
+        def _total_inv(target_date) -> float:
+            close = _close_on(pair_df, target_date)
+            return round(close + bottom, 2) if bottom is not None else 0.0
 
-        # EOM Projections = Total Inventory on the last day of the current month
-        eom_rows = pair_df[pair_df["Date"].dt.date == curr_month_end]
-        if not eom_rows.empty:
-            eom_proj = float(eom_rows["Total Inventory"].iloc[0])
-        else:
-            pre_eom = pair_df[pair_df["Date"].dt.date <= curr_month_end].sort_values("Date")
-            eom_proj = float(pre_eom["Total Inventory"].iloc[-1]) if not pre_eom.empty else 0.0
-
-        # Prev EOM End Inv default = Total Inventory on the last day of the previous month
-        prev_rows = pair_df[pair_df["Date"].dt.date == last_month_end]
-        if not prev_rows.empty:
-            prev_eom_default = float(prev_rows["Total Inventory"].iloc[0])
-        else:
-            pre_prev = pair_df[pair_df["Date"].dt.date <= last_month_end].sort_values("Date")
-            prev_eom_default = float(pre_prev["Total Inventory"].iloc[-1]) if not pre_prev.empty else 0.0
+        gross_inv        = _total_inv(prior_day_date)
+        eom_proj         = _total_inv(curr_month_end)
+        prev_eom_default = _total_inv(last_month_end)
 
         live_rows.append({
             "Location":        location,
@@ -659,6 +676,14 @@ def _build_oneok_display_df(df_region: pd.DataFrame, db_df: pd.DataFrame) -> pd.
     df_r = df_region.copy() if df_region is not None else pd.DataFrame()
     if not df_r.empty and "Date" in df_r.columns:
         df_r["Date"] = pd.to_datetime(df_r["Date"], errors="coerce")
+
+    # ── Exclude forecast rows (same filter as HFS) ────────────────────────────
+    if not df_r.empty and "SOURCE_TYPE" in df_r.columns:
+        df_r = df_r[
+            ~df_r["SOURCE_TYPE"].astype(str).str.strip().str.lower().isin(
+                {"forecast", "forecast_user"}
+            )
+        ].copy()
 
     # ── (Location, Product) pairs ─────────────────────────────────────────────
     loc_prod_pairs: list[tuple[str, str]] = []
@@ -1243,39 +1268,64 @@ def display_midcon_inventory_tables(
                 
             )
 
-    # ── Shared Location + Product filter (applies to both tables) ─────────────
+    # ── Separate Location + Product filters ──────────────────────────────────
     _all_loc_prod_pairs = sorted({
         (str(r["Location"]).strip(), str(r["Product"]).strip())
         for df_ in (hfs_display, oneok_display)
         for _, r in df_[["Location", "Product"]].dropna().iterrows()
         if str(r["Location"]).strip() and str(r["Product"]).strip()
     })
-    _all_lp_labels = [f"{loc} — {prod}" for loc, prod in _all_loc_prod_pairs]
-    _lp_label_map  = {f"{loc} — {prod}": (loc, prod) for loc, prod in _all_loc_prod_pairs}
 
-    _lp_filter: list[str] = st.multiselect(
-        "Filter by Location — Product:",
-        options=_all_lp_labels,
-        default=[],
-        placeholder="All rows shown — select to filter",
-        key="midcon_locprod_filter",
-    )
-    _selected_pairs = (
-        {_lp_label_map[lbl] for lbl in _lp_filter}
-        if _lp_filter
-        else set(_all_loc_prod_pairs)
-    )
+    _all_locations = sorted({loc for loc, _ in _all_loc_prod_pairs})
+    _all_products  = sorted({prod for _, prod in _all_loc_prod_pairs})
+
+    _fc1, _fc2 = st.columns(2)
+    with _fc1:
+        _loc_filter: list[str] = st.multiselect(
+            "Filter by Location:",
+            options=_all_locations,
+            default=[],
+            placeholder="All locations — select to filter",
+            key="midcon_loc_filter",
+        )
+    with _fc2:
+        # Products cascade: show only products available under selected locations
+        if _loc_filter:
+            _available_products = sorted({
+                prod for loc, prod in _all_loc_prod_pairs if loc in _loc_filter
+            })
+        else:
+            _available_products = _all_products
+
+        _prod_filter: list[str] = st.multiselect(
+            "Filter by Product:",
+            options=_available_products,
+            default=[],
+            placeholder="All products — select to filter",
+            key="midcon_prod_filter",
+        )
+
+    def _pair_matches(loc: str, prod: str) -> bool:
+        if _loc_filter and loc not in _loc_filter:
+            return False
+        if _prod_filter and prod not in _prod_filter:
+            return False
+        return True
 
     def _apply_filter(df: pd.DataFrame) -> pd.DataFrame:
         mask = [
-            (str(r["Location"]).strip(), str(r["Product"]).strip()) in _selected_pairs
+            _pair_matches(str(r["Location"]).strip(), str(r["Product"]).strip())
             for _, r in df[["Location", "Product"]].iterrows()
         ]
         return df[mask].copy()
 
     # View-only filtered slices — full dfs remain in session_state unchanged
     hfs_view   = _apply_filter(hfs_display)
-    oneok_view = _apply_filter(oneok_display)
+    # ONEOK: only include locations that contain "OneOk" (case-insensitive)
+    _oneok_only = oneok_display[
+        oneok_display["Location"].astype(str).str.contains("OneOk", case=False, na=False)
+    ].copy()
+    oneok_view = _apply_filter(_oneok_only)
 
     # ── HFS System Inventory table ────────────────────────────────────────────
     st.markdown("### HFS System Inventory")
