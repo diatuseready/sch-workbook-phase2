@@ -583,11 +583,15 @@ def _recalculate_inventory_metrics(
     return out
 
 
-def _needs_inventory_rerun(before: pd.DataFrame, after: pd.DataFrame) -> bool:
+def _needs_inventory_rerun(before: pd.DataFrame, after: pd.DataFrame, columns: list[str] = []) -> bool:
     """Return True if calculated inventory columns have changed enough to warrant a re-render."""
     if before is None or after is None or before.shape[0] != after.shape[0]:
         return False
-    for c in ["Opening Inv", "Close Inv", COL_TOTAL_BALANCE, COL_TOTAL_CLOSING_INV, COL_ACCOUNTING_INV, COL_CALCULATED_RECEIPT, COL_AVAILABLE_SPACE, COL_LOADABLE, COL_TOTAL_INVENTORY]:
+    
+    if columns == []:
+        columns = ["Opening Inv", "Close Inv", COL_TOTAL_BALANCE, COL_TOTAL_CLOSING_INV, COL_ACCOUNTING_INV, COL_CALCULATED_RECEIPT, COL_AVAILABLE_SPACE, COL_LOADABLE, COL_TOTAL_INVENTORY]
+    
+    for c in columns:
         if c not in before.columns or c not in after.columns:
             continue
         b = _to_numeric_series(before[c]).fillna(0.0).to_numpy(dtype=float)
@@ -1074,8 +1078,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
     locked = set(_locked_cols(id_col, cols))
     locked.update({c for c in cols if str(c).endswith(" Fact")})
     locked.add("SOURCE_TYPE")
-    # NUM_FMT = "accounting"
-    NUM_FMT = "%.0f"
+    NUM_FMT = "%.0f" #"localized"
 
     cfg: dict = {
         "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD", pinned="left"),
@@ -1110,7 +1113,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
         if c in cfg:
             continue
         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format=NUM_FMT,width="small",help=c )
+            cfg[c] = st.column_config.NumberColumn(c, disabled=(c in locked), format=NUM_FMT, width="small", help=c)
         elif c in locked:
             cfg[c] = st.column_config.TextColumn(c, disabled=True)
 
@@ -1477,6 +1480,8 @@ def display_location_details(
     if not selected_product:
         return
 
+    _TEXT_COLS = [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
+                COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]
     prod_name = selected_product
     if prod_name:
         # ── State keys ──────────────────────────────────────────────────
@@ -1497,7 +1502,7 @@ def display_location_details(
         # enable_state_key = f"{state_key}enable_state"
 
         # ── View File dialog ─────────────────────────────────────────────
-        vf_payload = st.session_state.get("details_view_file_payload")
+        vf_payload = st.session_state.get("details_view_file_payload")  # view file payload
         if isinstance(vf_payload, dict) and vf_payload.get("df_key") == df_key:
             _view_files_dialog(
                 file_locations=vf_payload.get("file_locations"),
@@ -1578,7 +1583,7 @@ def display_location_details(
         # ── Load and prepare data (only on first render for this state_key) ──
         df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
 
-        if df_key not in st.session_state:
+        if df_key not in st.session_state:  # Initialize the canonical df to show for the first time
             df_all = _extend_with_30d_forecast(
                 df_prod, id_col="Location", region=active_region,
                 location=str(selected_loc), history_start=start_ts, forecast_end=end_ts,
@@ -1616,7 +1621,7 @@ def display_location_details(
                 editor_df, id_col="Location", safefill=safefill, bottom=bottom, df_hist=df_prod,
             )
 
-        if orig_key not in st.session_state:
+        if orig_key not in st.session_state: # taking a snapshot of the original data for change detection on save; this never changes after initial set
             st.session_state[orig_key] = st.session_state[df_key].copy().reset_index(drop=True)
 
         # Backward compatibility: existing session state may predate
@@ -1636,6 +1641,7 @@ def display_location_details(
             st.session_state[df_key][COL_VESSEL] = st.session_state[df_key][COL_VESSEL].fillna("").astype(str).replace("nan", "")
 
         base_df = st.session_state[base_key]
+        base_df_copy = base_df.copy()
 
         # ── Column order: changes with show_fact but NOT the editor key ──
         column_order = _build_column_order(base_df, visible=visible, show_fact=show_fact)
@@ -1653,9 +1659,43 @@ def display_location_details(
             key=widget_key,
             column_config=column_config,
         )
+
+        # --- Sync user edits back into canonical and snapshot DataFrames ---
+        if edited is not None and not edited.empty:
+            for col in edited.columns:
+                vals = edited[col].values
+                if df_key in st.session_state and col in st.session_state[df_key].columns:
+                    st.session_state[df_key][col] = vals
+                if base_key in st.session_state and col in st.session_state[base_key].columns:
+                    st.session_state[base_key][col] = vals
+        
+        _pre_sync_text: dict = {}        
+        for _snap_col in _TEXT_COLS:
+            if base_key in st.session_state and _snap_col in st.session_state[base_key].columns:
+                _pre_sync_text[_snap_col] = (
+                    base_df_copy[_snap_col].fillna("").values.copy()
+                )
+
         live_calc_state_key = f"{state_key}live_calc_state"
         prev_live_calc = bool(st.session_state.get(live_calc_state_key, False))
         curr_live_calc = bool(live_calc_clicked)
+        
+        if not curr_live_calc:
+            if _needs_inventory_rerun(base_df_copy, edited, list(set([col for col in edited.columns if col in base_df_copy.columns]).union(set(_TEXT_COLS)))):
+                st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
+                st.rerun()
+                
+            _text_cols_changed = edited is not None and not edited.empty and any(
+                col in edited.columns and
+                col in _pre_sync_text and
+                not np.array_equal(
+                    _pre_sync_text[col], edited[col].fillna("").values
+                )
+                for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
+                            COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]
+            )
+            if _text_cols_changed:
+                st.rerun()
 
         if curr_live_calc and not prev_live_calc:
             current_input = edited if edited is not None and not edited.empty else st.session_state[df_key].copy()
@@ -1722,84 +1762,65 @@ def display_location_details(
         if not curr_live_calc and prev_live_calc:
             st.session_state[live_calc_state_key] = False
 
-        _pre_sync_text: dict = {}
-        for _snap_col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
-                          COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]:
-            if base_key in st.session_state and _snap_col in st.session_state[base_key].columns:
-                _pre_sync_text[_snap_col] = (
-                    st.session_state[base_key][_snap_col].fillna("").values.copy()
-                )
-        _TEXT_COLS = [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
-                      COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]
-        if edited is not None and not edited.empty:
-            for col in _TEXT_COLS:
-                if col in edited.columns:
-                    vals = edited[col].fillna("").values
+        if bool(st.session_state.get(live_calc_state_key, False)):
+            # ── Recalculate derived columns from the current editor state ────
+            df_hist_for_avg = _overlay_rack_edits(df_prod, edited)
+            recomputed = _recalculate_inventory_metrics(
+                edited, id_col="Location", safefill=safefill, bottom=bottom,
+                df_hist=df_hist_for_avg,
+            ).reset_index(drop=True)
 
-                    if df_key in st.session_state and col in st.session_state[df_key].columns:
-                        st.session_state[df_key][col] = vals
-
-                    if base_key in st.session_state and col in st.session_state[base_key].columns:
-                        st.session_state[base_key][col] = vals
-
-        # ── Recalculate derived columns from the current editor state ────
-        df_hist_for_avg = _overlay_rack_edits(df_prod, edited)
-        recomputed = _recalculate_inventory_metrics(
-            edited, id_col="Location", safefill=safefill, bottom=bottom,
-            df_hist=df_hist_for_avg,
-        ).reset_index(drop=True)
-
-        # ── Merge recomputed values back into canonical df ───────────────
-        canonical = st.session_state[df_key].copy().reset_index(drop=True)
-        if canonical.shape[0] == recomputed.shape[0]:
-            for c in recomputed.columns:
-                canonical[c] = recomputed[c].values
-            st.session_state[df_key] = canonical
-
-        if edited is not None and not edited.empty and base_key in st.session_state:
-            for _col in _TEXT_COLS:
-                if _col in edited.columns and _col in st.session_state[base_key].columns:
-                    st.session_state[base_key][_col] = edited[_col].values
-        _text_cols_changed = edited is not None and not edited.empty and any(
-            col in edited.columns and
-            col in _pre_sync_text and
-            not np.array_equal(
-                _pre_sync_text[col], edited[col].fillna("").values
-            )
-            for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
-                        COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]
-        )
-        if _text_cols_changed:
-            st.rerun()
-
-        # ── Handle "View File" checkbox action ───────────────────────────
-        if COL_VIEW_FILE in recomputed.columns:
-            view_mask = recomputed[COL_VIEW_FILE].fillna(False).astype(bool)
-            if view_mask.any():
-                idx = int(view_mask[view_mask].index[0])
-                file_locs = recomputed.at[idx, "FILE_LOCATION"] if "FILE_LOCATION" in recomputed.columns else []
-                st.session_state[df_key].at[idx, COL_VIEW_FILE] = False
-                st.session_state["details_view_file_payload"] = {
-                    "df_key": df_key, "row": idx,
-                    "date": str(recomputed.at[idx, "Date"]) if "Date" in recomputed.columns else None,
-                    "location": str(selected_loc),
-                    "product": str(prod_name),
-                    "file_locations": file_locs,
-                }
-                st.session_state[ver_key] = ver + 1
-                st.rerun()
-
-        if _needs_inventory_rerun(edited, recomputed):
+            # ── Merge recomputed values back into canonical df ───────────────
             canonical = st.session_state[df_key].copy().reset_index(drop=True)
             if canonical.shape[0] == recomputed.shape[0]:
                 for c in recomputed.columns:
                     canonical[c] = recomputed[c].values
-            st.session_state[df_key] = canonical
+                st.session_state[df_key] = canonical
 
-            if st.session_state.get(live_calc_state_key, False):
-                st.session_state[base_key] = canonical.copy()
-                st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
+            if edited is not None and not edited.empty and base_key in st.session_state:
+                for _col in _TEXT_COLS:
+                    if _col in edited.columns and _col in st.session_state[base_key].columns:
+                        st.session_state[base_key][_col] = edited[_col].values
+            _text_cols_changed = edited is not None and not edited.empty and any(
+                col in edited.columns and
+                col in _pre_sync_text and
+                not np.array_equal(
+                    _pre_sync_text[col], edited[col].fillna("").values
+                )
+                for col in [COL_NOTES, COL_BATCH, COL_BATCH_BREAKDOWN, COL_VESSEL,
+                            COL_AURORA_BATCH_ID, COL_DUPONT_BATCH_ID, COL_MED_BOW_BATCH_ID]
+            )
+            if _text_cols_changed:
                 st.rerun()
+
+            # ── Handle "View File" checkbox action ───────────────────────────
+            if COL_VIEW_FILE in recomputed.columns:
+                view_mask = recomputed[COL_VIEW_FILE].fillna(False).astype(bool)
+                if view_mask.any():
+                    idx = int(view_mask[view_mask].index[0])
+                    file_locs = recomputed.at[idx, "FILE_LOCATION"] if "FILE_LOCATION" in recomputed.columns else []
+                    st.session_state[df_key].at[idx, COL_VIEW_FILE] = False
+                    st.session_state["details_view_file_payload"] = {
+                        "df_key": df_key, "row": idx,
+                        "date": str(recomputed.at[idx, "Date"]) if "Date" in recomputed.columns else None,
+                        "location": str(selected_loc),
+                        "product": str(prod_name),
+                        "file_locations": file_locs,
+                    }
+                    st.session_state[ver_key] = ver + 1
+                    st.rerun()
+
+            if _needs_inventory_rerun(edited, recomputed):
+                canonical = st.session_state[df_key].copy().reset_index(drop=True)
+                if canonical.shape[0] == recomputed.shape[0]:
+                    for c in recomputed.columns:
+                        canonical[c] = recomputed[c].values
+                st.session_state[df_key] = canonical
+
+                if st.session_state.get(live_calc_state_key, False):
+                    st.session_state[base_key] = canonical.copy()
+                    st.session_state[ver_key] = int(st.session_state.get(ver_key, 0)) + 1
+                    st.rerun()
 
         # ── Save flow ────────────────────────────────────────────────────
         if save_clicked:
