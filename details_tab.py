@@ -1441,7 +1441,6 @@ def display_location_details(
     # Handle reset at location level (clears all product tabs)
     if reset_clicked:
         preserved_product = st.session_state.get(selector_key)
-
         _load_inventory_data_filtered_cached.clear()
         details_cache_key = f"df_details|{active_region}"
         fresh_filters = {
@@ -1458,7 +1457,6 @@ def display_location_details(
                 st.session_state.pop(k, None)
 
         st.session_state["_pending_product_restore"] = preserved_product
-
         st.session_state.pop("details_save_stage", None)
         st.session_state.pop("details_save_payload", None)
         st.session_state.pop("details_save_result", None)

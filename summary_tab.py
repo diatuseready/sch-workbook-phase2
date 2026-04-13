@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime
+from typing import Any, cast
 
-from admin_config import get_threshold_overrides
+from admin_config import get_default_date_window, get_threshold_overrides
 from config import (
     REQUIRED_MAX_DEFAULTS,
     REQUIRED_MIN_DEFAULTS,
@@ -16,21 +17,42 @@ from config import (
 from config import (
     COL_AVAILABLE,
     COL_AVAILABLE_SPACE,
+    COL_ADJUSTMENTS,
+    COL_AURORA_PIPELINE_IN,
     COL_BATCH_IN_RAW,
     COL_BATCH_OUT_RAW,
     COL_CLOSE_INV_RAW,
     COL_DATE,
+    COL_DUPONT_PIPELINE_IN,
+    COL_EL_DORADO,
+    COL_FROM_327_RECEIPT,
+    COL_GAIN_LOSS,
     COL_INTRANSIT,
+    COL_MED_BOW_PIPELINE_IN,
+    COL_MEDICINE_PIPELINE_OUT,
     COL_OPEN_INV_RAW,
+    COL_OFFLINE,
+    COL_OTHER,
     COL_PIPELINE_IN,
     COL_PIPELINE_OUT,
+    COL_PIONEER_PIPELINE_OUT,
+    COL_PTO,
     COL_PRODUCT,
     COL_PRODUCTION,
     COL_RACK_LIFTINGS_RAW,
+    COL_RECON_FROM_191,
+    COL_RECON_TO_182,
+    COL_RMPL_PIPELINE_OUT,
     COL_SAFE_FILL_LIMIT,
+    COL_SEMINOE_PIPELINE_OUT,
     COL_SYSTEM,
     COL_LOCATION,
     COL_TANK_CAPACITY,
+    COL_TRANSFER_IN,
+    COL_TRANSFER_OUT,
+    COL_TRANSFERS,
+    COL_TULSA,
+    COL_VESSEL_VOLUME,
     COL_REGION,
 )
 
@@ -118,14 +140,210 @@ def calculate_required_min(row, group_cols, df_filtered):
     return float(GLOBAL_REQUIRED_MIN_FALLBACK)
 
 
-def _us_number_column_config(df: pd.DataFrame, cols: list[str]) -> dict[str, object]:
+def _us_number_column_config(df: pd.DataFrame, cols: list[str]) -> dict[str, Any]:
     """Return Streamlit column_config for numeric columns with US thousands separators."""
-    cfg: dict[str, object] = {}
+    cfg: dict[str, Any] = {}
     for c in cols:
         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
             # "accounting" yields comma-separated values like 1,226,275.00
             cfg[c] = st.column_config.NumberColumn(c, format="accounting")
     return cfg
+
+
+def _as_float(value: object) -> float:
+    try:
+        out = float(cast(Any, value))
+        return out if not pd.isna(out) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def region_details_basis_cache_key(
+    active_region: str,
+    *,
+    as_of_ts: pd.Timestamp | None = None,
+) -> str:
+    as_of = (as_of_ts or pd.Timestamp.today().normalize()).strftime("%Y-%m-%d")
+    return f"region_details_basis|{active_region}|{as_of}"
+
+
+def build_region_details_basis(
+    df_filtered: pd.DataFrame,
+    active_region: str,
+) -> pd.DataFrame:
+    """Build the exact Details-tab displayed Close Inv rows for a region.
+
+    This does not derive a separate Summary-only basis. It runs the same
+    location/product pipeline that Details uses to build its final displayed
+    dataframe, then keeps the Date/Location/Product/Close Inv rows needed by
+    Summary and Midcon consumers.
+    """
+    if df_filtered is None or df_filtered.empty:
+        return pd.DataFrame(columns=[COL_DATE, COL_LOCATION, COL_PRODUCT, COL_CLOSE_INV_RAW])
+
+    from details_tab import (
+        _build_editor_df,
+        _extend_with_30d_forecast,
+        _recalculate_inventory_metrics,
+        build_details_view,
+    )
+
+    out = df_filtered.copy()
+    if not all(col in out.columns for col in [COL_LOCATION, COL_PRODUCT, COL_DATE]):
+        return pd.DataFrame(columns=[COL_DATE, COL_LOCATION, COL_PRODUCT, COL_CLOSE_INV_RAW])
+
+    out[COL_DATE] = pd.to_datetime(out[COL_DATE], errors="coerce")
+    out = out.dropna(subset=[COL_DATE])
+    if out.empty:
+        return pd.DataFrame(columns=[COL_DATE, COL_LOCATION, COL_PRODUCT, COL_CLOSE_INV_RAW])
+
+    today_ts = pd.Timestamp.today().normalize()
+    result_parts: list[pd.DataFrame] = []
+
+    locations = sorted(
+        out[COL_LOCATION].dropna().astype(str).str.strip().unique().tolist()
+    )
+    for location in locations:
+        loc_df = out[out[COL_LOCATION].astype(str).str.strip() == location].copy()
+        if loc_df.empty:
+            continue
+
+        start_off, end_off = get_default_date_window(
+            region=str(active_region or "Unknown"),
+            location=location,
+        )
+        start_ts = today_ts + pd.Timedelta(days=int(start_off))
+        end_ts = today_ts + pd.Timedelta(days=int(end_off))
+
+        products = sorted(
+            loc_df[COL_PRODUCT].dropna().astype(str).str.strip().unique().tolist()
+        )
+        for product in products:
+            df_prod = loc_df[
+                loc_df[COL_PRODUCT].astype(str).str.strip() == product
+            ].copy()
+            if df_prod.empty:
+                continue
+
+            df_all = _extend_with_30d_forecast(
+                df_prod,
+                id_col=COL_LOCATION,
+                region=active_region,
+                location=location,
+                history_start=start_ts,
+                forecast_end=end_ts,
+            )
+            df_display = build_details_view(df_all, id_col=COL_LOCATION)
+            df_display = df_display[
+                df_display[COL_DATE] >= pd.Timestamp(start_ts).normalize().date()
+            ].reset_index(drop=True)
+            if df_display.empty:
+                continue
+
+            overrides = get_threshold_overrides(
+                region=str(active_region or "Unknown"),
+                location=location,
+                product=product,
+            )
+            bottom = overrides.get("BOTTOM")
+            safefill = overrides.get("SAFEFILL")
+            bottom_val = float(bottom) if bottom is not None and not pd.isna(bottom) else None
+            safefill_val = float(safefill) if safefill is not None and not pd.isna(safefill) else None
+
+            final_df = _recalculate_inventory_metrics(
+                _build_editor_df(df_display),
+                id_col=COL_LOCATION,
+                safefill=safefill_val,
+                bottom=bottom_val,
+                df_hist=df_prod,
+            )
+            keep_cols = [
+                c for c in [COL_DATE, COL_LOCATION, COL_PRODUCT, COL_CLOSE_INV_RAW]
+                if c in final_df.columns
+            ]
+            if keep_cols:
+                result_parts.append(final_df[keep_cols].copy())
+
+    if not result_parts:
+        return pd.DataFrame(columns=[COL_DATE, COL_LOCATION, COL_PRODUCT, COL_CLOSE_INV_RAW])
+
+    basis = pd.concat(result_parts, ignore_index=True)
+    basis[COL_DATE] = pd.to_datetime(basis[COL_DATE], errors="coerce")
+    return basis
+
+
+def build_close_lookup_from_basis(
+    daily_basis: pd.DataFrame,
+    *,
+    target_ts: pd.Timestamp,
+) -> dict[tuple[str, str], float]:
+    """Return (Location, Product) -> Close Inv on target date or latest prior date."""
+    if daily_basis is None or daily_basis.empty:
+        return {}
+
+    basis = daily_basis.copy()
+    basis[COL_DATE] = pd.to_datetime(basis[COL_DATE], errors="coerce")
+    basis = basis.dropna(subset=[COL_DATE])
+    if basis.empty:
+        return {}
+
+    group_cols = [COL_LOCATION, COL_PRODUCT]
+    exact = basis[basis[COL_DATE].dt.normalize() == target_ts]
+    if exact.empty:
+        exact = (
+            basis[basis[COL_DATE] <= target_ts]
+            .sort_values(COL_DATE, kind="mergesort")
+            .groupby(group_cols, as_index=False, dropna=False)
+            .last()
+        )
+
+    return {
+        (str(row[COL_LOCATION]), str(row[COL_PRODUCT])): _as_float(row.get(COL_CLOSE_INV_RAW))
+        for _, row in exact.iterrows()
+    }
+
+
+def build_close_lookup_from_open_details_session(
+    active_region: str,
+    *,
+    target_ts: pd.Timestamp,
+) -> dict[tuple[str, str], float]:
+    """Read Close Inv directly from live Details-tab session-state dataframes.
+
+    When the user has already opened a product in Details, the canonical df in
+    session state is the exact dataframe being displayed, including unsaved live
+    edits. Summary should prefer that source when available.
+    """
+    lookup: dict[tuple[str, str], float] = {}
+    prefix = f"{active_region}_"
+
+    for key, value in st.session_state.items():
+        if not isinstance(key, str) or not key.endswith("|edit__df"):
+            continue
+        if not key.startswith(prefix):
+            continue
+        if not isinstance(value, pd.DataFrame):
+            continue
+        if not all(col in value.columns for col in [COL_DATE, COL_LOCATION, COL_PRODUCT, COL_CLOSE_INV_RAW]):
+            continue
+
+        df_live = value.copy()
+        df_live[COL_DATE] = pd.to_datetime(df_live[COL_DATE], errors="coerce")
+        df_live = df_live.dropna(subset=[COL_DATE])
+        if df_live.empty:
+            continue
+
+        exact = df_live[df_live[COL_DATE].dt.normalize() == target_ts]
+        chosen = exact
+        if chosen.empty:
+            chosen = df_live[df_live[COL_DATE] <= target_ts].sort_values(COL_DATE).tail(1)
+        if chosen.empty:
+            continue
+
+        row = chosen.iloc[-1]
+        lookup[(str(row[COL_LOCATION]), str(row[COL_PRODUCT]))] = _as_float(row.get(COL_CLOSE_INV_RAW))
+
+    return lookup
 
 
 def display_regional_summary(df_filtered, active_region):
@@ -159,6 +377,17 @@ def display_regional_summary(df_filtered, active_region):
     today_ts = pd.Timestamp.today().normalize()
     # Prior day = today − 1: matches the "yesterday" reference used in Details tab
     prior_day_ts = today_ts - pd.Timedelta(days=1)
+    prior_day_date = prior_day_ts.date()
+
+    details_basis = build_region_details_basis(df_filtered, active_region)
+    st.session_state[region_details_basis_cache_key(active_region, as_of_ts=today_ts)] = details_basis
+    _gi_lookup = build_close_lookup_from_basis(details_basis, target_ts=prior_day_ts)
+    _gi_lookup.update(
+        build_close_lookup_from_open_details_session(
+            active_region,
+            target_ts=prior_day_ts,
+        )
+    )
 
     # Build aggregation map; include Intransit and Available when present
     _agg: dict = {
@@ -235,7 +464,6 @@ def display_regional_summary(df_filtered, active_region):
     )
 
     # ── Prior Day Sales = yesterday's (today − 1) Rack + Deliveries
-    prior_day_date = prior_day_ts.date()
     pds_rows = daily_actual[daily_actual[COL_DATE].dt.date == prior_day_date]
     if not pds_rows.empty:
         pds = (
@@ -289,9 +517,16 @@ def display_regional_summary(df_filtered, active_region):
 
     summary_df["In-Transit"] = summary_df.apply(_in_transit, axis=1).astype(float)
 
-    # Gross Inventory = Close Inv for prior day
-    # (Same as Details tab "Close Inv" column for yesterday's row)
-    summary_df["Gross Inventory"] = summary_df[COL_CLOSE_INV_RAW].fillna(0).astype(float)
+    # Gross Inventory = Details-aligned Close Inv for today − 1.
+    # This uses the same daily aggregation + gap-fill + roll-forward logic as
+    # the Details tab instead of relying on the raw region-level DB row order.
+    summary_df["Gross Inventory"] = summary_df.apply(
+        lambda r: _gi_lookup.get(
+            (str(r.get("Location", "")), str(r.get("Product", ""))),
+            float(r.get(COL_CLOSE_INV_RAW, 0) or 0),
+        ),
+        axis=1,
+    ).astype(float)
 
     # Total Balance = Gross Inventory + In-Transit = Close Inv + Intransit
     # Matches Details tab column "Total Balance" exactly.

@@ -23,6 +23,12 @@ import pandas as pd
 import streamlit as st
 from uuid import uuid4
 
+from summary_tab import (
+    build_close_lookup_from_basis,
+    build_close_lookup_from_open_details_session,
+    build_region_details_basis,
+    region_details_basis_cache_key,
+)
 from config import DATA_SOURCE, SNOWFLAKE_WAREHOUSE, SQLITE_DB_PATH, RAW_INVENTORY_TABLE, SQLITE_TABLE
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -526,6 +532,7 @@ def _build_hfs_display_df(
     """
     today = pd.Timestamp.today().normalize()
     today_date = today.date()
+    prior_day_ts = today - pd.Timedelta(days=1)
 
     # ── Date boundaries ──────────────────────────────────────────────────────
     last_month_end = (today.replace(day=1) - pd.Timedelta(days=1)).date()
@@ -548,6 +555,18 @@ def _build_hfs_display_df(
                 {"forecast", "forecast_user"}
             )
         ].copy()
+
+    basis_key = region_details_basis_cache_key(active_region, as_of_ts=today)
+    details_basis = st.session_state.get(basis_key)
+    if not isinstance(details_basis, pd.DataFrame):
+        details_basis = build_region_details_basis(df_r, active_region)
+    gross_close_lookup = build_close_lookup_from_basis(details_basis, target_ts=prior_day_ts)
+    gross_close_lookup.update(
+        build_close_lookup_from_open_details_session(
+            active_region,
+            target_ts=prior_day_ts,
+        )
+    )
 
     # ── (Location, Product) pairs — one row per pair ─────────────────────────
     loc_prod_pairs: list[tuple[str, str]] = []
@@ -578,7 +597,7 @@ def _build_hfs_display_df(
     # ── Per-(Location, Product): Close Inv + Bottom — same as Details tab ────
     from admin_config import get_threshold_overrides
 
-    prior_day_date = (today - pd.Timedelta(days=1)).date()
+    prior_day_date = prior_day_ts.date()
     live_rows: list[dict] = []
     for location, product in loc_prod_pairs:
         pair_df = df_r[
@@ -602,7 +621,8 @@ def _build_hfs_display_df(
             close = _close_on(pair_df, target_date)
             return round(close + bottom, 2) if bottom is not None else 0.0
 
-        gross_inv        = _total_inv(prior_day_date)
+        gross_close = gross_close_lookup.get((location, product), _close_on(pair_df, prior_day_date))
+        gross_inv        = round(gross_close + bottom, 2) if bottom is not None else 0.0
         eom_proj         = _total_inv(curr_month_end)
         prev_eom_default = _total_inv(last_month_end)
 
