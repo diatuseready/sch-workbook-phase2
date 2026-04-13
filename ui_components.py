@@ -27,8 +27,8 @@ def apply_custom_css():
     }}
 
     .block-container {{
-        padding-top: 1rem;
-        padding-bottom: 1.5rem;
+        padding-top: 0rem;
+        padding-bottom: 0rem;
     }}
 
     [data-testid="stSidebar"],

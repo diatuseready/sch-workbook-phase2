@@ -82,5 +82,5 @@ def dynamic_input_data_editor(data, key, **_kwargs):
         st.session_state[changed_key] = True
 
     __kwargs = _kwargs.copy()
-    __kwargs.update({"data": data, "key": key, "on_change": on_data_editor_changed})
+    __kwargs.update({"data": data, "key": key, "height":500, "on_change": on_data_editor_changed})
     return st.data_editor(**__kwargs)
