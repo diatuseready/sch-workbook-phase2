@@ -1078,7 +1078,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
     locked = set(_locked_cols(id_col, cols))
     locked.update({c for c in cols if str(c).endswith(" Fact")})
     locked.add("SOURCE_TYPE")
-    NUM_FMT = "localized"
+    NUM_FMT = "%.0f" # "localized"
 
     cfg: dict = {
         "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD", pinned="left"),
