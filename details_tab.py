@@ -1343,6 +1343,8 @@ def show_fact_changed(active_region: str, selected_loc: str) -> None:
     st.session_state[f"show_fact_changed|{active_region}|{selected_loc}"] = True
 
 def sync_user_edits(edited: pd.DataFrame | None, df_key: str, base_key: str) -> None:
+    if df_key is None or base_key is None:
+        return
     # --- Sync user edits back into canonical and snapshot DataFrames ---
     if edited is not None and not edited.empty:
         for col in edited.columns:
@@ -1489,7 +1491,9 @@ def display_location_details(
         "",
         options=products,
         key=selector_key,          # no default parameter
-        on_change=lambda: mark_pass_edited_data_true(active_region, selected_loc)
+        on_change=lambda: sync_user_edits(
+                edited=st.session_state.get(edited_df_key), df_key=st.session_state.pop("_df_key", None), base_key=st.session_state.pop("_base_key", None)
+            )
     )
 
     if not selected_product:
@@ -1516,6 +1520,9 @@ def display_location_details(
         orig_key = f"{state_key}orig"
         edited_df_key = f"{state_key}edited_df"
         # enable_state_key = f"{state_key}enable_state"
+
+        st.session_state["_df_key"] = df_key  # for access in callbacks without needing to pass the full state_key
+        st.session_state["_base_key"] = base_key
 
         # ── View File dialog ─────────────────────────────────────────────
         vf_payload = st.session_state.get("details_view_file_payload")  # view file payload
@@ -1596,6 +1603,9 @@ def display_location_details(
                 event="details_save_clicked",
                 metadata={"region": active_region, "scope": "location",
                             "location": selected_loc, "product": prod_name},
+                on_click=lambda: sync_user_edits(
+                                                    edited=st.session_state.get(edited_df_key), df_key=df_key, base_key=base_key
+                                                )
             )
         # ── Load and prepare data (only on first render for this state_key) ──
         df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
@@ -1850,14 +1860,16 @@ def display_location_details(
                 metadata={"region": active_region, "scope": "location",
                             "location": selected_loc, "product": prod_name},
             )
-            _confirm_save_dialog(payload={
-                "df_key": df_key,
-                "region": active_region,
-                "location": selected_loc,
-                "system": None,
-                "product": prod_name,
-                "scope_label": f"{selected_loc} / {prod_name}",
-            })
+            _confirm_save_dialog(
+                                    payload={
+                                    "df_key": df_key,
+                                    "region": active_region,
+                                    "location": selected_loc,
+                                    "system": None,
+                                    "product": prod_name,
+                                    "scope_label": f"{selected_loc} / {prod_name}",
+                                    }
+                                )
 
         # Execute save after confirm dialog triggers a rerun with overlay visible
         payload = st.session_state.get("details_save_payload") or {}
