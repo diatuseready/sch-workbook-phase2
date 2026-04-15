@@ -379,8 +379,15 @@ def display_regional_summary(df_filtered, active_region):
     prior_day_ts = today_ts - pd.Timedelta(days=1)
     prior_day_date = prior_day_ts.date()
 
-    details_basis = build_region_details_basis(df_filtered, active_region)
-    st.session_state[region_details_basis_cache_key(active_region, as_of_ts=today_ts)] = details_basis
+    # ── Cache the expensive Details-basis computation (runs once per region/day;
+    #    subsequent reruns triggered by filter changes skip it entirely).
+    _basis_cache_key = region_details_basis_cache_key(active_region, as_of_ts=today_ts)
+    if _basis_cache_key not in st.session_state:
+        with st.spinner("Computing inventory basis\u2026"):
+            details_basis = build_region_details_basis(df_filtered, active_region)
+        st.session_state[_basis_cache_key] = details_basis
+    else:
+        details_basis = st.session_state[_basis_cache_key]
     _gi_lookup = build_close_lookup_from_basis(details_basis, target_ts=prior_day_ts)
     _gi_lookup.update(
         build_close_lookup_from_open_details_session(
@@ -622,6 +629,10 @@ def display_regional_summary(df_filtered, active_region):
                 "| **Number days' Supply** | `Available Net Inventory ÷ 7 Day Average` |"
             )
 
+    # Store filter selections so Forecast and Midcon tables can read them
+    st.session_state["_summary_loc_filter"] = _sum_loc_filter
+    st.session_state["_summary_prod_filter"] = _sum_prod_filter
+
     if _sum_loc_filter:
         df_out = df_out[df_out["Location"].isin(_sum_loc_filter)]
     if _sum_prod_filter:
@@ -775,34 +786,11 @@ def display_forecast_table(df_filtered, active_region):
         forecast_cols = [c for c in forecast_cols if c in forecast_df.columns]
         df_out = forecast_df[forecast_cols]
 
-        # ── Filters + formula dialog ──────────────────────────────────────────
-        _fc_locs = sorted(df_out["Location"].dropna().astype(str).unique().tolist())
-        _fc_prods = sorted(df_out["Product"].dropna().astype(str).unique().tolist())
+        # ── Read shared filters + formula dialog ─────────────────────────────
+        _fc_loc_filter: list[str] = st.session_state.get("_summary_loc_filter", [])
+        _fc_prod_filter: list[str] = st.session_state.get("_summary_prod_filter", [])
 
-        _ff1, _ff2, _ff_info = st.columns([3, 3, 0.5])
-        with _ff1:
-            _fc_loc_filter: list[str] = st.multiselect(
-                "Filter by Location:",
-                options=_fc_locs,
-                default=[],
-                placeholder="All locations",
-                key="forecast_loc_filter",
-            )
-        with _ff2:
-            if _fc_loc_filter:
-                _fc_avail_prods = sorted(
-                    df_out.loc[df_out["Location"].isin(_fc_loc_filter), "Product"]
-                    .dropna().astype(str).unique().tolist()
-                )
-            else:
-                _fc_avail_prods = _fc_prods
-            _fc_prod_filter: list[str] = st.multiselect(
-                "Filter by Product:",
-                options=_fc_avail_prods,
-                default=[],
-                placeholder="All products",
-                key="forecast_prod_filter",
-            )
+        _ff_spacer, _ff_info = st.columns([6, 0.5])
         with _ff_info:
             st.markdown('<div class="transparent-icon"></div>', unsafe_allow_html=True)
             with st.popover("ℹ️"):

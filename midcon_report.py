@@ -1288,55 +1288,18 @@ def display_midcon_inventory_tables(
                 
             )
 
-    # ── Separate Location + Product filters ──────────────────────────────────
-    _all_loc_prod_pairs = sorted({
-        (str(r["Location"]).strip(), str(r["Product"]).strip())
-        for df_ in (hfs_display, oneok_display)
-        for _, r in df_[["Location", "Product"]].dropna().iterrows()
-        if str(r["Location"]).strip() and str(r["Product"]).strip()
-    })
-
-    _all_locations = sorted({loc for loc, _ in _all_loc_prod_pairs})
-    _all_products  = sorted({prod for _, prod in _all_loc_prod_pairs})
-
-    _fc1, _fc2 = st.columns(2)
-    with _fc1:
-        _loc_filter: list[str] = st.multiselect(
-            "Filter by Location:",
-            options=_all_locations,
-            default=[],
-            placeholder="All locations — select to filter",
-            key="midcon_loc_filter",
-        )
-    with _fc2:
-        # Products cascade: show only products available under selected locations
-        if _loc_filter:
-            _available_products = sorted({
-                prod for loc, prod in _all_loc_prod_pairs if loc in _loc_filter
-            })
-        else:
-            _available_products = _all_products
-
-        _prod_filter: list[str] = st.multiselect(
-            "Filter by Product:",
-            options=_available_products,
-            default=[],
-            placeholder="All products — select to filter",
-            key="midcon_prod_filter",
-        )
-
-    def _pair_matches(loc: str, prod: str) -> bool:
-        if _loc_filter and loc not in _loc_filter:
-            return False
-        if _prod_filter and prod not in _prod_filter:
-            return False
-        return True
+    # ── Read shared Location + Product filters from Summary tab ─────────────
+    _loc_filter: list[str] = st.session_state.get("_summary_loc_filter", [])
+    _prod_filter: list[str] = st.session_state.get("_summary_prod_filter", [])
 
     def _apply_filter(df: pd.DataFrame) -> pd.DataFrame:
-        mask = [
-            _pair_matches(str(r["Location"]).strip(), str(r["Product"]).strip())
-            for _, r in df[["Location", "Product"]].iterrows()
-        ]
+        if not _loc_filter and not _prod_filter:
+            return df
+        mask = pd.Series(True, index=df.index)
+        if _loc_filter:
+            mask &= df["Location"].astype(str).str.strip().isin(_loc_filter)
+        if _prod_filter:
+            mask &= df["Product"].astype(str).str.strip().isin(_prod_filter)
         return df[mask].copy()
 
     # View-only filtered slices — full dfs remain in session_state unchanged
