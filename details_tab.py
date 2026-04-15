@@ -1078,7 +1078,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
     locked = set(_locked_cols(id_col, cols))
     locked.update({c for c in cols if str(c).endswith(" Fact")})
     locked.add("SOURCE_TYPE")
-    NUM_FMT = "%.0f" #"localized"
+    NUM_FMT = "%.0f" # "localized"
 
     cfg: dict = {
         "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD", pinned="left"),
@@ -1336,7 +1336,23 @@ def _save_result_dialog(*, result: dict) -> None:
         if err:
             st.code(err)
 
+def mark_pass_edited_data_true(active_region: str, selected_loc: str) -> None:
+    st.session_state[f"pass_edited_data|{active_region}|{selected_loc}"] = True
 
+def show_fact_changed(active_region: str, selected_loc: str) -> None:
+    st.session_state[f"show_fact_changed|{active_region}|{selected_loc}"] = True
+
+def sync_user_edits(edited: pd.DataFrame | None, df_key: str, base_key: str) -> None:
+    if df_key is None or base_key is None:
+        return
+    # --- Sync user edits back into canonical and snapshot DataFrames ---
+    if edited is not None and not edited.empty:
+        for col in edited.columns:
+            vals = edited[col].values
+            if df_key in st.session_state and col in st.session_state[df_key].columns:
+                st.session_state[df_key][col] = vals
+            if base_key in st.session_state and col in st.session_state[base_key].columns:
+                st.session_state[base_key][col] = vals
 # ---------------------------------------------------------------------------
 # Main display functions
 # ---------------------------------------------------------------------------
@@ -1388,6 +1404,7 @@ def display_location_details(
             value=False,
             key=f"details_show_fact|{active_region}|{selected_loc}",
             help="Show upstream system values next to the editable columns.",
+            on_change=lambda: show_fact_changed(active_region, selected_loc)
         )
     with c_loc:
         st.markdown(
@@ -1402,6 +1419,7 @@ def display_location_details(
             key=live_calc_loc_key,
             disabled=(get_user_role() == ROLE_DISPLAY),
             help="Apply current edits and recalculate values.",
+            on_change=lambda: mark_pass_edited_data_true(active_region, selected_loc)
         )
     with c_reset_loc:
         st.markdown('<div class="transparent-icon"></div>', unsafe_allow_html=True)
@@ -1473,6 +1491,9 @@ def display_location_details(
         "",
         options=products,
         key=selector_key,          # no default parameter
+        on_change=lambda: sync_user_edits(
+                edited=st.session_state.get(edited_df_key), df_key=st.session_state.pop("_df_key", None), base_key=st.session_state.pop("_base_key", None)
+            )
     )
 
     if not selected_product:
@@ -1497,7 +1518,11 @@ def display_location_details(
         base_key = f"{state_key}__base_v{ver}"  # stable snapshot passed to editor this version
         widget_key = f"{state_key}__editor_v{ver}"
         orig_key = f"{state_key}orig"
+        edited_df_key = f"{state_key}edited_df"
         # enable_state_key = f"{state_key}enable_state"
+
+        st.session_state["_df_key"] = df_key  # for access in callbacks without needing to pass the full state_key
+        st.session_state["_base_key"] = base_key
 
         # ── View File dialog ─────────────────────────────────────────────
         vf_payload = st.session_state.get("details_view_file_payload")  # view file payload
@@ -1566,6 +1591,7 @@ def display_location_details(
                 "Enable Save", value=False, key=enable_widget_key,
                 disabled=(get_user_role() == ROLE_DISPLAY),
                 help="Toggle ON before saving to ensure the last edited cell commits.",
+                on_change=lambda: mark_pass_edited_data_true(active_region, selected_loc)
             )
 
         with c_save:
@@ -1577,6 +1603,9 @@ def display_location_details(
                 event="details_save_clicked",
                 metadata={"region": active_region, "scope": "location",
                             "location": selected_loc, "product": prod_name},
+                on_click=lambda: sync_user_edits(
+                                                    edited=st.session_state.get(edited_df_key), df_key=df_key, base_key=base_key
+                                                )
             )
         # ── Load and prepare data (only on first render for this state_key) ──
         df_prod = df_loc[df_loc["Product"].astype(str) == str(prod_name)]
@@ -1638,6 +1667,17 @@ def display_location_details(
         if COL_VESSEL in st.session_state[df_key].columns:
             st.session_state[df_key][COL_VESSEL] = st.session_state[df_key][COL_VESSEL].fillna("").astype(str).replace("nan", "")
 
+        pass_edited_data_key = f"pass_edited_data|{active_region}|{selected_loc}"
+        live_calc_state_key = f"{state_key}live_calc_state"
+        prev_live_calc = bool(st.session_state.get(live_calc_state_key, False))
+        curr_live_calc = bool(live_calc_clicked)
+
+        if st.session_state.get(f"show_fact_changed|{active_region}|{selected_loc}", False):
+            st.session_state[f"show_fact_changed|{active_region}|{selected_loc}"] = False
+            sync_user_edits(
+                edited=st.session_state.get(edited_df_key), df_key=df_key, base_key=base_key
+            )
+
         base_df = st.session_state[base_key]
         base_df_copy = base_df.copy()
 
@@ -1655,17 +1695,14 @@ def display_location_details(
             hide_index=True,
             column_order=column_order,
             key=widget_key,
+            edited_df_key=edited_df_key,
             column_config=column_config,
+            base_df=base_df,
+            live_calc_switch=bool(live_calc_clicked),
+            pass_edited_data_key = pass_edited_data_key
         )
 
-        # --- Sync user edits back into canonical and snapshot DataFrames ---
-        if edited is not None and not edited.empty:
-            for col in edited.columns:
-                vals = edited[col].values
-                if df_key in st.session_state and col in st.session_state[df_key].columns:
-                    st.session_state[df_key][col] = vals
-                if base_key in st.session_state and col in st.session_state[base_key].columns:
-                    st.session_state[base_key][col] = vals
+        sync_user_edits(edited, df_key=df_key, base_key=base_key)
         
         _pre_sync_text: dict = {}        
         for _snap_col in _TEXT_COLS:
@@ -1673,10 +1710,6 @@ def display_location_details(
                 _pre_sync_text[_snap_col] = (
                     base_df_copy[_snap_col].fillna("").values.copy()
                 )
-
-        live_calc_state_key = f"{state_key}live_calc_state"
-        prev_live_calc = bool(st.session_state.get(live_calc_state_key, False))
-        curr_live_calc = bool(live_calc_clicked)
         
         if not curr_live_calc:
             if _needs_inventory_rerun(base_df_copy, edited, list(set([col for col in edited.columns if col in base_df_copy.columns]).union(set(_TEXT_COLS)))):
@@ -1827,14 +1860,16 @@ def display_location_details(
                 metadata={"region": active_region, "scope": "location",
                             "location": selected_loc, "product": prod_name},
             )
-            _confirm_save_dialog(payload={
-                "df_key": df_key,
-                "region": active_region,
-                "location": selected_loc,
-                "system": None,
-                "product": prod_name,
-                "scope_label": f"{selected_loc} / {prod_name}",
-            })
+            _confirm_save_dialog(
+                                    payload={
+                                    "df_key": df_key,
+                                    "region": active_region,
+                                    "location": selected_loc,
+                                    "system": None,
+                                    "product": prod_name,
+                                    "scope_label": f"{selected_loc} / {prod_name}",
+                                    }
+                                )
 
         # Execute save after confirm dialog triggers a rerun with overlay visible
         payload = st.session_state.get("details_save_payload") or {}

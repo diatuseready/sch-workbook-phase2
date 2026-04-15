@@ -69,7 +69,7 @@ def _format_forecast_display(df: pd.DataFrame) -> pd.DataFrame:
     return df_display
 
 
-def dynamic_input_data_editor(data, key, **_kwargs):
+def dynamic_input_data_editor(data, key, pass_edited_data_key, edited_df_key, base_df=pd.DataFrame(), live_calc_switch=False, **_kwargs):
     changed_key = f"{key}__changed"
 
     user_on_change = _kwargs.get("on_change")
@@ -82,5 +82,13 @@ def dynamic_input_data_editor(data, key, **_kwargs):
         st.session_state[changed_key] = True
 
     __kwargs = _kwargs.copy()
-    __kwargs.update({"data": data, "key": key, "height":500, "on_change": on_data_editor_changed})
-    return st.data_editor(**__kwargs)
+    __kwargs.update({"data": data, "key": key, "on_change": on_data_editor_changed})
+    edited = st.data_editor(**__kwargs)
+    st.session_state[edited_df_key] = edited
+
+    if live_calc_switch or st.session_state.get(pass_edited_data_key, False):
+        if st.session_state.get(pass_edited_data_key, False):
+            st.session_state[pass_edited_data_key] = False
+        return edited
+    else:
+        return base_df
