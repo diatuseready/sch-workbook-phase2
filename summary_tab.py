@@ -346,6 +346,11 @@ def build_close_lookup_from_open_details_session(
     return lookup
 
 
+def _dynamic_height(n_rows: int, *, row_px: int = 35, header_px: int = 38, min_px: int = 80, max_px: int = 600) -> int:
+    """Return a pixel height that fits *n_rows* without excess blank space."""
+    return max(min_px, min(max_px, header_px + n_rows * row_px))
+
+
 def display_regional_summary(df_filtered, active_region):
     """Display the regional summary section."""
     st.subheader("Summary")
@@ -640,10 +645,16 @@ def display_regional_summary(df_filtered, active_region):
 
     column_config = _us_number_column_config(df_out, final_cols)
 
+    _prior_day_label = prior_day_ts.strftime("%b %d, %Y")
+    st.caption(
+        f"Gross Inventory: **{_prior_day_label}** (yesterday)  |  "
+        f"7 Day Average: trailing 7 days of Rack/Lifting"
+    )
+
     st.dataframe(
         df_out,
         width="stretch",
-        height=320,
+        height=_dynamic_height(len(df_out)),
         column_config=column_config,
     )
 
@@ -815,10 +826,18 @@ def display_forecast_table(df_filtered, active_region):
             df_out = df_out[df_out["Product"].isin(_fc_prod_filter)]
 
         column_config = _us_number_column_config(df_out, forecast_cols)
+
+        _lme_label = last_month_end.strftime("%b %d, %Y")
+        _cme_label = curr_month_end.strftime("%b %d, %Y")
+        st.caption(
+            f"Beginning inventory: **{_lme_label}** (prev month end)  |  "
+            f"Projected EOM: **{_cme_label}** (current month end)"
+        )
+
         st.dataframe(
             df_out,
             width="stretch",
-            height=320,
+            height=_dynamic_height(len(df_out)),
             column_config=column_config,
         )
     else:
