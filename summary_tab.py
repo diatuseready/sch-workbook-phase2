@@ -661,7 +661,10 @@ def display_regional_summary(df_filtered, active_region):
 
 def display_forecast_table(df_filtered, active_region):
     """Display the forecast table section."""
-    st.markdown("### Forecast")
+    
+    _ff_spacer, _ff_info = st.columns([6, 0.5])
+    with _ff_spacer:
+        st.markdown("### Forecast")
 
     if df_filtered.empty:
         st.info("No data available for the selected filters.")
@@ -801,7 +804,6 @@ def display_forecast_table(df_filtered, active_region):
         _fc_loc_filter: list[str] = st.session_state.get("_summary_loc_filter", [])
         _fc_prod_filter: list[str] = st.session_state.get("_summary_prod_filter", [])
 
-        _ff_spacer, _ff_info = st.columns([6, 0.5])
         with _ff_info:
             st.markdown('<div class="transparent-icon"></div>', unsafe_allow_html=True)
             with st.popover("ℹ️"):
