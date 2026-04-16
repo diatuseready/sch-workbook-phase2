@@ -1081,7 +1081,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
     NUM_FMT = "%.0f" # "localized"
 
     cfg: dict = {
-        "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD", pinned="left"),
+        "Date": st.column_config.DateColumn("Date", disabled=True, format="localized", pinned="left"),
         id_col: st.column_config.TextColumn(id_col, disabled=True),
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
@@ -1103,7 +1103,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
         ),
         "SOURCE_TYPE": st.column_config.TextColumn("SOURCE_TYPE", disabled=True),
         COL_VIEW_FILE: st.column_config.CheckboxColumn(
-            COL_VIEW_FILE, default=False, disabled=(DATA_SOURCE != "snowflake"),
+            COL_VIEW_FILE, default=False, disabled=(DATA_SOURCE != "snowflake"), width="small",
             help="Check to open a popup with downloadable system files for this row.",
         ),
     }
