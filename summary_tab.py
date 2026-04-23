@@ -182,6 +182,7 @@ def build_region_details_basis(
         return pd.DataFrame(columns=[COL_DATE, COL_LOCATION, COL_PRODUCT, COL_CLOSE_INV_RAW])
 
     from details_tab import (
+        _apply_pretrim_anchor,
         _build_editor_df,
         _extend_with_30d_forecast,
         _recalculate_inventory_metrics,
@@ -233,10 +234,18 @@ def build_region_details_basis(
                 history_start=start_ts,
                 forecast_end=end_ts,
             )
-            df_display = build_details_view(df_all, id_col=COL_LOCATION)
-            df_display = df_display[
-                df_display[COL_DATE] >= pd.Timestamp(start_ts).normalize().date()
+            df_display_all = build_details_view(df_all, id_col=COL_LOCATION)
+            df_display = df_display_all[
+                df_display_all[COL_DATE] >= pd.Timestamp(start_ts).normalize().date()
             ].reset_index(drop=True)
+            df_display = _apply_pretrim_anchor(
+                df_display,
+                df_display_all,
+                start_ts=start_ts,
+                region=active_region,
+                location=location,
+                product=product,
+            )
             if df_display.empty:
                 continue
 

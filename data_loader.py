@@ -1987,6 +1987,120 @@ def _load_inventory_data_filtered_cached(
     return df
 
 
+def load_user_anchor_history_segment(
+    *,
+    region: str | None,
+    location: str | None,
+    product: str | None,
+    before_ts: pd.Timestamp,
+    end_ts: pd.Timestamp | None = None,
+    source_types: tuple[str, ...] = ("user", "forecast_user"),
+) -> pd.DataFrame:
+    """Load the full history segment from the latest prior manual anchor to a boundary."""
+    location_s = str(location or "").strip()
+    product_s = str(product or "").strip()
+    manual_types = tuple(str(s or "").strip().lower() for s in source_types if str(s or "").strip())
+    if not location_s or not product_s or not manual_types:
+        return pd.DataFrame()
+
+    before_norm = pd.Timestamp(before_ts).normalize()
+    end_norm = pd.Timestamp(end_ts).normalize() if end_ts is not None else (before_norm - pd.Timedelta(days=1))
+    anchor_ts: pd.Timestamp | None = None
+
+    if DATA_SOURCE == "sqlite":
+        import sqlite3
+
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        try:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{SQLITE_TABLE}')").fetchall()}
+            date_expr = "COALESCE(OPERATIONAL_DATE, DATA_DATE)" if "OPERATIONAL_DATE" in cols else "DATA_DATE"
+            type_placeholders = ", ".join(["?"] * len(manual_types))
+            where = [
+                f"{date_expr} IS NOT NULL",
+                f"{date_expr} < ?",
+                "LOCATION_CODE = ?",
+                "PRODUCT_DESCRIPTION = ?",
+                f"LOWER(TRIM(COALESCE(SOURCE_TYPE, ''))) IN ({type_placeholders})",
+            ]
+            params: list[object] = [before_norm.strftime("%Y-%m-%d"), location_s, product_s, *manual_types]
+            if region:
+                where.append("REGION_CODE = ?")
+                params.append(region)
+
+            sql = f"""
+                SELECT {date_expr} AS ANCHOR_DATE
+                FROM {SQLITE_TABLE}
+                WHERE {' AND '.join(where)}
+                ORDER BY {date_expr} DESC
+                LIMIT 1
+            """
+            row = conn.execute(sql, params).fetchone()
+        finally:
+            conn.close()
+
+        if row and row[0] is not None:
+            parsed = pd.to_datetime(row[0], errors="coerce")
+            if pd.notna(parsed):
+                anchor_ts = pd.Timestamp(parsed).normalize()
+
+    elif DATA_SOURCE == "snowflake":
+        session = get_snowflake_session()
+        session.sql(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}").collect()
+        source_types_sql = ", ".join("'" + s.replace("'", "''") + "'" for s in manual_types)
+        conditions = [
+            "COALESCE(OPERATIONAL_DATE, DATA_DATE) IS NOT NULL",
+            "COALESCE(OPERATIONAL_DATE, DATA_DATE) < %(before)s",
+            "LOCATION_CODE = %(loc)s",
+            "PRODUCT_DESCRIPTION = %(prod)s",
+            f"LOWER(TRIM(COALESCE(SOURCE_TYPE, ''))) IN ({source_types_sql})",
+        ]
+        binds: dict[str, object] = {
+            "before": before_norm.strftime("%Y-%m-%d"),
+            "loc": location_s,
+            "prod": product_s,
+        }
+        if region:
+            conditions.append("REGION_CODE = %(region)s")
+            binds["region"] = region
+
+        query = f"""
+        SELECT COALESCE(OPERATIONAL_DATE, DATA_DATE) AS ANCHOR_DATE
+        FROM {RAW_INVENTORY_TABLE}
+        WHERE {' AND '.join(conditions)}
+        ORDER BY COALESCE(OPERATIONAL_DATE, DATA_DATE) DESC
+        LIMIT 1
+        """
+        for k, v in binds.items():
+            query = query.replace(f"%({k})s", "'" + str(v).replace("'", "''") + "'")
+
+        anchor_df = session.sql(query).to_pandas()
+        if not anchor_df.empty:
+            parsed = pd.to_datetime(anchor_df.iloc[0].get("ANCHOR_DATE"), errors="coerce")
+            if pd.notna(parsed):
+                anchor_ts = pd.Timestamp(parsed).normalize()
+    else:
+        return pd.DataFrame()
+
+    if anchor_ts is None or pd.isna(anchor_ts) or anchor_ts > end_norm:
+        return pd.DataFrame()
+
+    segment = _load_inventory_data_filtered_cached(
+        DATA_SOURCE,
+        SQLITE_DB_PATH,
+        SQLITE_TABLE,
+        region=region,
+        loc_col="Location",
+        selected_loc=location_s,
+        start_ts=anchor_ts,
+        end_ts=end_norm,
+    )
+    if segment.empty or "Product" not in segment.columns:
+        return segment
+
+    product_mask = segment["Product"].astype(str).str.strip() == product_s
+    return segment[product_mask].copy()
+
+
 def load_filtered_inventory_data(filters: dict) -> pd.DataFrame:
     """Load inventory data using filter pushdown."""
     return _load_inventory_data_filtered_cached(

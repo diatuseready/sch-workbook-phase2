@@ -89,7 +89,7 @@ from config import (
     DETAILS_RENAME_MAP,
     ROLE_DISPLAY,
 )
-from data_loader import persist_details_rows, get_user_role, load_filtered_inventory_data, _load_inventory_data_filtered_cached
+from data_loader import persist_details_rows, get_user_role, load_filtered_inventory_data, _load_inventory_data_filtered_cached, load_user_anchor_history_segment
 from ui_components import _render_blocking_overlay, _render_threshold_cards, _view_files_dialog
 from utils import dynamic_input_data_editor, _to_float, _to_numeric_series, _sum_row
 
@@ -580,6 +580,104 @@ def _recalculate_inventory_metrics(
     out = _recalculate_calculated_receipt(out, id_col=id_col, df_hist=df_hist)
     if df_hist is not None:
         out = _fill_rack_averages_per_row(out, df_hist)
+    return out
+
+
+def _compute_pretrim_anchor(
+    df: pd.DataFrame,
+    *,
+    start_ts: pd.Timestamp,
+    region: str | None = None,
+    location: str | None = None,
+    product: str | None = None,
+) -> float | None:
+    if df is None or df.empty or "Date" not in df.columns or COL_OPENING_INV not in df.columns:
+        return None
+
+    hist = df.copy()
+    hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
+    hist = hist[hist["Date"].notna()]
+    hist = hist[hist["Date"] < pd.Timestamp(start_ts).normalize()].sort_values("Date", kind="mergesort")
+    if hist.empty:
+        return None
+
+    opening_s = pd.to_numeric(hist[COL_OPENING_INV], errors="coerce")
+    if "SOURCE_TYPE" in hist.columns:
+        source_s = hist["SOURCE_TYPE"].astype(str).str.strip().str.lower()
+        preferred = hist[source_s.isin({"user", "forecast_user"}) & opening_s.notna() & (opening_s != 0)].copy()
+    else:
+        preferred = pd.DataFrame()
+
+    if preferred.empty and region and location and product:
+        older_raw = load_user_anchor_history_segment(
+            region=region,
+            location=location,
+            product=product,
+            before_ts=start_ts,
+        )
+        if older_raw is not None and not older_raw.empty:
+            older_display = build_details_view(older_raw, id_col="Location")
+            older_display["Date"] = pd.to_datetime(older_display["Date"], errors="coerce")
+            hist = pd.concat([older_display, hist], ignore_index=True)
+            hist = hist[hist["Date"].notna() & (hist["Date"] < pd.Timestamp(start_ts).normalize())]
+            hist = hist.sort_values("Date", kind="mergesort")
+            hist = hist.drop_duplicates(subset=["Date"], keep="last")
+
+            opening_s = pd.to_numeric(hist[COL_OPENING_INV], errors="coerce")
+            if "SOURCE_TYPE" in hist.columns:
+                source_s = hist["SOURCE_TYPE"].astype(str).str.strip().str.lower()
+                preferred = hist[source_s.isin({"user", "forecast_user"}) & opening_s.notna() & (opening_s != 0)].copy()
+
+    if preferred.empty:
+        preferred = hist[opening_s.notna() & (opening_s != 0)].copy()
+    if preferred.empty:
+        return None
+
+    anchor_idx = preferred.index[-1]
+    anchor_date = pd.Timestamp(hist.at[anchor_idx, "Date"]).normalize()
+    prev_close = _to_float(hist.at[anchor_idx, COL_OPENING_INV])
+    chain = hist[hist["Date"] >= anchor_date].sort_values("Date", kind="mergesort")
+
+    for i, idx in enumerate(chain.index):
+        opening = _to_float(chain.at[idx, COL_OPENING_INV]) if i == 0 else prev_close
+        inflow = _sum_row(chain.loc[idx], DISPLAY_INFLOW_COLS)
+        outflow = _sum_row(chain.loc[idx], DISPLAY_OUTFLOW_COLS)
+        net = _sum_row(chain.loc[idx], DISPLAY_NET_COLS)
+        prev_close = opening + inflow - outflow + net
+
+    return round(prev_close, 2)
+
+
+def _apply_pretrim_anchor(
+    df_visible: pd.DataFrame,
+    df_pretrim: pd.DataFrame,
+    *,
+    start_ts: pd.Timestamp,
+    region: str | None = None,
+    location: str | None = None,
+    product: str | None = None,
+) -> pd.DataFrame:
+    if df_visible is None or df_visible.empty or COL_OPENING_INV not in df_visible.columns:
+        return df_visible
+
+    anchor_open = _compute_pretrim_anchor(
+        df_pretrim,
+        start_ts=start_ts,
+        region=region,
+        location=location,
+        product=product,
+    )
+    if anchor_open is None:
+        return df_visible
+
+    out = df_visible.copy()
+    first_idx = out.index[0]
+    first_open = pd.to_numeric(pd.Series([out.at[first_idx, COL_OPENING_INV]]), errors="coerce").iloc[0]
+    first_source = str(out.at[first_idx, "SOURCE_TYPE"]).strip().lower() if "SOURCE_TYPE" in out.columns else ""
+
+    if pd.isna(first_open) or float(first_open) == 0.0 or first_source in {"forecast", "forecast_user"}:
+        out.at[first_idx, COL_OPENING_INV] = anchor_open
+
     return out
 
 
@@ -1081,7 +1179,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
     NUM_FMT = "%.0f" # "localized"
 
     cfg: dict = {
-        "Date": st.column_config.DateColumn("Date", disabled=True, format="YYYY-MM-DD", pinned="left"),
+        "Date": st.column_config.DateColumn("Date", disabled=True, format="localized", pinned="left"),
         id_col: st.column_config.TextColumn(id_col, disabled=True),
         "Product": st.column_config.TextColumn("Product", disabled=True),
         "updated": st.column_config.CheckboxColumn("updated", default=False),
@@ -1103,7 +1201,7 @@ def _column_config(df: pd.DataFrame, cols: list[str], id_col: str) -> dict:
         ),
         "SOURCE_TYPE": st.column_config.TextColumn("SOURCE_TYPE", disabled=True),
         COL_VIEW_FILE: st.column_config.CheckboxColumn(
-            COL_VIEW_FILE, default=False, disabled=(DATA_SOURCE != "snowflake"),
+            COL_VIEW_FILE, default=False, disabled=(DATA_SOURCE != "snowflake"), width = "small",
             help="Check to open a popup with downloadable system files for this row.",
         ),
     }
@@ -1615,10 +1713,18 @@ def display_location_details(
                 df_prod, id_col="Location", region=active_region,
                 location=str(selected_loc), history_start=start_ts, forecast_end=end_ts,
             )
-            df_display = build_details_view(df_all, id_col="Location")
-            df_display = df_display[
-                df_display["Date"] >= pd.Timestamp(start_ts).normalize().date()
+            df_display_all = build_details_view(df_all, id_col="Location")
+            df_display = df_display_all[
+                df_display_all["Date"] >= pd.Timestamp(start_ts).normalize().date()
             ].reset_index(drop=True)
+            df_display = _apply_pretrim_anchor(
+                df_display,
+                df_display_all,
+                start_ts=start_ts,
+                region=active_region,
+                location=str(selected_loc),
+                product=str(prod_name),
+            )
 
             # Add sub-breakdown columns if configured but absent from source data
             for sub in [COL_TULSA, COL_EL_DORADO, COL_OTHER, COL_OFFLINE, COL_FROM_327_RECEIPT]:
@@ -1741,10 +1847,18 @@ def display_location_details(
                 forecast_end=end_ts,
             )
 
-            recomputed = build_details_view(rebuilt, id_col="Location")
-            recomputed = recomputed[
-                recomputed["Date"] >= pd.Timestamp(start_ts).normalize().date()
+            recomputed_all = build_details_view(rebuilt, id_col="Location")
+            recomputed = recomputed_all[
+                recomputed_all["Date"] >= pd.Timestamp(start_ts).normalize().date()
             ].reset_index(drop=True)
+            recomputed = _apply_pretrim_anchor(
+                recomputed,
+                recomputed_all,
+                start_ts=start_ts,
+                region=active_region,
+                location=str(selected_loc),
+                product=str(prod_name),
+            )
             recomputed = _build_editor_df(recomputed)
 
             # Overlay ALL user-edited (non-calculated, non-Fact) column values from
